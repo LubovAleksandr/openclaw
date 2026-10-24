@@ -122,8 +122,13 @@ const PRINCIPALS = [
   },
   {
     name: "parent with no recorded requester",
-    job: job(linked),
+    job: job({ ...linked, ...accountPolicy }),
     senderIsOwner: false,
+  },
+  {
+    name: "v2026.10.6 operator-linked parent (trusted policy, no requester)",
+    job: job({ ...linked, scheduledToolPolicy: { mode: "trusted" } } as Partial<CronStoredJob>),
+    senderIsOwner: undefined,
   },
 ] as const;
 
