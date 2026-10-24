@@ -27,10 +27,21 @@ vi.mock("../state/user-profile-list.js", async (importOriginal) => ({
     return { assertCurrent };
   },
 }));
+// A stand-in for the plugin-provided standing-intents tool, which needs an
+// explicit owner identity that no scheduled run carries.
+const intentTools = vi.hoisted(() => () => [
+  {
+    name: "intent",
+    label: "Intent",
+    description: "Standing intents.",
+    parameters: { type: "object", properties: {} },
+    execute: async () => ({ content: [{ type: "text", text: "intent ok" }], details: {} }),
+  },
+]);
 vi.mock("../agents/openclaw-plugin-tools.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../agents/openclaw-plugin-tools.js")>()),
-  resolveOpenClawPluginToolsForOptions: () => [],
-  resolveOpenClawPluginToolsForOptionsAsync: async () => [],
+  resolveOpenClawPluginToolsForOptions: () => intentTools(),
+  resolveOpenClawPluginToolsForOptionsAsync: async () => intentTools(),
 }));
 
 // Owner-only tools that pass their gate stop at the in-process Gateway, which refuses.
@@ -43,6 +54,8 @@ vi.mock("../agents/tools/in-process-gateway.js", async (importOriginal) => ({
 
 const { createOpenClawCodingToolsInternalAsync } = await import("../agents/agent-tools.js");
 const { resolveGatewayScopedTools } = await import("../gateway/tool-resolution.js");
+const { createAdmittedHostCapabilityTestFixture } =
+  await import("../agents/harness/host-capability.test-support.js");
 const { admitScheduledOccurrence } = await import("./execution-context-admission.js");
 const { resolveScheduledSenderBit } = await import("./execution-context-registry.js");
 const { prepareCronRunAdmission } = await import("./run-admission.js");
@@ -174,7 +187,10 @@ async function admitRun(stored: CronStoredJob) {
   };
 }
 
-type Run = Awaited<ReturnType<typeof admitRun>>;
+// The admitted run, with the sender bit widened so a control can pass an explicit owner.
+type Run = Omit<Awaited<ReturnType<typeof admitRun>>, "senderIsOwner"> & {
+  senderIsOwner?: boolean;
+};
 
 // The embedded attempt builds its tools from the run's sender bit.
 async function embeddedTools(run: Run) {
@@ -193,9 +209,42 @@ async function embeddedTools(run: Run) {
       includeShellTools: false,
       includeChannelTools: false,
       includeOpenClawTools: true,
-      includePluginTools: false,
+      includePluginTools: true,
     },
   });
+}
+
+// Codex builds its dynamic tools through the harness host from the same attempt bit;
+// the host stays open while the tools are probed.
+async function codexOwnerOnly(run: Run) {
+  const host = await createAdmittedHostCapabilityTestFixture({
+    runId: "codex-run",
+    agentId: "main",
+    sessionId: "run-session",
+    sessionKey: RUN_KEY,
+    workspaceDir: "/workspace",
+    config: CFG,
+  });
+  try {
+    const tools =
+      (await host.hostCapabilities.createToolSurfaceAsync?.({
+        sessionKey: RUN_KEY,
+        trigger: "cron",
+        jobId: "job-1",
+        ...(run.senderIsOwner !== undefined ? { senderIsOwner: run.senderIsOwner } : {}),
+        toolConstructionPlan: {
+          includeBaseCodingTools: false,
+          includeShellTools: false,
+          includeChannelTools: false,
+          includeOpenClawTools: true,
+          includePluginTools: true,
+        },
+      })) ?? [];
+    return await callableOwnerOnly(tools);
+  } finally {
+    host.closeHost();
+    host.closeAdmission();
+  }
 }
 
 // The CLI grant coerces the run's bit to a boolean; the loopback resolves the tools.
@@ -235,18 +284,22 @@ async function callableOwnerOnly(tools: readonly AnyAgentTool[]) {
 
 describe("scheduled owner authority", () => {
   it.each(PRINCIPALS)(
-    "$name gets the same owner-only tools on embedded and CLI runs",
+    "$name gets the same owner-only tools on embedded, Codex and CLI runs",
     async (principal) => {
       seedParent();
       profile.current = "profileCurrent" in principal ? principal.profileCurrent : true;
       const run = await admitRun(principal.job);
       expect(run.senderIsOwner).toBe(principal.senderIsOwner);
       const embedded = await callableOwnerOnly(await embeddedTools(run));
+      const codex = await codexOwnerOnly(run);
       const cli = await callableOwnerOnly(await cliTools(run));
+      expect(codex).toEqual(embedded);
       // The CLI loopback has no self-scoped automations grant yet (phase 4); every
       // other owner-only decision matches the embedded run.
       expect(cli).not.toContain(AUTOMATIONS_TOOL_NAME);
       expect(cli).toEqual(embedded.filter((name) => name !== AUTOMATIONS_TOOL_NAME));
+      // No scheduled run carries the explicit owner identity standing intents need.
+      expect(embedded).not.toContain("intent");
       if (principal.senderIsOwner === false) {
         // A non-owner requester keeps only the scoped sessions and automations grants.
         expect(embedded).toEqual([AUTOMATIONS_TOOL_NAME, "sessions"]);
@@ -256,6 +309,18 @@ describe("scheduled owner authority", () => {
       run.settle();
     },
   );
+
+  it("offers the intent stand-in only to an explicit owner identity", async () => {
+    seedParent();
+    const run = await admitRun(job({ ...linked, createdActor: PROFILE }));
+    // Control: the same construction with an explicit owner bit offers intent, so its
+    // absence above is the sender bit, not the fixture.
+    const explicitOwner = await callableOwnerOnly(
+      await embeddedTools({ ...run, senderIsOwner: true }),
+    );
+    expect(explicitOwner).toContain("intent");
+    run.settle();
+  });
 
   it("refuses an owner-only call once the requester stops being an owner mid-run", async () => {
     seedParent();
