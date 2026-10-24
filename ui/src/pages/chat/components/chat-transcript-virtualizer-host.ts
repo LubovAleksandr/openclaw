@@ -178,6 +178,14 @@ export class ChatSessionVirtualizerHost implements ChatTranscriptSession {
       () => this.virtualizer,
       (range) => this.prependAnchor.extractRange(range, this.rowIndexesByKey, this.focusedRowKey),
       invalidate,
+      // Resumed overscan prepends estimated rows above the painted tail.
+      // Its first measurement must preserve that visible message.
+      () =>
+        this.prependAnchor.capture(
+          this.scrollElement,
+          this.offsetState.positionClaimed || this.offsetState.touchActive,
+          true,
+        ),
     );
     this.mcpAppUnmountGate = createMcpAppUnmountGate(invalidate);
     this.positionRail = createPositionRailGutter(
@@ -246,11 +254,7 @@ export class ChatSessionVirtualizerHost implements ChatTranscriptSession {
       () => this.scrollElement,
       this.virtualizer,
       () => this.rowRefs.elements,
-      () => {
-        if (!this.initialRange.pending) {
-          this.offsetState.syncNativeOffset?.();
-        }
-      },
+      () => !this.initialRange.pending && this.offsetState.syncNativeOffset?.(),
     );
     this.rowRefs = new TranscriptRowRefs(this.virtualizer, {
       isCurrentRow: (element, key) =>
@@ -488,11 +492,7 @@ export class ChatSessionVirtualizerHost implements ChatTranscriptSession {
         if (capturePrepend) {
           this.prependAnchor.capture(
             this.scrollElement,
-            Boolean(
-              this.offsetState.pendingScrollOffset ||
-              this.offsetState.scrollCommand ||
-              this.offsetState.pendingInteractionAnchor,
-            ),
+            this.offsetState.positionClaimed,
             // A peer append can add attribution above a bubble inside an
             // existing run row. Row-height compensation alone cannot hold it.
             rowModelChanged && !this.canAutoFollow(),

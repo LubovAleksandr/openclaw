@@ -11,6 +11,7 @@ export class TranscriptInitialRange {
     private readonly virtualizer: () => Virtualizer<HTMLDivElement, HTMLElement>,
     private readonly normalRange: (range: Range) => number[],
     private readonly invalidate: () => void,
+    private readonly beforeDeferredResume: () => void,
   ) {
     this.tailRows = initialOffset === null ? 1 : 0;
   }
@@ -65,7 +66,14 @@ export class TranscriptInitialRange {
     cancelLayout(this);
     if (afterPaint) {
       // Paint the measured viewport before preparing the ordinary offscreen overscan.
-      scheduleLayout(this, () => () => scheduleLayout(this, () => resumeOverscan));
+      scheduleLayout(
+        this,
+        () => () =>
+          scheduleLayout(this, () => {
+            this.beforeDeferredResume();
+            return resumeOverscan;
+          }),
+      );
     } else {
       resumeOverscan();
     }
