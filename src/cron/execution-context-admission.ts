@@ -353,13 +353,15 @@ export async function admitScheduledOccurrence(
         return failedScheduledExecution(error instanceof Error ? error.message : String(error));
       }
       const lease = generation;
-      // A requester-held owner bit is rechecked before owner-only effects; legacy and
-      // non-owner runs have no owner-only tools to guard.
+      // A requester-held owner bit is rechecked before owner-only effects. Legacy and
+      // trusted-policy owners have no requester to recheck; non-owners have no
+      // owner-only tools to guard.
       const operatorAuthority = run.operatorAuthority;
       const ownerRecheck =
         result.status !== "ready" ||
         !result.facts.authority.owner ||
-        result.facts.authority.basis === "legacy"
+        result.facts.authority.basis === "legacy" ||
+        result.facts.authority.basis === "trusted-policy"
           ? undefined
           : operatorSourceRequester
             ? operatorAuthority && (() => operatorAuthority.assertCurrent())

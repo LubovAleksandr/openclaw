@@ -160,7 +160,7 @@ describe("buildScheduledExecutionContext principals", () => {
     });
     const context = ready(stored, facts({ requesterCheck: undefined }));
     expect(context.principal).toMatchObject({ kind: "parent", requester: { kind: "unknown" } });
-    expect(context.authority).toMatchObject({ owner: true, basis: "legacy" });
+    expect(context.authority).toMatchObject({ owner: true, basis: "trusted-policy" });
     expect(context.resources.memory).toMatchObject({ source: "parent", owner: true });
   });
 

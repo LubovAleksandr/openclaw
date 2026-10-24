@@ -47,7 +47,8 @@ type ScheduledDecisionVector = Readonly<{
   automations: "none" | "self" | "self-and-parent-wake" | "unscoped";
   board: string;
   eventTarget: string;
-  memory: "run-session" | "parent";
+  /** The parent's memory as the owner's private memory, or only its conversation. */
+  memory: "run-session" | "parent-owner" | "parent-conversation";
   workspace: "run-session" | "parent-row";
   sandbox: boolean;
   parentState: "ready" | "pause";
@@ -107,7 +108,12 @@ function projectContextDecisions(
     automations: facts.toolPolicy.automations.scope,
     board: facts.resources.boardSessionKey,
     eventTarget: facts.resources.eventTargetSessionKey,
-    memory: facts.resources.memory.source,
+    memory:
+      facts.resources.memory.source === "parent"
+        ? facts.resources.memory.owner
+          ? "parent-owner"
+          : "parent-conversation"
+        : "run-session",
     workspace: facts.resources.workspace.source,
     sandbox: facts.resources.sandbox.required,
     parentState: legacy.parentState,

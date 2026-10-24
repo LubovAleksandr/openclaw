@@ -51,7 +51,13 @@ type ScheduledPlacement = "child" | "in-session" | "detached";
 
 type ScheduledAuthority = Readonly<{
   owner: boolean;
-  basis: "operator-source" | "channel-owner" | "profile-role" | "legacy" | "none";
+  basis:
+    | "operator-source"
+    | "channel-owner"
+    | "profile-role"
+    | "trusted-policy"
+    | "legacy"
+    | "none";
   /** Undefined for ingress turns, which are admitted without a schedule source. */
   admissionSource?: NonNullable<AdmittedRunContext["admissionSource"]>;
 }>;
@@ -294,7 +300,7 @@ function resolveAuthority(
       // get one. Those runs keep the operator surface they had, like an unlinked
       // trusted job. Agent-created jobs with no requester stay non-owners.
       return job.scheduledToolPolicy?.mode === "trusted"
-        ? withSource(true, "legacy")
+        ? withSource(true, "trusted-policy")
         : withSource(false, "none");
     }
     // A missing check fails closed: the caller owns running it each occurrence.
