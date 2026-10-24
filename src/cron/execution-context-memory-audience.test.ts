@@ -106,7 +106,6 @@ async function runOccurrence(job: CronStoredJob) {
       ...owner,
       runId: "run-1",
       runSessionKey: RUN_KEY,
-      operatorAuthorityRestored: false,
     }),
   });
   const admitted = await admission.preparedRunAdmission.admit("embedded");
