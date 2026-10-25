@@ -210,12 +210,15 @@ async function snapshot(page: Page) {
         ? {
             windowListeners: resources.listeners.window,
             documentListeners: resources.listeners.document,
-            windowResizeListeners: resources.listenerTypes.window.resize,
-            windowCaptureScrollListeners: resources.listenerTypes.window.captureScroll,
-            documentCaptureScrollListeners: resources.listenerTypes.document.captureScroll,
+            windowResizeListeners:
+              (resources.listenerTypes.window["resize:bubble"] ?? 0) +
+              (resources.listenerTypes.window["resize:capture"] ?? 0),
+            windowCaptureScrollListeners: resources.listenerTypes.window["scroll:capture"] ?? 0,
+            documentCaptureScrollListeners: resources.listenerTypes.document["scroll:capture"] ?? 0,
             documentCapturePointerdownListeners:
-              resources.listenerTypes.document.capturePointerdown,
-            documentCaptureKeydownListeners: resources.listenerTypes.document.captureKeydown,
+              resources.listenerTypes.document["pointerdown:capture"] ?? 0,
+            documentCaptureKeydownListeners:
+              resources.listenerTypes.document["keydown:capture"] ?? 0,
             windowCallbacks: resources.listenerCallbacks.window,
             documentCallbacks: resources.listenerCallbacks.document,
             activeResizeObservers: resources.observers.ResizeObserver.active,
@@ -665,13 +668,16 @@ export async function exerciseWorkboardResourceFixture(
         const resources = read() as ControlUiResourceCounts;
         return (
           document.querySelectorAll(":popover-open").length === 0 &&
-          resources.listenerTypes.window.resize === expected.windowResizeListeners &&
-          resources.listenerTypes.window.captureScroll === expected.windowCaptureScrollListeners &&
-          resources.listenerTypes.document.captureScroll ===
+          (resources.listenerTypes.window["resize:bubble"] ?? 0) +
+            (resources.listenerTypes.window["resize:capture"] ?? 0) ===
+            expected.windowResizeListeners &&
+          (resources.listenerTypes.window["scroll:capture"] ?? 0) ===
+            expected.windowCaptureScrollListeners &&
+          (resources.listenerTypes.document["scroll:capture"] ?? 0) ===
             expected.documentCaptureScrollListeners &&
-          resources.listenerTypes.document.capturePointerdown ===
+          (resources.listenerTypes.document["pointerdown:capture"] ?? 0) ===
             expected.documentCapturePointerdownListeners &&
-          resources.listenerTypes.document.captureKeydown ===
+          (resources.listenerTypes.document["keydown:capture"] ?? 0) ===
             expected.documentCaptureKeydownListeners
         );
       }, mounted);

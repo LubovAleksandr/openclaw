@@ -19,6 +19,10 @@ import type { ProjectionFamily } from "../../ui/src/test-helpers/control-ui-proj
 import { mcpResourceHtml } from "../../ui/src/test-helpers/control-ui-team-scale-widget-html.ts";
 import { cronListResponseFixture } from "../../ui/src/test-helpers/cron.ts";
 import { meetingStatus } from "../../ui/src/test-helpers/transcripts.test-support.ts";
+import {
+  browserResourceMethodResponses,
+  createBrowserResourceScenarios,
+} from "./control-ui-browser-resource-scenarios.ts";
 import { runProjectionFixture } from "./control-ui-projection-fixtures.ts";
 import type { ControlUiResourceCounts } from "./control-ui-resource-counts.ts";
 import {
@@ -71,6 +75,7 @@ type InteractionFixtureOptions = {
   boardFrameResources?: boolean;
   canvasFrameRetention?: boolean;
   mcpAppResources?: boolean;
+  browserResources?: boolean;
 };
 
 type TranscriptPlatformSnapshot = {
@@ -305,7 +310,8 @@ export function createInteractionFixture(
     ...(options.nativeBoardResources ||
     options.progressCardClocks ||
     options.boardFrameResources ||
-    options.mcpAppResources
+    options.mcpAppResources ||
+    options.browserResources
       ? {
           featureMethods: [
             ...defaultControlUiFeatureMethods,
@@ -316,11 +322,17 @@ export function createInteractionFixture(
               ? ["progressCard.get", "sessions.list"]
               : []),
             ...(options.mcpAppResources ? ["board.widget.appView", "mcp.app.view"] : []),
+            ...(options.browserResources ? ["browser.dashboard.request"] : []),
           ],
-          ...(options.nativeBoardResources || options.progressCardClocks
+          ...(options.nativeBoardResources || options.progressCardClocks || options.browserResources
             ? {
                 controlUiWidgetKinds: [
-                  { pluginId: "session", kind: "session:progress", label: "Session progress" },
+                  ...(options.nativeBoardResources || options.progressCardClocks
+                    ? [{ pluginId: "session", kind: "session:progress", label: "Session progress" }]
+                    : []),
+                  ...(options.browserResources
+                    ? [{ pluginId: "browser", kind: "browser:dashboard", label: "Browser" }]
+                    : []),
                 ],
               }
             : {}),
@@ -361,6 +373,7 @@ export function createInteractionFixture(
       contextWindow: 128_000,
     })),
     methodResponses: {
+      ...(options.browserResources ? browserResourceMethodResponses() : {}),
       ...(options.mcpAppResources
         ? {
             "board.get": {
@@ -616,8 +629,20 @@ async function prepareChat(page: Page) {
   await frames(page);
 }
 
-async function openInteractionDashboard(page: Page) {
-  await prepareChat(page);
+async function openInteractionPanel(
+  page: Page,
+  panel: "Dashboard" | "Browser" = "Dashboard",
+  sessionIndex: 0 | 1 = 0,
+) {
+  if (sessionIndex === 0) {
+    await prepareChat(page);
+  } else {
+    await page
+      .locator(activePane)
+      .getByText("Transcript 1 message 399.", { exact: false })
+      .waitFor();
+    await frames(page);
+  }
   const pane = page.locator(activePane);
   const mobileHeader = pane.locator(".agent-chat__header--mobile");
   const mobile = await mobileHeader.isVisible();
@@ -633,7 +658,7 @@ async function openInteractionDashboard(page: Page) {
     await host.getByRole("button", { name: "Panels", exact: true }).click();
     await host
       .locator(".chat-panel-launcher-mobile")
-      .getByRole("button", { name: "Dashboard", exact: true })
+      .getByRole("button", { name: panel, exact: true })
       .click();
   } else {
     if ((await toggle.getAttribute("aria-expanded")) !== "true") {
@@ -644,7 +669,7 @@ async function openInteractionDashboard(page: Page) {
       .getByRole("button")
       .filter({
         has: page
-          .getByText("Dashboard", { exact: true })
+          .getByText(panel, { exact: true })
           .and(page.locator(".side-panel-type-option__label")),
       })
       .click();
@@ -691,7 +716,7 @@ async function waitForMcpResourceContexts(page: Page) {
 }
 
 async function prepareMcpResources(page: Page) {
-  await openInteractionDashboard(page);
+  await openInteractionPanel(page);
   for (let index = 0; index < mcpResourceCount; index++) {
     const inner = mcpResourceFrame(page, index).contentFrame().frameLocator("iframe");
     await clickBoardWidgetControl(page, inner.getByRole("button", { name: "Count", exact: true }));
@@ -742,7 +767,7 @@ async function resizeMcpResources(
 }
 
 async function prepareNativeBoard(page: Page, gateway: MockGatewayControls) {
-  await openInteractionDashboard(page);
+  await openInteractionPanel(page);
   await gateway.waitForRequest("board.get", { match: { sessionKey: sessionKeys[0] } });
   await page.waitForFunction((expected) => {
     const widgets = [
@@ -806,7 +831,7 @@ async function selectResourceBoardTab(page: Page, tab: "main" | "second") {
 }
 
 async function prepareResourceBoard(page: Page) {
-  await openInteractionDashboard(page);
+  await openInteractionPanel(page);
   await waitForResourceBoardTab(page, "main");
   const first = resourceBoardFrame(page, "main-0");
   await clickBoardWidgetControl(
@@ -1533,7 +1558,26 @@ async function searchModels(page: Page) {
   );
 }
 
+async function prepareProviderUsage(page: Page) {
+  const summary = page.locator('[data-provider-id="openai"] .provider-row__summary');
+  await summary.waitFor();
+  if ((await summary.getAttribute("aria-expanded")) !== "true") {
+    await summary.click();
+  }
+  await page.locator(".provider-usage__window").first().waitFor();
+}
+
 export const interactionScenarios: readonly InteractionScenario[] = [
+  ...createBrowserResourceScenarios({
+    route: controlUiSessionPath(sessionKeys[0]),
+    openPanel: openInteractionPanel,
+    switchSession,
+    prepare: settleSidebarBackgroundWork,
+    settle: async (page) => {
+      await frames(page);
+      await settleSidebarCapture(page);
+    },
+  }),
   ...(["sdk-avatars", "sdk-avatar-identities"] as const).map((family): InteractionScenario => ({
     id: `projection-${family}`,
     route: controlUiSessionPath(sessionKeys[0]),
@@ -1722,7 +1766,7 @@ export const interactionScenarios: readonly InteractionScenario[] = [
       await settleSidebarBackgroundWork(page);
     },
     run: async (page) => {
-      await openInteractionDashboard(page);
+      await openInteractionPanel(page);
       await waitForResourceBoardTab(page, "main");
       const count = await page.locator(boardFrameSelector).count();
       if (count !== 3) {
@@ -2004,19 +2048,89 @@ export const interactionScenarios: readonly InteractionScenario[] = [
     expected: "Refreshing provider usage retains the plan windows and billing rows.",
     rowSelector:
       ".provider-usage__group, .provider-usage__window, .provider-usage__row, .provider-usage__chip",
-    prepare: async (page) => {
-      const summary = page.locator('[data-provider-id="openai"] .provider-row__summary');
-      await summary.waitFor();
-      if ((await summary.getAttribute("aria-expanded")) !== "true") {
-        await summary.click();
-      }
-      await page.locator(".provider-usage__window").first().waitFor();
-    },
+    prepare: prepareProviderUsage,
     run: async (page, gateway) => {
       const after = (await gateway.getRequests("usage.status")).length;
       await page.getByRole("button", { name: "Refresh", exact: true }).click();
       await gateway.waitForRequest("usage.status", { after });
       await frames(page);
+    },
+  },
+  {
+    id: "provider-model-picker-open-search",
+    route: pathForRoute("model-providers"),
+    expected:
+      "The generic 1,000-model primary picker filters to Warm model 0999, closes without saving, and returns focus.",
+    prepare: async (page) => {
+      await prepareProviderUsage(page);
+      const picker = page.locator(".model-providers__defaults openclaw-select-picker").first();
+      const trigger = picker.locator(".picker-select__trigger");
+      await trigger.click();
+      await picker.locator(".picker-select__search").waitFor();
+      await page.waitForFunction(
+        () =>
+          document
+            .querySelector(".model-providers__defaults openclaw-select-picker")
+            ?.querySelectorAll('[role="option"][data-value^="example/model-"]').length === 1_000,
+      );
+      await picker.locator(".picker-select__search").press("Escape");
+      await page.waitForFunction(() => {
+        const hostElement = document.querySelector(
+          ".model-providers__defaults openclaw-select-picker",
+        );
+        const triggerElement = hostElement?.querySelector(".picker-select__trigger");
+        return (
+          triggerElement?.getAttribute("aria-expanded") === "false" &&
+          triggerElement === document.activeElement
+        );
+      });
+    },
+    run: async (page, gateway) => {
+      const picker = page.locator(".model-providers__defaults openclaw-select-picker").first();
+      const trigger = picker.locator(".picker-select__trigger");
+      const selected = await trigger.getAttribute("aria-label");
+      const saves = (await gateway.getRequests("config.patch")).length;
+      await trigger.click();
+      const search = picker.locator(".picker-select__search");
+      await search.waitFor();
+      await page.waitForFunction(
+        () =>
+          document.querySelector(
+            ".model-providers__defaults openclaw-select-picker .picker-select__search",
+          ) === document.activeElement,
+      );
+      await search.pressSequentially(modelQuery);
+      await picker.locator('[role="option"][data-value="example/model-999"]').waitFor();
+      await page.waitForFunction(() => {
+        const hostElement = document.querySelector(
+          ".model-providers__defaults openclaw-select-picker",
+        );
+        return (
+          [...(hostElement?.querySelectorAll<HTMLElement>('[role="option"]') ?? [])].filter(
+            (option) => option.checkVisibility(),
+          ).length === 1
+        );
+      });
+      await search.press("Escape");
+      await page.waitForFunction(() => {
+        const hostElement = document.querySelector(
+          ".model-providers__defaults openclaw-select-picker",
+        );
+        const triggerElement = hostElement?.querySelector(".picker-select__trigger");
+        return (
+          triggerElement?.getAttribute("aria-expanded") === "false" &&
+          triggerElement === document.activeElement &&
+          hostElement?.querySelectorAll('[role="option"]').length === 0
+        );
+      });
+      if (
+        (await trigger.getAttribute("aria-label")) !== selected ||
+        (await gateway.getRequests("config.patch")).length !== saves
+      ) {
+        throw new Error(
+          "Searching and dismissing the provider model picker must preserve its selection without saving",
+        );
+      }
     },
   },
   {

@@ -17,11 +17,11 @@ import {
   controlUiBundledSettingsStorageKey,
   installMockGateway,
   resolvePlaywrightChromiumExecutablePath,
-  startBuiltControlUiE2eServer,
 } from "../ui/src/test-helpers/control-ui-e2e.ts";
 import type { ProjectionFixtureFacts } from "../ui/src/test-helpers/control-ui-projection-fixture-contract.ts";
 import { createControlUiSandboxFixtureServer } from "../ui/src/test-helpers/control-ui-sandbox-fixture-server.ts";
 import { createTeamScaleSidebarListOwner } from "../ui/src/test-helpers/control-ui-sidebar-list-fixture.ts";
+import { startControlUiBenchGatewayServer } from "./lib/control-ui-bench-gateway-server.ts";
 import { mapColdLoadCpuProfile, summarizeCpuProfile } from "./lib/control-ui-cold-load-trace.ts";
 import {
   createInteractionFixture,
@@ -277,6 +277,7 @@ type Result = {
   taskMs?: number;
   layoutMs?: number;
   styleMs?: number;
+  durationBreakdownMs?: Record<string, number>;
   longTasks?: { count: number; totalMs: number; maxMs: number };
   requests?: Record<string, number>;
   scenarioEvidence?: InteractionEvidence;
@@ -313,7 +314,7 @@ const servers: Array<{
   indexSha256: string;
   workboardSource?: Awaited<ReturnType<typeof prepareWorkboardResourceSource>>;
   projectionBuild?: { entry: string; descriptorSha256: string; entrySha256: string };
-  server: Awaited<ReturnType<typeof startBuiltControlUiE2eServer>>;
+  server: Awaited<ReturnType<typeof startControlUiBenchGatewayServer>>;
 }> = [];
 let processWakeupReader: string | undefined;
 let processWakeupSetupError: string | undefined;
@@ -496,7 +497,7 @@ try {
       build,
       indexSha256: createHash("sha256").update(html).digest("hex"),
       projectionBuild,
-      server: await startBuiltControlUiE2eServer(resolved),
+      server: await startControlUiBenchGatewayServer(resolved),
     });
   }
   await writeFile(
@@ -602,12 +603,12 @@ try {
             scenario.observationBrowser && !nativeVisibility
               ? await launchControlUiObservationBrowser({
                   viewport: { width: viewport.width, height: viewport.height },
-                  isMobile: viewport.name === "mobile",
-                  hasTouch: viewport.name === "mobile",
                   artifactDir,
                   artifactPrefix,
                   headless: !values.headed,
                   colorScheme: theme,
+                  isMobile: viewport.name === "mobile",
+                  hasTouch: viewport.name === "mobile",
                 })
               : undefined;
           const ownedBrowserPid = nativeVisibility?.processId ?? observationBrowser?.processId;
@@ -694,7 +695,9 @@ try {
             await cdp.send("Emulation.setCPUThrottlingRate", { rate: cpuThrottle });
             if (
               nativeVisibility &&
-              (scenario.fixture?.boardFrameResources || scenario.fixture?.workboardResources)
+              (scenario.fixture?.boardFrameResources ||
+                scenario.fixture?.browserResources ||
+                scenario.fixture?.workboardResources)
             ) {
               // Native default contexts allow service workers, which hide fixture fetches from page.route.
               await cdp.send("Network.enable");
@@ -754,7 +757,9 @@ try {
             await scenario.prepare(page, gateway);
             if (
               nativeVisibility &&
-              (scenario.fixture?.boardFrameResources || scenario.fixture?.workboardResources)
+              (scenario.fixture?.boardFrameResources ||
+                scenario.fixture?.browserResources ||
+                scenario.fixture?.workboardResources)
             ) {
               await cdp.send("Network.setBypassServiceWorker", { bypass: false });
               await cdp.send("Network.disable");
@@ -1013,6 +1018,11 @@ try {
               }
               result[key] = (after[name] - before[name]) * 1000;
             }
+            result.durationBreakdownMs = Object.fromEntries(
+              Object.entries(after)
+                .filter(([name]) => name.endsWith("Duration"))
+                .map(([name, value]) => [name, (value - before[name]!) * 1000]),
+            );
             result.requests = {};
             for (const request of requestsAfter) {
               result.requests[request.method] = (result.requests[request.method] ?? 0) + 1;

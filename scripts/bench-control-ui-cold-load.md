@@ -1,5 +1,88 @@
 # Team-scale Control UI cold-load benchmark
 
+## Cold route CSS coverage and rendering cost
+
+`bench-control-ui-css.ts` serves already-built base and head bundles through the
+production Gateway HTTP handler with the deterministic team-scale RPC fixture.
+It serially interleaves base, identical-base control, and head (reversing the
+triplet on alternating pairs), using a fresh browser context and cold HTTP cache
+for every direct navigation. The default matrix is Chat, New Session, Sessions,
+and Settings Appearance × desktop/mobile × light/dark × 1×/4× CPU. Settings uses
+`/settings/appearance`: desktop `/settings` redirects to Chat. Readiness requires
+the matching successful route, no pending route, the requested theme, and the
+enabled composer plus transcript text, a session table row, or a theme tile, as
+appropriate, across two animation frames. Chat also waits for the visible final
+inline metric's nested sandbox content and fonts. Every route then settles the
+parent document's fonts and two animation frames before stopping metrics, so
+blank embedded fixtures and late font layout cannot look like performance wins.
+Reports retain shell-ready and complete-screen-ready wall times separately.
+The renderer's `threadTicks` clock
+reports script/task/style/layout CPU and style/layout counts; browser navigation
+time to readiness remains wall time. Reports include raw samples, median/p95 and
+range, host load, CSS resource counts/sizes, build identity, and first-pair
+screenshots. The readiness probe's frame/geometry checks and the short CDP
+collection tail are included consistently in every CPU sample.
+
+```sh
+NODE_DISABLE_COMPILE_CACHE=1 node --import ./scripts/tsx.mjs scripts/bench-control-ui-css.ts \
+  --bundle-dir /absolute/base/control-ui --compare-bundle-dir /absolute/head/control-ui \
+  --pairs 10 --output /absolute/proof/css-local
+```
+
+Repeat with `--network-latency-ms 100` for HTTP at 100 ms latency/10 Mbps. Filter
+with `--routes chat,new,sessions,settings`, `--viewports desktop,mobile`,
+`--themes light,dark`, and `--cpu-rates 1,4`. Run a separate `--coverage --pairs 1`
+pass to retain raw stylesheet text and Chromium used ranges through asserted
+readiness; its instrumented timings are not performance evidence. Used ranges
+record rules observed during boot, including earlier transient states, rather
+than proving every selector in a rule matched the final screen. Zero coverage is
+not deletion authority: inactive routes, states, pseudo-classes, media queries,
+and shadow roots require source/consumer audits and their own behavior coverage.
+Screenshots disable animations after measurement; inspect them
+before sharing. Service workers are blocked, immutable server asset caches stay
+warm, and RPC/bootstrap/plugin data are synthetic. HTTP throttling does not add
+RPC latency, so these results describe CSS delivery and renderer cost, not live
+Gateway/provider performance. Use the A/A control and 20 pairs with CPU metrics
+when shared-host wall timings are noisy.
+
+## Cold routes and dependency leaks
+
+`bench-control-ui-route-leaks.ts` visits selected routes in fresh browser contexts,
+with the HTTP cache disabled and service workers blocked. It serves immutable
+production bundles through the Gateway HTTP handler and uses synthetic Gateway
+responses. Coverage runs record requested chunks, source-map modules, import
+initiators, and V8 executed versus unexecuted bytes, including preloaded modules
+that were never evaluated. Requested source bytes and completed/evaluated bytes
+are separate: a preload still transferring at readiness is not a completed load.
+
+```sh
+NODE_DISABLE_COMPILE_CACHE=1 node --import ./scripts/tsx.mjs scripts/bench-control-ui-route-leaks.ts \
+  --bundle-dir /absolute/base/control-ui --compare-bundle-dir /absolute/head/control-ui \
+  --mode coverage --profiles local --output /absolute/proof/routes
+```
+
+Use `--routes sessions,cron,usage` to narrow the inventory. Timing runs are
+separate from coverage instrumentation: `--mode timing --pairs 20 --profiles
+local,remote` interleaves base, a second base control, and head. The remote profile
+adds 100 ms HTTP latency at 10 Mbps; synthetic WebSocket responses have no RTT.
+Reports retain readiness, thread-clock script/task CPU, host load, and each failed
+or unsupported scenario. Usable route readiness requires a loaded route and a
+visible usable control; sharing additionally opens its menu. Compare medians and
+p95 against the A/A control before attributing timing changes on a loaded host.
+
+Use `--routes agents,cron --interactions agents-files,cron-history,cron-transcript`
+for the corresponding follow-through probes. Their automation-to-ready wall and
+CPU intervals are separate from cold readiness; they are not INP measurements.
+Coverage mode also records which requested modules actually evaluated during
+each action. Transcript probing opts into a synthetic completed run and messages.
+Every matching Agents/Cron variant receives at least 2,000 ms of post-ready
+think time, including builds without passive preloads. When the built navigation
+descriptor provides `agents-next` or `cron-next`, the probe also waits for those
+byte preloads. It records the actual warmup wall time and CPU for every variant;
+preload completion may extend the window. Coverage mode records V8 evaluation
+and rejects a panel that evaluates before its action. Cold readiness and
+coverage remain bounded before this optional warmup.
+
 ## Media load, remount, and disposal
 
 `bench-control-ui-media.ts` compares **already-built** base and head bundles with
@@ -498,3 +581,13 @@ node --import ./scripts/tsx.mjs scripts/bench-control-ui-rich-boot.ts \
 
 Omit network latency for localhost; a positive latency also applies 10 Mbps
 throughput. These results cover browser rendering, not provider latency.
+
+The rich-boot report also records Resource Timing phases, negotiated protocol,
+compression/cache response headers, and the Gateway's actual request inventory.
+Use those phases to distinguish connection queueing from response transfer.
+Add `--service-worker` to install the production worker, leave the warm document,
+stop the worker, and clear HTTP, asset, and browser-state caches before each
+measured navigation. Worker fetches receive the same network profile as page
+fetches. The report includes preload state and worker requests; each sample must
+issue exactly one document request. This mode measures a stopped worker with
+cold assets, rather than an already-open tab or an offline-cache hit.
