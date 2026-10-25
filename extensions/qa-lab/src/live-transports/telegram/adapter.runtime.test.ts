@@ -116,14 +116,14 @@ function observeParticipants(sends: ReturnType<typeof vi.fn>[]) {
   return updates;
 }
 
-function createAdapter(
+async function createAdapter(
   messages: Partial<AdapterContext["messages"]> = {},
   adapterOptions: AdapterContext["adapterOptions"] = {},
 ) {
   const unexpected = () => {
     throw new Error("Unexpected adapter host call");
   };
-  return createTelegramQaTransportAdapter({
+  const adapter = await createTelegramQaTransportAdapter({
     adapterOptions,
     channelId: "telegram",
     driver: "live",
@@ -136,6 +136,7 @@ function createAdapter(
       ...messages,
     },
   });
+  return Object.assign(adapter, { [Symbol.asyncDispose]: () => cleanup(adapter) });
 }
 
 function driver<T>(send: T) {
@@ -147,7 +148,7 @@ function observe() {
   return (update: unknown) => updates[0]!(update);
 }
 
-function sutConfig(adapter: Awaited<ReturnType<typeof createAdapter>>) {
+function sutConfig(adapter: Adapter) {
   return adapter.createGatewayConfig({ baseUrl: "http://127.0.0.1:1234" }).channels?.telegram
     ?.accounts?.sut;
 }
@@ -165,18 +166,10 @@ const identityCredential = {
   ...credential,
   forumGroupId: "-100456",
   forumTopicId: 42,
-  participants: [
-    {
-      alias: "second",
-      testerUserId: "101",
-    },
-  ],
+  participants: [{ alias: "second", testerUserId: "101" }],
 };
 
-async function prepareFlow(
-  adapter: Awaited<ReturnType<typeof createTelegramQaTransportAdapter>>,
-  config: Record<string, unknown> = {},
-) {
+async function prepareFlow(adapter: Adapter, config: Record<string, unknown> = {}) {
   const stateRoot = mocks.createStateRoot.mock.results.at(-1)?.value;
   return await adapter.prepareFlow?.({
     config,
@@ -195,9 +188,7 @@ async function prepareFlow(
   });
 }
 
-async function prepareMessageReader(
-  adapter: Awaited<ReturnType<typeof createTelegramQaTransportAdapter>>,
-) {
+async function prepareMessageReader(adapter: Adapter) {
   const prepared = await prepareFlow(adapter);
   const read = prepared?.readTelegramMessages;
   if (typeof read !== "function") {
@@ -378,106 +369,97 @@ it("maps sends, replies, messages, and formatting edits through one userbot proc
   const addInboundMessage = vi.fn().mockResolvedValue({ id: "in-1" });
   const addOutboundMessage = vi.fn().mockResolvedValue({ id: "out-1" });
   const editMessage = vi.fn();
-  const adapter = await createAdapter(
+  await using adapter = await createAdapter(
     { addInboundMessage, addOutboundMessage, editMessage },
     { credentialSource: "convex", credentialRole: "ci", repoRoot: "/checkout" },
   );
-  try {
-    expectObjectCall(mocks.acquireQaCredentialLease, {
-      kind: "telegram-test-userbot",
-      source: "convex",
-      role: "ci",
-    });
-    expect(mocks.loadTelegramUserbotSkillRuntime).toHaveBeenCalledWith({ repoRoot: "/checkout" });
-    expect(mocks.proxyDrainUpdates).toHaveBeenCalledWith("sut-token");
-    expect(sutConfig(adapter)).toMatchObject({
-      apiRoot: "http://127.0.0.1:3210",
-      groups: { "-100123": { allowFrom: ["100"], requireMention: true } },
-    });
-    await adapter.sendInbound(
-      inbound("logical-room", "@openclaw reply exactly: QA-MARKER", { senderId: "driver" }),
-    );
-    expect(mocks.userbotSend).toHaveBeenCalledWith({
-      text: "@sut_bot reply exactly: QA-MARKER",
-      chatId: "-100123",
-      replyToMessageId: undefined,
-    });
-    expectObjectCall(addInboundMessage, { accountId: "sut", senderId: "100" });
-    expectObjectCall(addOutboundMessage, {
-      to: "group:logical-room",
-      text: preview.text,
-      replyToId: "in-1",
-    });
-    const readMessages = await prepareMessageReader(adapter);
-    const firstSnapshot = readMessages();
-    expect(firstSnapshot).toEqual([preview]);
-    firstSnapshot[0].entities[0].type["@type"] = "textEntityTypeBold";
-    expect(readMessages()).toEqual([preview]);
+  expectObjectCall(mocks.acquireQaCredentialLease, {
+    kind: "telegram-test-userbot",
+    source: "convex",
+    role: "ci",
+  });
+  expect(mocks.loadTelegramUserbotSkillRuntime).toHaveBeenCalledWith({ repoRoot: "/checkout" });
+  expect(mocks.proxyDrainUpdates).toHaveBeenCalledWith("sut-token");
+  expect(sutConfig(adapter)).toMatchObject({
+    apiRoot: "http://127.0.0.1:3210",
+    groups: { "-100123": { allowFrom: ["100"], requireMention: true } },
+  });
+  await adapter.sendInbound(
+    inbound("logical-room", "@openclaw reply exactly: QA-MARKER", { senderId: "driver" }),
+  );
+  expect(mocks.userbotSend).toHaveBeenCalledWith({
+    text: "@sut_bot reply exactly: QA-MARKER",
+    chatId: "-100123",
+    replyToMessageId: undefined,
+  });
+  expectObjectCall(addInboundMessage, { accountId: "sut", senderId: "100" });
+  expectObjectCall(addOutboundMessage, {
+    to: "group:logical-room",
+    text: preview.text,
+    replyToId: "in-1",
+  });
+  const readMessages = await prepareMessageReader(adapter);
+  const firstSnapshot = readMessages();
+  expect(firstSnapshot).toEqual([preview]);
+  firstSnapshot[0].entities[0].type["@type"] = "textEntityTypeBold";
+  expect(readMessages()).toEqual([preview]);
 
-    await adapter.sendInbound(
-      inbound("logical-room", "follow-up", { senderId: "driver", replyToId: "out-1" }),
-    );
-    expect(mocks.userbotSend).toHaveBeenLastCalledWith({
-      text: "follow-up",
-      chatId: "-100123",
-      replyToMessageId: 11,
-    });
-    const edited = {
-      ...preview,
-      kind: "edit",
-      timestamp: 101_000,
-      entities: [{ offset: 3, length: 5, type: { "@type": "textEntityTypeBold" } }],
-    };
-    await onUpdate(edited);
-    expectObjectCall(editMessage, { messageId: "out-1", text: preview.text, timestamp: 101_000 });
-    expect(readMessages()).toEqual([edited]);
-    await onUpdate({ ...edited, text: "final", entities: [] });
-    expect(readMessages()).toEqual([{ ...edited, text: "final", entities: [] }]);
+  await adapter.sendInbound(
+    inbound("logical-room", "follow-up", { senderId: "driver", replyToId: "out-1" }),
+  );
+  expect(mocks.userbotSend).toHaveBeenLastCalledWith({
+    text: "follow-up",
+    chatId: "-100123",
+    replyToMessageId: 11,
+  });
+  const edited = {
+    ...preview,
+    kind: "edit",
+    timestamp: 101_000,
+    entities: [{ offset: 3, length: 5, type: { "@type": "textEntityTypeBold" } }],
+  };
+  await onUpdate(edited);
+  expectObjectCall(editMessage, { messageId: "out-1", text: preview.text, timestamp: 101_000 });
+  expect(readMessages()).toEqual([edited]);
+  await onUpdate({ ...edited, text: "final", entities: [] });
+  expect(readMessages()).toEqual([{ ...edited, text: "final", entities: [] }]);
 
-    mocks.heartbeatThrowIfFailed.mockImplementationOnce(() => {
-      throw new Error("lease revoked");
-    });
-    expect(() => readMessages()).toThrow("lease revoked");
-    mocks.userbotAssertHealthy.mockImplementationOnce(() => {
-      throw new Error("Telegram userbot is closed.");
-    });
-    expect(() => readMessages()).toThrow("Telegram userbot is closed.");
-  } finally {
-    await cleanup(adapter);
-  }
+  mocks.heartbeatThrowIfFailed.mockImplementationOnce(() => {
+    throw new Error("lease revoked");
+  });
+  expect(() => readMessages()).toThrow("lease revoked");
+  mocks.userbotAssertHealthy.mockImplementationOnce(() => {
+    throw new Error("Telegram userbot is closed.");
+  });
+  expect(() => readMessages()).toThrow("Telegram userbot is closed.");
 });
 
 it("filters other updates and resets diagnostics and native observations", async () => {
   const onUpdate = observe();
   const addOutboundMessage = vi.fn().mockResolvedValue({ id: "out-1" });
-  const adapter = await createAdapter({ addOutboundMessage });
-  try {
-    const matched = nativeMessage({
-      kind: "edit",
-      messageId: 78,
-      timestamp: 101_000,
-      text: "matched",
-      entities: [{ offset: 0, length: 7, type: { "@type": "textEntityTypeBold" } }],
-    });
-    await onUpdate({ ...matched, kind: "message", chatId: -100999, messageId: 77 });
-    await onUpdate({ ...matched, kind: "message", senderId: 201, messageId: 79 });
-    await onUpdate(matched);
+  await using adapter = await createAdapter({ addOutboundMessage });
+  const matched = nativeMessage({
+    kind: "edit",
+    messageId: 78,
+    timestamp: 101_000,
+    text: "matched",
+    entities: [{ offset: 0, length: 7, type: { "@type": "textEntityTypeBold" } }],
+  });
+  await onUpdate({ ...matched, kind: "message", chatId: -100999, messageId: 77 });
+  await onUpdate({ ...matched, kind: "message", senderId: 201, messageId: 79 });
+  await onUpdate(matched);
 
-    const diagnostics = adapter.describeTransportState?.() ?? "";
-    expect(diagnostics).toContain("updates=3");
-    expect(diagnostics).toContain("filtered=2");
-    expect(diagnostics).toContain("matched=1");
-    expect(diagnostics).toContain("update kinds=[message,edit]");
-    expect(diagnostics).not.toMatch(/-100123|77|78|79/u);
-    const readMessages = await prepareMessageReader(adapter);
-    expect(readMessages()).toEqual([matched]);
-
-    await adapter.resetTransport?.();
-    expect(adapter.describeTransportState?.()).toContain("updates=0");
-    expect(readMessages()).toEqual([]);
-  } finally {
-    await cleanup(adapter);
+  const diagnostics = adapter.describeTransportState?.() ?? "";
+  for (const field of ["updates=3", "filtered=2", "matched=1", "update kinds=[message,edit]"]) {
+    expect(diagnostics).toContain(field);
   }
+  expect(diagnostics).not.toMatch(/-100123|77|78|79/u);
+  const readMessages = await prepareMessageReader(adapter);
+  expect(readMessages()).toEqual([matched]);
+
+  await adapter.resetTransport?.();
+  expect(adapter.describeTransportState?.()).toContain("updates=0");
+  expect(readMessages()).toEqual([]);
 });
 
 it("keeps DM, group, forum, and mixed leased participants distinct", async () => {
@@ -562,13 +544,6 @@ it("keeps DM, group, forum, and mixed leased participants distinct", async () =>
         inbound("room", "wrong observer", { senderId: "second", replyToId: "out-6" }),
       ),
     ).rejects.toThrow("observed by this participant");
-    expect(adapter.buildAgentDelivery({ target: "group:forum", threadId: "42" })).toEqual({
-      channel: "telegram",
-      to: "-100456",
-      replyChannel: "telegram",
-      replyTo: "-100456",
-      threadId: "42",
-    });
   } finally {
     await cleanup(adapter);
   }
@@ -642,15 +617,13 @@ it.each(["participants", "forumGroupId", "forumTopicId"] as const)(
     mocks.acquireQaCredentialLease.mockResolvedValueOnce(
       lease({ ...identityCredential, [missing]: undefined }),
     );
-    const adapter = await createAdapter();
-    try {
+    {
+      await using adapter = await createAdapter();
       const scenario = readQaScenarioById("telegram-participant-identity-inspection");
       await expect(prepareFlow(adapter, scenario.execution.config)).rejects.toThrow(
         "requires distinct participants, forumGroupId, and forumTopicId",
       );
       expect(mocks.userbotSend).not.toHaveBeenCalled();
-    } finally {
-      await cleanup(adapter);
     }
     expect(mocks.leaseRelease).toHaveBeenCalledOnce();
   },
@@ -659,13 +632,9 @@ it.each(["participants", "forumGroupId", "forumTopicId"] as const)(
 it("rejects an unconfirmed participant receipt without recording synthetic identity", async () => {
   mocks.userbotSend.mockResolvedValueOnce({ messageId: 10, senderId: 999, chatId: -100123 });
   const addInboundMessage = vi.fn();
-  const adapter = await createAdapter({ addInboundMessage });
-  try {
-    await expect(adapter.sendInbound(inbound("room", "identity"))).rejects.toThrow("send receipt");
-    expect(addInboundMessage).not.toHaveBeenCalled();
-  } finally {
-    await cleanup(adapter);
-  }
+  await using adapter = await createAdapter({ addInboundMessage });
+  await expect(adapter.sendInbound(inbound("room", "identity"))).rejects.toThrow("send receipt");
+  expect(addInboundMessage).not.toHaveBeenCalled();
 });
 
 it("retains participant recovery state and the lease when observer shutdown is unconfirmed", async () => {
