@@ -2,8 +2,10 @@ import type { Page } from "playwright";
 import { expect, it } from "vitest";
 import { BUILTIN_THEME_IDS } from "../../../packages/gateway-protocol/src/theme-ids.ts";
 import { resolveTheme, type ThemeName } from "../app/theme.ts";
+import { evaluateControlUiContext } from "../test-helpers/control-ui-e2e-context.ts";
 import {
   controlUiBundledGatewayUrl,
+  waitForControlUiRoute,
   type MockGatewayControls,
 } from "../test-helpers/control-ui-e2e.ts";
 import { createImportedCustomThemeFixture } from "../test-helpers/custom-theme.ts";
@@ -75,7 +77,13 @@ suite.define(() => {
       const images = new Map<string, string>();
       const decoded = new Set<string>();
       for (const route of ["new", "chat", "settings/appearance"] as const) {
-        await page.goto(`${suite.server.baseUrl}${route}`);
+        if (route === "new") {
+          await page.goto(`${suite.server.baseUrl}${route}`);
+        } else {
+          const routeId = route === "chat" ? "chat" : "appearance";
+          await evaluateControlUiContext(page, (app, target) => app.navigate(target), routeId);
+          await waitForControlUiRoute(page, { routeId });
+        }
         await gateway.waitForRequest("config.get");
         if (route === "chat") {
           await page

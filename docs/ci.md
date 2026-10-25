@@ -116,6 +116,11 @@ complete discovery, runtime ownership, and first-shard WebKit selection.
 Two-shard trials did not reduce measured runner minutes and exceeded the
 critical-path budget.
 
+Compact mocked Control UI E2E uses four 16-class jobs with six workers each,
+retaining 24 aggregate worker slots while removing two checkouts and setups.
+Private source-server projects stay serial. The conditional browser-extension
+row, noncompact plans, and real-Gateway worker limits retain their existing rules.
+
 The mocked Control UI sharder keeps five measured source fixtures that need
 compiled subprocesses together in one existing shard. Their combined timing
 weight participates in normal packing, so preparation is shared without adding
@@ -293,6 +298,8 @@ The WebKit project requires every selected assertion to pass, with no expected-f
 Linux baseline ratchets and native grep tests reuse an existing `rg` or download the checksum-pinned ripgrep 15.2.0 release directly into the runner's temporary directory. Setup does not use apt, sudo, package-index refreshes, or package-manager locks. The small archive download has bounded retries and transfer timeouts; unsupported architectures and checksum failures fail the job.
 
 Browser extension CI launches the installed, patched Chrome MCP dependency directly, on Node and on the pinned Bun fork.
+
+When an ordinary PR, push, or scheduled run already selects the public artifact build, current-target Control UI locale checks share that job's checkout and dependency setup. Source verification and locale parity run before generators, with their result settled after the existing build diagnostics. Source failures remain blocking; generated-locale drift retains its strict or advisory policy. Standalone selections, dispatches, frozen targets, and compatibility targets keep the separate locale job.
 
 When the public artifact build is already selected, current-target browser extension E2E and the selected production deployment fixtures run directly in `build-artifacts`, before mutable built-artifact verifiers. They reuse that exact checkout's public build without an extra checkout, runtime archive, or runner. Native-policy and published-driver consumers wait for this browser proof with the rest of the producer job. Standalone browser selections and frozen targets retain their local runtime build. Real-Gateway fixtures retain their separate private-QA preparation. The sequential Doctor and SQLite built-CLI verifiers opt into the existing validated worker cache to reuse their identical compiled worker graph within the producer job; TUI retains its separate heap configuration and worker preparation.
 

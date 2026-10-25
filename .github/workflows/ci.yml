@@ -215,6 +215,7 @@ jobs:
       run_format_check: ${{ steps.manifest.outputs.run_format_check }}
       compatibility_target: ${{ steps.manifest.outputs.compatibility_target }}
       run_control_ui_i18n: ${{ steps.manifest.outputs.run_control_ui_i18n }}
+      reuse_control_ui_i18n_setup: ${{ steps.manifest.outputs.reuse_control_ui_i18n_setup }}
       strict_control_ui_i18n: ${{ github.event_name == 'workflow_dispatch' && !inputs.release_gate && 'true' || steps.changed_scope.outputs.strict_control_ui_i18n }}
       run_ui_tests: ${{ steps.manifest.outputs.run_ui_tests }}
       run_ui_webkit: ${{ steps.manifest.outputs.run_ui_webkit }}
@@ -1795,6 +1796,7 @@ jobs:
     needs: [preflight]
     if: needs.preflight.outputs.run_build_artifacts == 'true'
     outputs:
+      control_ui_i18n_result: ${{ steps.control_ui_i18n_result.outputs.result }}
       published_driver_artifact_id: ${{ steps.published_driver_package_upload.outputs.artifact-id }}
       published_driver_sha256: ${{ steps.published_driver_package.outputs.sha256 }}
       native_runtime_artifact_id: ${{ steps.native_runtime_upload.outputs.artifact-id }}
@@ -1813,6 +1815,7 @@ jobs:
           WORKFLOW_SHA: ${{ github.workflow_sha }}
         run: *owned_checkout_run
       - name: Setup Node environment
+        id: node_setup
         uses: ./.ci-harness/.github/actions/setup-node-env
         with:
           cache-mode: &cache_mode ${{ needs.preflight.outputs.cache_mode }}
@@ -1821,6 +1824,29 @@ jobs:
           build-all-cache-scope: full
           # Use the physical runner to keep hosted retries store-only.
           dependency-cache: &trusted_dependency_cache ${{ (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) != 'github' && runner.environment == 'self-hosted' && (github.event_name != 'workflow_dispatch' || ((needs.preflight.outputs.node_runner_backend == 'runson' || needs.preflight.outputs.ci_qualification == 'true') && github.run_attempt == 1)) && github.repository == 'openclaw/openclaw' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == 'openclaw/openclaw') && 'true' || 'false' }}
+
+      # Validate the checkout before generators; settle failures after unrelated build proof.
+      - name: Verify Control UI i18n source
+        id: control_ui_i18n_source
+        if: ${{ !cancelled() && needs.preflight.outputs.reuse_control_ui_i18n_setup == 'true' && steps.node_setup.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          COMPATIBILITY_TARGET: ${{ needs.preflight.outputs.compatibility_target }}
+        run: &control_ui_i18n_source_run |
+          if node -e 'process.exit(require("./package.json").scripts?.["ui:i18n:verify"] ? 0 : 1)'; then
+            pnpm ui:i18n:verify
+          elif [[ "$COMPATIBILITY_TARGET" == "true" ]]; then
+            echo "Skipping ui:i18n:verify: unavailable on the selected compatibility target." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "ui:i18n:verify is required for non-compatibility targets." >&2
+            exit 1
+          fi
+
+      - name: Check Control UI locale parity
+        id: control_ui_i18n_parity
+        if: ${{ !cancelled() && needs.preflight.outputs.reuse_control_ui_i18n_setup == 'true' && steps.node_setup.outcome == 'success' }}
+        continue-on-error: true
+        run: &control_ui_i18n_parity_run pnpm ui:i18n:check
 
       - name: Restore dist build cache
         id: dist_build_cache
@@ -2309,6 +2335,25 @@ jobs:
           name: gateway-watch-regression
           path: .local/gateway-watch-regression/
           retention-days: 7
+
+      - name: Record Control UI i18n result
+        id: control_ui_i18n_result
+        if: ${{ !cancelled() && needs.preflight.outputs.reuse_control_ui_i18n_setup == 'true' }}
+        env:
+          SOURCE_RESULT: ${{ steps.control_ui_i18n_source.outcome }}
+          PARITY_RESULT: ${{ steps.control_ui_i18n_parity.outcome }}
+          STRICT_PARITY: ${{ needs.preflight.outputs.strict_control_ui_i18n }}
+        run: |
+          result=failure
+          if [[ "$SOURCE_RESULT" == "success" && ( "$PARITY_RESULT" == "success" || ( "$PARITY_RESULT" == "failure" && "$STRICT_PARITY" != "true" ) ) ]]; then
+            result=success
+          fi
+          echo "result=$result" >> "$GITHUB_OUTPUT"
+          echo "Control UI i18n: source=$SOURCE_RESULT, parity=$PARITY_RESULT, strict=$STRICT_PARITY" >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$result" != "success" ]]; then
+            echo "::error title=Control UI i18n failed::See Verify Control UI i18n source and Check Control UI locale parity above."
+            exit 1
+          fi
 
   control-ui-performance:
     permissions:
@@ -2854,7 +2899,7 @@ jobs:
       contents: read
     name: control-ui-i18n
     needs: [preflight]
-    if: needs.preflight.outputs.run_control_ui_i18n == 'true'
+    if: needs.preflight.outputs.run_control_ui_i18n == 'true' && needs.preflight.outputs.reuse_control_ui_i18n_setup != 'true'
     runs-on: *shared_small_linux_runner
     timeout-minutes: 10
     env:
@@ -2872,20 +2917,12 @@ jobs:
 
       - name: Verify Control UI i18n source
         if: ${{ !cancelled() && steps.node_setup.outcome == 'success' }}
-        run: |
-          if node -e 'process.exit(require("./package.json").scripts?.["ui:i18n:verify"] ? 0 : 1)'; then
-            pnpm ui:i18n:verify
-          elif [[ "$COMPATIBILITY_TARGET" == "true" ]]; then
-            echo "Skipping ui:i18n:verify: unavailable on the selected compatibility target." >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "ui:i18n:verify is required for non-compatibility targets." >&2
-            exit 1
-          fi
+        run: *control_ui_i18n_source_run
 
       - name: Check Control UI locale parity
         if: ${{ !cancelled() && steps.node_setup.outcome == 'success' }}
         continue-on-error: ${{ needs.preflight.outputs.strict_control_ui_i18n != 'true' }}
-        run: pnpm ui:i18n:check
+        run: *control_ui_i18n_parity_run
 
   checks-baseline-ratchets:
     permissions:
@@ -6879,7 +6916,7 @@ jobs:
             checks-ui=${{ needs.checks-ui.result }}|${{ needs.preflight.outputs.run_ui_tests }}
             checks-ui-e2e=${{ needs.checks-ui-e2e.result }}|${{ needs.preflight.outputs.run_ui_e2e == 'true' && needs.preflight.outputs.compatibility_target != 'true' }}
             checks-ui-e2e-real-gateway=${{ needs.checks-ui-e2e-real-gateway.result }}|${{ needs.preflight.outputs.run_ui_real_gateway == 'true' && needs.preflight.outputs.compatibility_target != 'true' }}
-            control-ui-i18n=${{ needs.control-ui-i18n.result }}|${{ needs.preflight.outputs.run_control_ui_i18n }}
+            control-ui-i18n=${{ needs.preflight.outputs.reuse_control_ui_i18n_setup == 'true' && (needs.build-artifacts.outputs.control_ui_i18n_result || 'missing') || needs.control-ui-i18n.result }}|${{ needs.preflight.outputs.run_control_ui_i18n }}
             checks-baseline-ratchets=${{ needs.checks-baseline-ratchets.result }}|${{ needs.preflight.outputs.run_baseline_ratchets }}
             checks-fast-core=${{ needs.checks-fast-core.result }}|${{ needs.preflight.outputs.run_checks_fast_core }}
             qa-smoke-ci-profile=${{ needs.qa-smoke-ci-profile.result }}|${{ needs.preflight.outputs.run_qa_smoke_ci }}

@@ -651,7 +651,7 @@ suite.define(() => {
         const message = `retry this ${phase} first turn`;
         const fileName = `synthetic-${phase}.png`;
         await page.locator(".new-session-page__message").fill(message);
-        await page.locator(".agent-chat__photo-input").setInputFiles({
+        await page.locator(".new-session-page__composer .agent-chat__photo-input").setInputFiles({
           name: fileName,
           mimeType: "image/png",
           buffer: Buffer.from(ONE_PIXEL_PNG_B64, "base64"),
