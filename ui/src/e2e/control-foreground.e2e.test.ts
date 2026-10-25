@@ -35,6 +35,14 @@ async function color(locator: Locator) {
   return (await locator.page().evaluate(resolveRenderedColors, { value })).value;
 }
 
+async function roleColor(target: Locator, token: string) {
+  const value = await target.evaluate(
+    (element, name) => getComputedStyle(element).getPropertyValue(name),
+    token,
+  );
+  return (await target.page().evaluate(resolveRenderedColors, { value })).value;
+}
+
 async function capture(page: Page, name: string, targets: Locator[]) {
   if (!captureProof) {
     return;
@@ -57,9 +65,13 @@ async function capture(page: Page, name: string, targets: Locator[]) {
       ".chat-pane__crumb-sep",
       ".chat-pane__session-title-text",
       ".chat-details-toggle",
+      ".chat-details-toggle svg",
+      ".chat-pane__sharing-trigger svg",
+      ".chat-send-btn--voice > svg",
       ".sidebar-region__panels-toggle .chat-pane__panels-toggle",
       ".side-panel__frame-action",
       ".session-panel-rail__button",
+      ".session-panel-rail__button svg",
       ".sidebar-issues-panel__action",
       ".sidebar-session-toolbar__button",
       ".sidebar-session-group-actions",
@@ -71,6 +83,7 @@ async function capture(page: Page, name: string, targets: Locator[]) {
       ".context-ring__fill",
     ];
     return {
+      hoverCapable: matchMedia("(hover: hover)").matches,
       theme: document.documentElement.dataset.theme,
       mode: document.documentElement.dataset.themeMode,
       modelLabel: document.querySelector(".chat-controls__model-trigger")?.textContent?.trim(),
@@ -85,6 +98,9 @@ async function capture(page: Page, name: string, targets: Locator[]) {
             return {
               selector,
               color: style.color,
+              background: style.backgroundColor,
+              border: style.border,
+              shadow: style.boxShadow,
               stroke: style.stroke,
               opacity: style.opacity,
               expanded: element.getAttribute("aria-expanded"),
@@ -102,12 +118,17 @@ async function capture(page: Page, name: string, targets: Locator[]) {
 }
 
 suite.define(() => {
-  it.each(appearances)(
-    "keeps selected controls neutral in %s %s",
-    async (theme, mode, resolved) => {
+  it.each(
+    appearances.flatMap(([theme, mode, resolved]) =>
+      [false, true].map((hasTouch) => ({ theme, mode, resolved, hasTouch })),
+    ),
+  )(
+    "keeps selected controls neutral in $theme $mode (touch=$hasTouch)",
+    async ({ theme, mode, resolved, hasTouch }) => {
       await suite.withPage(
         {
           colorScheme: mode,
+          hasTouch,
           locale: "en-US",
           serviceWorkers: "block",
           viewport: { width: 1440, height: 900 },
@@ -195,6 +216,23 @@ suite.define(() => {
             page.locator(".sidebar-rail"),
           ]);
           const resting = await color(panels.locator("svg"));
+          const headerInk = await roleColor(header, "--icon-interactive");
+          expect
+            .soft(
+              await color(details.locator("svg")),
+              "resting Details uses the header role for both pointer types",
+            )
+            .toEqual(headerInk);
+          expect
+            .soft(
+              await color(header.locator(".chat-pane__sharing-trigger svg").first()),
+              "private sharing uses the resting header role",
+            )
+            .toEqual(headerInk);
+          const permissionIcon = composer.locator(".chat-controls__permission-icon");
+          expect
+            .soft(await color(permissionIcon), "permission uses the approved interactive role")
+            .toEqual(await roleColor(composer, "--icon-interactive"));
           await details.click();
           await expect.poll(() => details.getAttribute("aria-expanded")).toBe("true");
           await page.mouse.move(700, 500);
@@ -219,8 +257,15 @@ suite.define(() => {
             )
             .toEqual(strong);
           await capture(page, `${resolved}-panels-active`, [header, panels, composer]);
+          await openChatSidePanelType(page, "Files");
+          const rail = page.locator(".session-panel-rail").filter({ visible: true }).first();
+          const railGlyph = rail.locator(".session-panel-rail__button:not(:disabled) svg").first();
+          await railGlyph.waitFor();
+          await page.mouse.move(700, 500);
+          expect
+            .soft(await color(railGlyph), "panel actions use the approved interactive role")
+            .toEqual(await roleColor(rail, "--icon-interactive"));
           if (captureProof) {
-            await openChatSidePanelType(page, "Files");
             const side = page
               .locator('[data-region-header="side"]')
               .filter({ visible: true })
@@ -275,6 +320,16 @@ suite.define(() => {
             const input = page.getByRole("textbox", { name: "Chat composer", exact: true });
             await input.click();
             await capture(page, `${resolved}-mobile`, [composer]);
+            const microphone = composer.locator(
+              ".chat-mobile-dictation-action .chat-send-btn--voice:not(:disabled)",
+            );
+            await microphone.waitFor();
+            expect
+              .soft(
+                await color(microphone.locator("svg")),
+                "mobile microphone inherits its approved button role",
+              )
+              .toEqual(await color(microphone));
           }
         },
       );

@@ -2162,6 +2162,20 @@ html[dir="rtl"] .chat-attachment-loading > span {
   color: var(--icon-interactive, inherit);
 }
 
+@media (hover: none) {
+  .agent-chat__input
+    .chat-controls__permission-trigger--default:not(
+      :focus-visible,
+      [aria-expanded="true"],
+      .chat-controls__permission-trigger--full,
+      :disabled,
+      [aria-disabled="true"]
+    )
+    .chat-controls__permission-icon {
+    color: var(--icon-interactive, inherit);
+  }
+}
+
 .chat-controls__permission-option-state {
   display: inline-flex;
   align-items: center;
@@ -3064,6 +3078,15 @@ html[dir="rtl"] .chat-attachment-loading > span {
   > .chat-controls__effort-trigger:not(:hover, :focus-visible)
   .chat-controls__effort-gauge {
   color: var(--icon-interactive, inherit);
+}
+
+@media (hover: none) {
+  .agent-chat__input
+    .chat-controls__effort-picker:not([open])
+    > .chat-controls__effort-trigger:not(:focus-visible, :disabled, [aria-disabled="true"])
+    .chat-controls__effort-gauge {
+    color: var(--icon-interactive, inherit);
+  }
 }
 
 .chat-controls__effort-gauge-needle {

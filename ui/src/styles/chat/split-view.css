@@ -792,6 +792,20 @@
   color: var(--icon-interactive, inherit);
 }
 
+@media (hover: none) {
+  .chat-pane__sharing-menu--desktop
+    > .btn.chat-pane__sharing-trigger:not(
+      :focus-visible,
+      [aria-expanded="true"],
+      [data-public="true"],
+      :disabled,
+      [aria-disabled="true"]
+    )
+    svg {
+    color: var(--icon-interactive, inherit);
+  }
+}
+
 .chat-pane__sharing-menu--desktop
   > .btn.chat-pane__sharing-trigger:is(:hover:not(:disabled), [aria-expanded="true"]) {
   background: var(--session-header-sharing-hover-bg, var(--bg-hover));

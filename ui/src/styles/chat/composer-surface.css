@@ -1323,6 +1323,12 @@
     opacity: var(--chat-mobile-row-mic-opacity);
     stroke-width: var(--chat-mobile-row-mic-stroke);
   }
+
+  .agent-chat__input--mobile-toolbar
+    .chat-send-btn--voice:not(:disabled, [aria-disabled="true"])
+    > svg {
+    color: inherit;
+  }
 }
 
 /* Short panes spend height on a complete editor line and the action row first.

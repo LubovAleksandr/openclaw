@@ -428,6 +428,30 @@
   }
 }
 
+/* The hover guard excludes resting :not(:hover) rules on touch devices. */
+@media (hover: none) {
+  .chat-pane__header:not(.chat-pane__header--mobile)
+    :is(.chat-icon-btn, .chat-details-toggle, .chat-pane__layout-trigger):not(
+      :focus-visible,
+      [aria-expanded="true"],
+      :disabled,
+      [aria-disabled="true"]
+    ),
+  .sidebar-region__panels-toggle
+    .chat-pane__panels-toggle:not(
+      :focus-visible,
+      [aria-expanded="true"],
+      :disabled,
+      [aria-disabled="true"]
+    ) {
+    color: var(--control-secondary-text, var(--muted));
+
+    svg {
+      color: var(--icon-interactive, inherit);
+    }
+  }
+}
+
 .chat-pane__header:not(.chat-pane__header--mobile) .chat-icon-btn {
   width: 32px;
   min-width: 32px;

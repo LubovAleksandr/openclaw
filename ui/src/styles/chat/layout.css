@@ -3028,6 +3028,13 @@ openclaw-chat-ci-details {
     stroke-width: var(--chat-mobile-row-mic-stroke);
   }
 
+  .agent-chat__input--chat
+    .chat-mobile-dictation-action
+    .chat-send-btn--voice:not(:disabled, [aria-disabled="true"])
+    > svg {
+    color: inherit;
+  }
+
   .agent-chat__input--chat .chat-mobile-dictation-action .chat-send-btn--voice {
     padding: var(--chat-mobile-row-icon-padding);
   }

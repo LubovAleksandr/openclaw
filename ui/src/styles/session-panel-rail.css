@@ -122,6 +122,21 @@
   color: var(--icon-interactive, inherit);
 }
 
+@media (hover: none) {
+  .session-panel-rail
+    .session-panel-rail__button:not(
+      .subagents-desktop__stop,
+      :focus-visible,
+      [aria-expanded="true"],
+      [aria-pressed="true"],
+      :disabled,
+      [aria-disabled="true"]
+    )
+    svg {
+    color: var(--icon-interactive, inherit);
+  }
+}
+
 /* Menu wraps its trigger content; both direct and menu icons share the target. */
 .session-panel-rail[data-presentation="desktop"] .session-panel-rail__button svg,
 .session-panel-rail[data-presentation="desktop"] .session-panel-rail__identity > svg {
