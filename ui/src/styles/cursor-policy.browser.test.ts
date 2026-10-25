@@ -43,29 +43,29 @@ const CURSOR_CASES = [
 
 function readUiCss(): string {
   const css = readStyles(
-    "styles/base",
-    "styles/components",
-    "styles/layout",
-    "styles/sidebar-update-card",
-    "styles/sidebar-issues",
-    "styles/sidebar-markdown",
-    "styles/sessions",
-    "styles/settings-controls",
-    "styles/settings",
-    "styles/agents",
-    "styles/skill-workshop",
-    "styles/rail-header",
-    "styles/chat/startup-layout",
-    "styles/chat/layout",
-    "styles/chat/message-layout",
-    "styles/chat/composer-surface",
-    "styles/chat/composer",
-    "styles/chat/split-view",
-    "styles/chat/text",
+    ...`base components layout sidebar-update-card sidebar-issues
+    sidebar-markdown sessions settings-controls settings agents skill-workshop rail-header
+    chat/startup-layout chat/layout chat/message-layout chat/composer-surface chat/composer
+    chat/split-view chat/text`
+      .split(/\s+/)
+      .map((name) => `styles/${name}`),
   );
   return postcss([controlUiHoverGuardPlugin()]).process(css, { from: undefined }).css;
 }
 
+const classLinks = (classes: string) =>
+  classes
+    .split(/\s+/)
+    .map((name) => `<a class="${name}" href="/fixture">Link</a>`)
+    .join("");
+const contentLinks = (classes: string) =>
+  classes
+    .split(/\s+/)
+    .map(
+      (name) =>
+        `<div class="${name}"><a class="markdown-bare-url" href="https://example.com">Link</a></div>`,
+    )
+    .join("");
 const fixtureDocument =
   () => `<!doctype html><html data-theme-mode="light"><head><style>${readUiCss()}</style></head><body>
     <main>
@@ -86,20 +86,12 @@ const fixtureDocument =
         <a id="chat-button-link" class="btn" href="/new">Chat action</a>
       </div>
       <div class="sidebar-markdown"><a id="sidebar-content-link" href="https://example.com">Sidebar link</a></div>
-      <div class="markdown"><a class="markdown-bare-url" href="https://example.com">Transcript link</a></div>
-      <div class="chat-thinking"><a class="markdown-bare-url" href="https://example.com">Reasoning link</a></div>
-      <div class="markdown-body"><a class="markdown-bare-url" href="https://example.com">Logbook link</a></div>
+      ${contentLinks("markdown chat-thinking markdown-body dreams-diary__para")}
       <div class="chat-position-rail__preview-copy" inert>
         <a class="markdown-bare-url" href="https://example.com">Preview URL</a>
         <a id="preview-github-link" class="markdown-github-link" href="https://github.com/example/project">Preview repository</a>
       </div>
-      <div class="dreams-diary__para"><a class="markdown-bare-url" href="https://example.com">Diary link</a></div>
-      <a class="activity-entry__run-link" href="/activity">Run</a>
-      <a class="settings-row__value" href="https://example.com/docs">Setup documentation</a>
-      <a class="memory-page__link" href="/settings/memory">Memory settings</a>
-      <a class="portals-preview__notice-url" href="https://example.com">Portal address</a>
-      <a class="settings-account" href="https://github.com/example">Account</a>
-      <a class="transcripts-back" href="/meetings">Transcripts</a>
+      ${classLinks("activity-entry__run-link settings-row__value memory-page__link portals-preview__notice-url settings-account transcripts-back")}
       <a id="person-link" class="person-activity-link" href="/activity">Person</a>
       <a id="participant-link" class="session-menu__item learn-more-link session-hovercard__participant-link person-activity-link" href="/activity">Participant</a>
       <aside class="sidebar">
@@ -107,18 +99,13 @@ const fixtureDocument =
         <a class="sidebar-recent-session__link" href="/chat/test"><span class="sidebar-recent-session__name">Session</span></a>
         <a class="sidebar-online__person" href="/activity"><span class="sidebar-online__person-name">Person</span></a>
         <button class="sidebar-online__person" type="button"><span class="sidebar-online__person-name">Viewer</span></button>
-        <a class="sidebar-new-session" href="/new">New group session</a>
-        <a class="sidebar-session-catalog-new" href="/new">New catalog session</a>
-        <a class="sidebar-issues-panel__navigation-link" href="/settings/channels">Channel issue</a>
-        <a class="sidebar-approval-row__open-session" href="/chat/test">Open approval session</a>
+        ${classLinks("sidebar-new-session sidebar-session-catalog-new sidebar-issues-panel__navigation-link sidebar-approval-row__open-session")}
         <a id="sidebar-external-link" href="https://example.com">External link</a>
         <a id="sidebar-new-tab-link" class="nav-item" href="/chat" target="_BLANK">New tab</a>
         <a id="sidebar-new-tab-action" class="nav-item" href="/chat" data-new-tab-action>New window</a>
       </aside>
       <aside class="settings-sidebar">
-        <a class="settings-sidebar__item" href="/settings">Settings</a>
-        <a class="settings-sidebar__subitem" href="/settings#theme">Theme</a>
-        <a class="sidebar-footer-build" href="/settings/about">Build</a>
+        ${classLinks("settings-sidebar__item settings-sidebar__subitem sidebar-footer-build")}
       </aside>
       <div class="sidebar-agent-menu"><div class="sidebar-customize-menu__item"><a id="sidebar-help-link" href="https://example.com/docs" target="_blank">Docs</a></div></div>
       <a id="new-tab-link" class="btn" href="https://example.com/docs" target="_blank">Docs</a>

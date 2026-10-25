@@ -5,18 +5,9 @@ import { readStyles, styleDocument, styleFixture } from "./style-fixture.test-su
 const fixture = styleFixture("chat-file-link-presentation-");
 
 // File-link labels match except for glyph spacing owned by the outer anchor.
-const CHIP_PROPERTIES = [
-  "backgroundColor",
-  "borderTopWidth",
-  "borderTopStyle",
-  "borderTopColor",
-  "borderTopLeftRadius",
-  "paddingTop",
-  "paddingLeft",
-  "fontFamily",
-  "fontSize",
-  "color",
-] as const;
+const CHIP_PROPERTIES =
+  "backgroundColor borderTopWidth borderTopStyle borderTopColor borderTopLeftRadius paddingTop paddingLeft fontFamily fontSize color";
+const GLYPH_PROPERTIES = "fontSize height maskImage paddingInlineStart position width";
 
 // Match styles/chat.ts: sidebar-markdown must load after chat/text.
 function chatDocument(body: string, theme: "dark" | "light") {
@@ -125,7 +116,7 @@ async function probeWrap(themeMode: "dark" | "light", container: WrapContainer) 
     wrapFixtureDocument(themeMode, container),
     (page) =>
       page.evaluate(
-        ({ caseIds, githubIds, properties }) => {
+        ({ caseIds, githubIds, properties, glyphProperties }) => {
           const resolve = (selector: string) => {
             const element = document.querySelector(selector);
             if (!(element instanceof HTMLElement)) {
@@ -133,20 +124,18 @@ async function probeWrap(themeMode: "dark" | "light", container: WrapContainer) 
             }
             return element;
           };
-          const read = (selector: string) => {
-            const css = getComputedStyle(resolve(selector));
-            return Object.fromEntries(properties.map((property) => [property, css[property]]));
-          };
-          const glyph = (selector: string) => {
-            const css = getComputedStyle(resolve(selector), "::before");
-            return {
-              fontSize: css.fontSize,
-              height: css.height,
-              maskImage: css.maskImage,
-              paddingInlineStart: css.paddingInlineStart,
-              position: css.position,
-              width: css.width,
-            };
+          const read = (selector: string, names = properties, pseudo: string | null = null) => {
+            const css = getComputedStyle(resolve(selector), pseudo);
+            return Object.fromEntries(
+              names
+                .split(" ")
+                .map((name) => [
+                  name,
+                  css.getPropertyValue(
+                    name.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`),
+                  ),
+                ]),
+            );
           };
           const measure = (id: string, columnId: string, min: number, max: number) => {
             const element = resolve("#" + id),
@@ -186,12 +175,12 @@ async function probeWrap(themeMode: "dark" | "light", container: WrapContainer) 
           };
           return {
             presentation: {
-              chatGlyph: glyph("#from-text"),
+              chatGlyph: read("#from-text", glyphProperties, "::before"),
               fromCode: read("#from-code > code"),
               fromText: read("#from-text"),
               panelFromCode: read("#panel-from-code > code"),
               panelFromText: read("#panel-from-text"),
-              panelGlyph: glyph("#panel-from-text"),
+              panelGlyph: read("#panel-from-text", glyphProperties, "::before"),
               plainCode: read("#plain-code"),
             },
             samples: measure("wrap-chip", "column", 220, 900),
@@ -208,6 +197,7 @@ async function probeWrap(themeMode: "dark" | "light", container: WrapContainer) 
           caseIds: SEPARATION_CASES.map((row) => row.id),
           githubIds: LINK_FORMS.map((row) => row.id),
           properties: CHIP_PROPERTIES,
+          glyphProperties: GLYPH_PROPERTIES,
         },
       ),
   );
@@ -227,11 +217,20 @@ beforeAll(async () => {
 
 fixture.describe("chat file link presentation", () => {
   it.each(["light", "dark"] as const)(
-    "renders code-authored and text-authored file links identically in %s",
+    "gives authored file labels and glyphs the same treatment in chat and panels in %s",
     (themeMode) => {
-      const { fromCode, fromText } = observation(themeMode).presentation;
+      const { fromCode, fromText, panelFromText, panelFromCode, chatGlyph, panelGlyph } =
+        observation(themeMode).presentation;
       // The anchor reserves glyph space; its nested code label must not reserve it again.
       expect(fromCode).toEqual({ ...fromText, paddingLeft: "0px" });
+      expect([panelFromText, panelFromCode, panelGlyph]).toEqual([fromText, fromCode, chatGlyph]);
+      expect(panelGlyph.maskImage).toContain("svg");
+      expect(chatGlyph).toMatchObject({
+        position: "absolute",
+        width: chatGlyph.fontSize,
+        height: chatGlyph.fontSize,
+        paddingInlineStart: "0px",
+      });
     },
   );
 
@@ -248,42 +247,13 @@ fixture.describe("chat file link presentation", () => {
     },
   );
 
-  it.each(["light", "dark"] as const)(
-    "gives the Chat Detail Panel the same file-link treatment in %s",
-    (themeMode) => {
-      const probed = observation(themeMode).presentation;
-      expect([probed.panelFromText, probed.panelFromCode, probed.panelGlyph]).toEqual([
-        probed.fromText,
-        probed.fromCode,
-        probed.chatGlyph,
-      ]);
-      expect(probed.panelGlyph.maskImage).toContain("svg");
-    },
-  );
-
-  it.each(["light", "dark"] as const)(
-    "gives every masked file glyph a concrete font-sized paint box in %s",
-    (themeMode) => {
-      const { chatGlyph, panelGlyph } = observation(themeMode).presentation;
-      for (const glyph of [chatGlyph, panelGlyph]) {
-        expect(glyph).toMatchObject({
-          position: "absolute",
-          width: glyph.fontSize,
-          height: glyph.fontSize,
-          paddingInlineStart: "0px",
-        });
-      }
-    },
-  );
-
   it.each(WRAP_CASES)(
     "wraps a file link as one unit at every column width in $container/$themeMode",
     ({ container, themeMode }) => {
       const { samples } = observation(themeMode, container);
       // Prove the sweep actually changes lines.
       expect(new Set(samples.map((sample) => Math.round(sample.top))).size).toBeGreaterThan(1);
-      const split = samples.filter((sample) => sample.fragments !== 1);
-      expect(split).toEqual([]);
+      expect(samples.filter((sample) => sample.fragments !== 1)).toEqual([]);
     },
   );
 
@@ -291,13 +261,13 @@ fixture.describe("chat file link presentation", () => {
     "keeps an unshortened file label inside the column in $container/$themeMode",
     ({ container, themeMode }) => {
       const { long, separation } = observation(themeMode, container);
-      const overflowing = long.filter((sample) => sample.width > sample.columnWidth + 0.5);
-      expect(overflowing).toEqual([]);
+      expect(long.filter((sample) => sample.width > sample.columnWidth + 0.5)).toEqual([]);
       expect(long.every((sample) => sample.fragments === 1)).toBe(true);
-      const spilling = Object.values(separation)
-        .flat()
-        .filter((sample) => sample.labelOverflowPx > 0.5);
-      expect(spilling).toEqual([]);
+      expect(
+        Object.values(separation)
+          .flat()
+          .filter((sample) => sample.labelOverflowPx > 0.5),
+      ).toEqual([]);
     },
   );
 
@@ -311,10 +281,9 @@ fixture.describe("chat file link presentation", () => {
         expect(caseSamples.length).toBeGreaterThan(0);
         // Each fixture must wrap; otherwise the attachment check is vacuous.
         expect(caseSamples.some((sample) => sample.wrapped)).toBe(true);
-        const separated = caseSamples.filter(
-          (sample) => sample.glyphToLabelGapPx > sample.lineHeightPx / 2,
-        );
-        expect(separated).toEqual([]);
+        expect(
+          caseSamples.filter((sample) => sample.glyphToLabelGapPx > sample.lineHeightPx / 2),
+        ).toEqual([]);
       }
     },
   );
@@ -339,8 +308,10 @@ fixture.describe("chat GitHub link presentation", () => {
         const collected = samples[id] ?? [];
         // Prove the sweep actually changes lines.
         expect(new Set(collected.map((sample) => sample.markLineTop)).size).toBeGreaterThan(1);
-        const stranded = collected.filter((sample) => !sample.labelStartsMarkLine);
-        expect({ id, stranded }).toEqual({ id, stranded: [] });
+        expect(
+          collected.filter((sample) => !sample.labelStartsMarkLine),
+          id,
+        ).toEqual([]);
         if (kind) {
           // Qualified labels may exceed the column; short references remain unbroken.
           expect(
@@ -353,10 +324,10 @@ fixture.describe("chat GitHub link presentation", () => {
           ).toEqual([]);
         } else {
           // Non-item links fill their starting line instead of moving whole.
-          expect({ id, splits: collected.some((sample) => sample.fragments > 1) }).toEqual({
+          expect(
+            collected.some((sample) => sample.fragments > 1),
             id,
-            splits: true,
-          });
+          ).toBe(true);
         }
       }
     },
