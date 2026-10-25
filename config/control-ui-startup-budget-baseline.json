@@ -1,5 +1,5 @@
 {
-  "startupJsGzipBytes": 271105,
-  "reason": "Large code and diff highlighting cuts renderer CPU 18-70% over 20 counterbalanced localhost pairs and 8-70% at 100 ms asset RTT, with complete source preserved. Same-toolchain c0140ebf comparison: startup 270917 to 271105 B gzip (+188 B), Chat +1735 B, New +98 B; request counts and CSS bytes unchanged. Accept the measured CPU/responsiveness win and ratchet to the measured integrated head.",
+  "startupJsGzipBytes": 271047,
+  "reason": "Per-instance observer/subscription sharing cuts provider script CPU 60.13% median and 61.79% p95, provider task time 15.06% and 13.94%, and retained Tooltip script CPU 92.50% and 92.51%. Same-host integrated 763ae526 to 8a6d6bcf stock builds measure startup 270647 to 271047 B gzip (+400 B), Chat +833 B and New Session +688 B; JS/CSS requests and CSS bytes are unchanged. Record the measured integrated startup value.",
   "updatedAt": "2026-10-25"
 }
