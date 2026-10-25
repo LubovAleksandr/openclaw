@@ -57,6 +57,21 @@ function runAction(overrides: Partial<ActionContext>, fetchImpl: typeof fetch) {
   return withMockedGlobalFetch(fetchImpl, () => actions.handleAction!(action(overrides)));
 }
 
+function readAction(params: ActionContext["params"], fetchImpl: typeof fetch) {
+  return runAction(
+    {
+      action: "read",
+      params: { target: "channel:CURRENT", ...params },
+      cfg: config({ actions: { messages: true } }),
+      accountId: "default",
+      requesterAccountId: "default",
+      conversationReadOrigin: "delegated",
+      toolContext: { currentChannelProvider: "mattermost", currentChannelId: "channel:CURRENT" },
+    },
+    fetchImpl,
+  );
+}
+
 function react(
   params: ActionContext["params"],
   fixture: Partial<Parameters<typeof createMattermostReactionFetchMock>[0]>,
@@ -318,14 +333,12 @@ describe("Mattermost actions", () => {
         },
       },
     });
-    expect(actions.describeMessageTool({ cfg })?.actions).toEqual(["send", "react", "read"]);
-    expect(actions.describeMessageTool({ cfg, accountId: "default" })?.actions).toEqual(["send"]);
-    expect(actions.describeMessageTool({ cfg, accountId: "work" })?.actions).toEqual([
-      "send",
-      "react",
-      "read",
-    ]);
-    expect(actions.describeMessageTool({ cfg, accountId: "broken" })?.actions).toEqual([]);
+    const available = (accountId?: string) =>
+      actions.describeMessageTool({ cfg, accountId })?.actions;
+    expect(available()).toEqual(["send", "react", "read"]);
+    expect(available("default")).toEqual(["send"]);
+    expect(available("work")).toEqual(["send", "react", "read"]);
+    expect(available("broken")).toEqual([]);
     expect(
       actions.describeMessageTool({ cfg: { channels: { mattermost: { enabled: true } } } }),
     ).toMatchObject({ actions: [], capabilities: [] });
@@ -389,21 +402,7 @@ describe("Mattermost actions", () => {
         },
       });
     });
-    const result = await runAction(
-      {
-        action: "read",
-        params: { target: "channel:CURRENT", to: "channel:CURRENT", limit: 2 },
-        cfg: config({ actions: { messages: true } }),
-        accountId: "default",
-        requesterAccountId: "default",
-        conversationReadOrigin: "delegated",
-        toolContext: {
-          currentChannelProvider: "mattermost",
-          currentChannelId: "channel:CURRENT",
-        },
-      },
-      fetchImpl,
-    );
+    const result = await readAction({ to: "channel:CURRENT", limit: 2 }, fetchImpl);
     expect(result.details).toMatchObject({
       ok: true,
       channelId: "CURRENT",
@@ -418,22 +417,8 @@ describe("Mattermost actions", () => {
 
   it("rejects invalid read cursors and limits before provider access", async () => {
     const fetchImpl = vi.fn<typeof fetch>();
-    for (const params of [
-      { target: "channel:CURRENT", before: "p1", after: "p2" },
-      { target: "channel:CURRENT", limit: 0 },
-    ]) {
-      await expect(
-        runAction(
-          {
-            action: "read",
-            params,
-            cfg: config({ actions: { messages: true } }),
-            accountId: "default",
-            conversationReadOrigin: "direct-operator",
-          },
-          fetchImpl,
-        ),
-      ).rejects.toThrow();
+    for (const params of [{ before: "p1", after: "p2" }, { limit: 0 }]) {
+      await expect(readAction(params, fetchImpl)).rejects.toThrow();
     }
     expect(fetchImpl).not.toHaveBeenCalled();
   });
@@ -513,14 +498,10 @@ describe("Mattermost actions", () => {
     });
   });
 
-  it.each([
-    [
-      "multiple media",
-      { media_urls: ["/tmp/one.md", "/tmp/two.md"] },
-      "supports one attachment per message",
-    ],
-  ])("rejects prepared %s attachments", async (_name, params, error) => {
-    await expect(sendPrepared({ params })).rejects.toThrow(error);
+  it("rejects multiple prepared attachments", async () => {
+    await expect(
+      sendPrepared({ params: { media_urls: ["/tmp/one.md", "/tmp/two.md"] } }),
+    ).rejects.toThrow("supports one attachment per message");
     expect(sendMessageMattermostMock).not.toHaveBeenCalled();
   });
 });
@@ -559,8 +540,7 @@ describe("Mattermost outbound", () => {
             });
       await expect(pending).rejects.toThrow("activity store unavailable");
       expect(sendMessageMattermostMock.mock.calls[0]?.[2].mediaUrl).toBeUndefined();
-      expect(onDeliveryResult).toHaveBeenCalledTimes(1);
-      expect(onDeliveryResult).toHaveBeenCalledWith({
+      expect(onDeliveryResult).toHaveBeenCalledExactlyOnceWith({
         channel: "mattermost",
         messageId: "post-final",
         target: { kind: "channel", id: "CHAN1" },
