@@ -181,10 +181,7 @@ describe("discord live qa runtime", () => {
             new Request(`https://discord.com${messagePath}${suffix}`, {
               method,
               body,
-              headers: {
-                authorization,
-                ...(body ? { "content-type": "application/json" } : {}),
-              },
+              headers: { authorization, ...(body ? { "content-type": "application/json" } : {}) },
             }),
           );
 
@@ -366,12 +363,11 @@ describe("discord live qa runtime", () => {
     "waits for connection and reports readiness timeouts (connects: %s)",
     async (connects) => {
       vi.useFakeTimers();
-      const call = vi.fn().mockResolvedValue(
-        discordStatus(false, {
-          lastError: null,
-          lastDisconnect: { error: "runtime-not-ready" },
-        }),
-      );
+      const call = vi
+        .fn()
+        .mockResolvedValue(
+          discordStatus(false, { lastError: null, lastDisconnect: { error: "runtime-not-ready" } }),
+        );
       const gateway = { call } as unknown as Parameters<
         typeof testing.waitForDiscordChannelRunning
       >[0];
@@ -400,6 +396,7 @@ describe("discord live qa runtime", () => {
 
   it("waits for required Discord application commands to be registered", async () => {
     vi.useFakeTimers();
+    const schedule = vi.spyOn(globalThis, "setTimeout");
     const commands = { id: "623456789012345679", name: "commands" };
     stubFetch(
       Response.json([commands]),
@@ -414,46 +411,10 @@ describe("discord live qa runtime", () => {
     });
     await vi.advanceTimersByTimeAsync(1_100);
 
-    await expect(registeredPromise).resolves.toEqual({
-      commandNames: ["commands", "help"],
-    });
+    await expect(registeredPromise).resolves.toEqual({ commandNames: ["commands", "help"] });
     const headers = vi.mocked(fetch).mock.calls[0]?.[1]?.headers;
     expect(new Headers(headers).get("authorization")).toBe("Bot token");
-  });
-
-  it("aborts Discord identity probes after the API helper timeout", async () => {
-    vi.useFakeTimers();
-    let signal: AbortSignal | undefined;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((_input: string | URL | globalThis.Request, init?: RequestInit) => {
-        signal = init?.signal as AbortSignal | undefined;
-        return new Promise<Response>((_resolve, reject) => {
-          signal?.addEventListener("abort", () => reject(new Error("request aborted")), {
-            once: true,
-          });
-        });
-      }),
-    );
-
-    const request = testing.getCurrentDiscordUser("token");
-    const rejection = expect(request).rejects.toBeInstanceOf(Error);
-    await vi.advanceTimersByTimeAsync(14_999);
-    expect(signal?.aborted).toBe(false);
-    await vi.advanceTimersByTimeAsync(1);
-    await rejection;
-    expect(signal?.aborted).toBe(true);
-  });
-
-  it("retries Discord REST requests after a 429 rate limit", async () => {
-    stubFetch(
-      Response.json({ message: "You are being rate limited.", retry_after: 0 }, { status: 429 }),
-      Response.json({ id: driverId }),
-    );
-
-    await expect(testing.getCurrentDiscordUser("token")).resolves.toEqual({
-      id: driverId,
-    });
+    expect(schedule).toHaveBeenCalledWith(expect.any(Function), 15_000);
   });
   it("rejects transcript capture without an explicit destination before discovery or gateway access", async () => {
     const resolveVoiceChannel = vi

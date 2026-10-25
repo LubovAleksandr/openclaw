@@ -239,9 +239,7 @@ describe("Discord agent E2E authority and evidence", () => {
     const f = fixture({ missingPermissions: true });
     expect(await f.driver.doctor()).toMatchObject({
       ok: false,
-      capabilities: {
-        unavailable: [{ reason: expect.stringContaining("missing ViewChannel") }],
-      },
+      capabilities: { unavailable: [{ reason: expect.stringContaining("missing ViewChannel") }] },
     });
     expect(f.mutations).toEqual([]);
   });
@@ -360,16 +358,12 @@ describe("Discord agent E2E authority and evidence", () => {
     // Cursor, author and reference rejection are covered by recorder-failure cleanup above.
     f.emit(
       "MESSAGE_CREATE",
-      nativeMessage("523456789012345680", "UNIQUE_MARKER", {
-        channel_id: "923456789012345678",
-      }),
+      nativeMessage("523456789012345680", "UNIQUE_MARKER", { channel_id: "923456789012345678" }),
     );
     const sutReplyId = "523456789012345682";
     f.emit(
       "MESSAGE_CREATE",
-      nativeMessage(sutReplyId, "draft", {
-        message_reference: { message_id: trigger.id },
-      }),
+      nativeMessage(sutReplyId, "draft", { message_reference: { message_id: trigger.id } }),
     );
     f.emit("MESSAGE_UPDATE", { id: sutReplyId, content: "UNIQUE_MARKER" });
     const reply = await f.driver.waitForReply({
@@ -486,11 +480,7 @@ function mockAdapterIo(sutUserId = sutId) {
       acquire: credentialLease.acquireQaCredentialLease,
       startHeartbeat: credentialLease.startQaCredentialLeaseHeartbeat,
     },
-    messages: {
-      addInboundMessage: vi.fn(),
-      addOutboundMessage: vi.fn(),
-      editMessage: vi.fn(),
-    },
+    messages: { addInboundMessage: vi.fn(), addOutboundMessage: vi.fn(), editMessage: vi.fn() },
   } satisfies Parameters<typeof createDiscordQaTransportAdapter>[0];
   return { context, heartbeatStop, poll, release };
 }
