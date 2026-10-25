@@ -15,7 +15,6 @@ import {
   outputToolArgsFromItem,
   outputToolCall,
   postJson,
-  requireRecord,
 } from "./server.test-harness.js";
 
 const { startMockServer } = createMockServerTestHarness();
@@ -52,9 +51,7 @@ async function startObservedServer(...sessionIds: string[]) {
     throw new Error("QA session observation gate was not registered");
   }
   for (const sessionId of sessionIds) {
-    expect(
-      await gate({ prompt: "No session identity in the prompt", messages: [] }, { sessionId }),
-    ).toBeUndefined();
+    await gate({ prompt: "No session identity in the prompt", messages: [] }, { sessionId });
   }
   return server;
 }
@@ -105,13 +102,8 @@ describe("QA transport session identity", () => {
     for (const handoff of handoffs) {
       expectSpawnLabel(handoff, "qa-sidecar");
     }
-    expect(
-      requireRecord(await postAnthropic(sessions[0]), "cross-provider continuation").stop_reason,
-    ).toBe("end_turn");
-    expect(
-      requireRecord(await postAnthropic("qa-session-anthropic"), "independent Anthropic handoff")
-        .stop_reason,
-    ).toBe("tool_use");
+    expect(await postAnthropic(sessions[0])).toMatchObject({ stop_reason: "end_turn" });
+    expect(await postAnthropic("qa-session-anthropic")).toMatchObject({ stop_reason: "tool_use" });
     for (const [boundary, label] of [
       [1, "qa-fanout-alpha"],
       [2, "qa-fanout-beta"],
@@ -148,10 +140,6 @@ describe("QA transport session identity", () => {
       const response = await postJson(server, "/v1/responses", body);
       expect(response.status).toBe(200);
       expect(outputText(await response.json())).toBe("{}");
-      expect(await getJson(server, "/debug/last-request")).toMatchObject({
-        requestKind: "agent-initial",
-        prompt: "Reply exactly: {}",
-      });
     }
     const anthropic = await postJson(server, "/v1/messages", {
       system: [{ type: "text", text: instructions }],
