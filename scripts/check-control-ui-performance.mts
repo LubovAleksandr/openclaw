@@ -64,8 +64,8 @@ const controlUiPerformanceBudgets = {
   // Reserve reaction/footer geometry to remove reload layout shifts (2026-10-24).
   // Measured complete bundle after preserving the current Details composition.
   // Fixed bundle ceilings, not a repeatable per-PR growth allowance.
-  totalCssGzipBytes: 303_308,
-  totalCssRawBytes: 1_596_597,
+  totalCssGzipBytes: 303_311,
+  totalCssRawBytes: 1_596_610,
 } satisfies Record<string, number>;
 export const CONTROL_UI_PERFORMANCE_BUDGETS = Object.freeze(controlUiPerformanceBudgets);
 

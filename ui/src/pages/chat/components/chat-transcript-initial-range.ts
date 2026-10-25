@@ -4,6 +4,7 @@ import { cancelLayout, scheduleLayout } from "../../../lib/layout-frame.ts";
 /** Prepare measured tail rows before resuming the ordinary overscan window. */
 export class TranscriptInitialRange {
   pending = true;
+  measuring = true;
   private tailRows: number;
 
   constructor(
@@ -11,7 +12,6 @@ export class TranscriptInitialRange {
     private readonly virtualizer: () => Virtualizer<HTMLDivElement, HTMLElement>,
     private readonly normalRange: (range: Range) => number[],
     private readonly invalidate: () => void,
-    private readonly beforeDeferredResume: () => void,
   ) {
     this.tailRows = initialOffset === null ? 1 : 0;
   }
@@ -54,11 +54,14 @@ export class TranscriptInitialRange {
 
   finish(afterPaint = false): void {
     this.pending = false;
+    this.measuring = false;
     this.virtualizer().shouldAdjustScrollPositionOnItemSizeChange = undefined;
     if (!this.tailRows) {
       return;
     }
     const resumeOverscan = () => {
+      // Admit the ordinary window only while its new rows can be measured before paint.
+      this.measuring = afterPaint;
       this.tailRows = 0;
       this.refresh();
       this.invalidate();
@@ -66,14 +69,7 @@ export class TranscriptInitialRange {
     cancelLayout(this);
     if (afterPaint) {
       // Paint the measured viewport before preparing the ordinary offscreen overscan.
-      scheduleLayout(
-        this,
-        () => () =>
-          scheduleLayout(this, () => {
-            this.beforeDeferredResume();
-            return resumeOverscan;
-          }),
-      );
+      scheduleLayout(this, () => () => scheduleLayout(this, () => resumeOverscan));
     } else {
       resumeOverscan();
     }

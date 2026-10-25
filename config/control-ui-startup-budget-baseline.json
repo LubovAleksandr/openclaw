@@ -1,5 +1,5 @@
 {
-  "startupJsGzipBytes": 281823,
-  "reason": "Reserve geometry during chat reloads while retaining lazy boundaries and 7 startup JS plus 1 CSS requests",
+  "startupJsGzipBytes": 281876,
+  "reason": "Reserve reload geometry and measure resumed overscan before paint; startup grows 93 B gzip with unchanged 7 JS and 1 CSS requests",
   "updatedAt": "2026-10-25"
 }
