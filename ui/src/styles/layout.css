@@ -757,16 +757,21 @@ html.openclaw-native-desktop .shell:not(.shell--mobile-nav) {
   display: none;
 }
 
-/* Keep the full resize target on the content side of the boundary so it
-   cannot intercept the sidebar scrollbar. The shell owns the resting line. */
+/* Reserve the inner resize target without moving the adjacent content edge. */
+.shell:not(.shell--mobile-nav) > .shell-nav:has(+ .sidebar-resizer) {
+  padding-inline-end: 10px;
+}
+
+/* Keep the 14px target clear of both the scrollbar and adjacent controls.
+   Only its outer 4px overlaps content; the shell owns the resting line. */
 .sidebar-resizer {
   --resize-handle-size: 14px;
   --resize-handle-rest-color: transparent;
-  --resize-handle-line-inline: 0%;
+  --resize-handle-line-inline: calc(100% - 4px);
   grid-area: nav;
   align-self: stretch;
   justify-self: end;
-  margin-inline-end: calc(-1 * var(--resize-handle-size));
+  margin-inline-end: -4px;
   z-index: 20;
 }
 

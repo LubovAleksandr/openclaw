@@ -153,11 +153,9 @@ export class ChatSessionVirtualizerHost implements ChatTranscriptSession {
     this.offsetState.pendingInteractionAnchor = anchor;
     queueMicrotask(() => this.offsetState.pendingInteractionAnchor === anchor && this.invalidate());
   };
-  private readonly handleGeometryCommit = (event: Event) => {
-    this.reconcileInteractionResize(event.target);
-    this.viewportRect.commit(
-      !(event instanceof CustomEvent && event.detail?.widthChanged === false),
-    );
+  private readonly handleGeometryCommit = (ev: Event) => {
+    this.reconcileInteractionResize(ev.target);
+    this.viewportRect.commit(!(ev instanceof CustomEvent) || ev.detail?.widthChanged !== false);
   };
   private rowKeys: readonly string[] = [];
   private rowIndexesByKey = new Map<string, number>();
@@ -351,6 +349,7 @@ export class ChatSessionVirtualizerHost implements ChatTranscriptSession {
     this.positionRail.update();
     const { _willUpdate: updateVirtualizer } = this.virtualizer;
     updateVirtualizer();
+    this.rowRefs.observeConnected();
     const interactionResizePending = this.offsetState.pendingInteractionAnchor !== null;
     this.reconcileInteractionResize();
     if (

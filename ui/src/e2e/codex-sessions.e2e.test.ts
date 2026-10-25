@@ -584,7 +584,7 @@ suite.define(() => {
       await browserExpect(pane.locator(".chat-tool-msg-collapse").nth(1)).not.toContainText("null");
       await browserExpect(pane).not.toContainText("omitted-native-output");
       const thread = pane.locator(".chat-thread");
-      await thread.hover({ position: { x: 4, y: 4 } });
+      await thread.hover({ position: { x: 20, y: 4 } });
       await page.mouse.wheel(0, await thread.evaluate((element) => element.scrollHeight));
       await waitForChatScrollIdle(page);
       await browserExpect(pane).toContainText('[embed ref="cv_external" /]');
