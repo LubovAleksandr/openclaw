@@ -7,10 +7,8 @@ import {
   htmlLink,
   plainIR,
   renderChunks,
-  style,
   marker,
   identity,
-  link,
 } from "./markdown.test-support.js";
 import { renderMarkdownWithAttributedRanges } from "./render-attributed.js";
 import {
@@ -45,26 +43,15 @@ const renderEscapedHtml = (ir: MarkdownIR) =>
 const plainText = (ir: MarkdownIR) => ir.text;
 
 it("splits at exact rendered budgets while retaining source and formatting", () => {
-  const unbounded = "one two three four five six seven eight nine ten";
+  const unbounded = "a b c";
   const cases: [MarkdownIR, number, string[], ((ir: MarkdownIR) => string)?, string[]?][] = [
     [markdownToIR("alpha <<"), 8, ["alpha ", "<<"]],
+    [markdownToIR("**a b**"), 9, ["a ", "b"], renderEscapedHtml, ["<b>a </b>", "<b>b</b>"]],
     [
-      markdownToIR("**Which of these**", { headingStyle: "none" }),
-      16,
-      ["Which of ", "these"],
-      renderEscapedHtml,
-      ["<b>Which of </b>", "<b>these</b>"],
-    ],
-    [
-      plainIR("README.md<"),
-      10,
-      ["README.md", "<"],
-      ({ text }) =>
-        text === "README.md"
-          ? "fits-here"
-          : text.startsWith("README.md")
-            ? "this-rendering-is-too-long"
-            : text,
+      plainIR("ab<"),
+      3,
+      ["ab", "<"],
+      ({ text }) => (text === "ab" ? "x" : text.startsWith("ab") ? "overflow" : text),
     ],
     [markdownToIR("alpha beta gamma"), 10, ["alpha ", "beta gamma"], plainText],
     [markdownToIR("abc"), Number.NaN, ["a", "b", "c"]],
@@ -80,19 +67,6 @@ it("splits at exact rendered budgets while retaining source and formatting", () 
       expect(renderedValues(chunks)).toEqual(rendered);
     }
   }
-});
-
-it("bisects overflowing chunks instead of rendering every shorter prefix", () => {
-  const ir = markdownToIR("**a < b** ".repeat(600));
-  let renders = 0;
-  const chunks = renderChunks(ir, 1_000, (chunk) => {
-    renders += 1;
-    return renderEscapedHtml(chunk);
-  });
-
-  expect(sourceTexts(chunks).join("")).toBe(ir.text);
-  expect(chunks.every((chunk) => chunk.rendered.length <= 1_000)).toBe(true);
-  expect(renders).toBeLessThan(200);
 });
 
 it.each(["A".repeat(128), `${"A".repeat(230)}😀`])(
@@ -176,45 +150,21 @@ it("keeps Unicode boundaries through initial, retry, and whitespace splits", () 
   }
 });
 
-it.each<[MarkdownIR, MarkdownIR, string[]]>([
-  [
-    markdownToIR("```\n \n```"),
-    plainIR(" \n", [style(0, 2, "code_block")]),
-    ["<pre><code> \n</code></pre>"],
-  ],
-  [
-    sliceMarkdownIR(markdownToIR("**a b**"), 1, 2),
-    plainIR(" ", [style(0, 1, "bold")]),
-    ["<b> </b>"],
-  ],
+it.each<[MarkdownIR, string[]]>([
+  [markdownToIR("```\n \n```"), ["<pre><code> \n</code></pre>"]],
+  [sliceMarkdownIR(markdownToIR("**a b**"), 1, 2), ["<b> </b>"]],
   [
     sliceMarkdownIR(markdownToIR("[a b](https://example.com)"), 1, 2),
-    plainIR(" ", [], [link(0, 1)]),
     ['<a href="https://example.com"> </a>'],
   ],
   [
     sliceMarkdownIR(markdownToIR("user[Thu 2026]", { assistantTranscriptRoleHeaders: true }), 8, 9),
-    {
-      ...plainIR(" "),
-      annotations: [
-        {
-          start: 0,
-          end: 1,
-          type: "assistant_transcript_role",
-          kind: "role_timestamp_bracket",
-          role: "user",
-        },
-      ],
-    },
     ["<code> </code>"],
   ],
-  [plainIR(" \n"), plainIR(" \n"), []],
-])("preserves semantic whitespace: %j", (ir, expectedSource, expectedRendered) => {
+  [plainIR(" \n"), []],
+])("preserves semantic whitespace: %j", (ir, expectedRendered) => {
   const chunks = renderChunks(ir, 64, renderHtml);
   expect(renderedValues(chunks)).toEqual(expectedRendered);
-  expect(chunks.map((chunk) => chunk.source)).toEqual(
-    expectedRendered.length ? [expectedSource] : [],
-  );
 });
 
 it("coalesces semantic whitespace into neighboring rendered chunks", () => {

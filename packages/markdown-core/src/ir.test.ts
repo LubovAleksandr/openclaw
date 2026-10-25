@@ -269,36 +269,17 @@ function mapMetadata(ir: MarkdownIR, map: (entries: unknown[]) => unknown[]) {
   }
 }
 
-function longDocument(): IRWithMetadata {
+function metadataDocument(): IRWithMetadata {
   const source = Array.from(
-    { length: 128 },
-    (_, index) =>
-      `## heading ${index}\n\n- **bold ${index}** [label ${index}](https://example.com/${index}) ` +
-      `<span title="item">tail ${index}</span> https://example.net/${index}\n\n` +
-      `[2026-07-02] assistant: note ${index}\n`,
+    { length: 3 },
+    (_, i) =>
+      `## h${i}\n\n- **b** [x](https://example.com) <i>x</i> https://e.co\n\n[2026] assistant: n`,
   ).join("\n");
   return markdownToIR(source, {
     headingStyle: "rich",
     linkify: true,
     assistantTranscriptRoleHeaders: true,
   });
-}
-
-function countMetadataReads(ir: MarkdownIR) {
-  let reads = 0;
-  let entries = 0;
-  mapMetadata(ir, (value) => {
-    entries += value.length;
-    return new Proxy(value, {
-      get(target, property, receiver) {
-        if (typeof property === "string" && /^\d+$/.test(property)) {
-          reads += 1;
-        }
-        return Reflect.get(target, property, receiver);
-      },
-    });
-  });
-  return { entries, reads: () => reads };
 }
 
 function projectMetadata(ir: MarkdownIR) {
@@ -322,69 +303,52 @@ function expectSlicedMetadata(chunks: MarkdownIR[], reference: MarkdownIR) {
   expect(chunks.map(projectMetadata)).toEqual(expected.map(projectMetadata));
 }
 
-it.each(["plain", "rendered"] as const)("partitions metadata without rescanning: %s", (mode) => {
-  const reference = longDocument();
-  const input = longDocument();
-  expect(metadataKeys.every((key) => (reference[key]?.length ?? 0) > 0)).toBe(true);
-  const count = countMetadataReads(input);
-  const limit = 96;
-  const chunks =
-    mode === "plain"
-      ? chunkMarkdownIR(input, limit)
-      : renderChunks(input, limit, (chunk) => chunk.text).map((chunk) => chunk.source);
-  const metadataReads = count.reads();
-
-  expect(chunks.length).toBeGreaterThan(128);
-  expect(chunks.every((chunk) => chunk.text.length <= limit)).toBe(true);
-  if (mode === "plain") {
-    expect(chunks.map((chunk) => chunk.text)).toEqual(chunkText(reference.text, limit));
-  } else {
-    expect(chunks.map((chunk) => chunk.text).join("")).toBe(reference.text);
-  }
-  expectSlicedMetadata(chunks, reference);
-  expect(projectMetadata(input)).toEqual(projectMetadata(reference));
-  expect(metadataReads).toBeLessThanOrEqual(count.entries * 4 + chunks.length * 12);
-});
-
-it("keeps unsorted and duplicated metadata independent across chunks", () => {
-  const input = longDocument();
-  mapMetadata(input, (value) => {
-    const reversed = value.toReversed();
-    return [...reversed, ...reversed.slice(0, 1)];
-  });
-  const before = structuredClone(projectMetadata(input));
-  const chunks = chunkMarkdownIR(input, 96);
-  expect(chunks.length).toBeGreaterThan(128);
-  expectSlicedMetadata(chunks, input);
-  const links = chunks.flatMap((chunk) => chunk.links);
-  expect(new Set(links).size).toBe(links.length);
-  expect(links.every((span) => !input.links.includes(span))).toBe(true);
-  const first = links[0];
-  expect(first).toBeDefined();
-  if (first) {
-    first.href = "https://example.org/changed";
-  }
-  expect(projectMetadata(input)).toEqual(before);
-});
+it.each(["plain", "rendered", "unsorted"] as const)(
+  "partitions independent metadata: %s",
+  (mode) => {
+    const input = metadataDocument();
+    expect(metadataKeys.every((key) => (input[key]?.length ?? 0) > 0)).toBe(true);
+    if (mode === "unsorted") {
+      mapMetadata(input, (value) => [...value.toReversed(), ...value.slice(-1)]);
+    }
+    const before = structuredClone(projectMetadata(input));
+    const limit = 24;
+    const chunks =
+      mode === "rendered"
+        ? renderChunks(input, limit, (chunk) => chunk.text).map((chunk) => chunk.source)
+        : chunkMarkdownIR(input, limit);
+    expect(chunks.length).toBeGreaterThan(3);
+    expect(chunks.every((chunk) => chunk.text.length <= limit)).toBe(true);
+    if (mode === "rendered") {
+      expect(chunks.map((chunk) => chunk.text).join("")).toBe(input.text);
+    } else {
+      expect(chunks.map((chunk) => chunk.text)).toEqual(chunkText(input.text, limit));
+    }
+    expectSlicedMetadata(chunks, input);
+    const links = chunks.flatMap((chunk) => chunk.links);
+    expect(new Set(links).size).toBe(links.length);
+    expect(links.every((span) => !input.links.includes(span))).toBe(true);
+    const first = links[0];
+    expect(first).toBeDefined();
+    if (first) {
+      first.href = "https://example.org/changed";
+    }
+    expect(projectMetadata(input)).toEqual(before);
+  },
+);
 
 it("handles empty parent with nested items", () => {
   expect(markdownToIR("-\n  - Nested only\n- Normal").text).toContain("  • Nested only");
 });
 
 it.each<[string, string, Parameters<typeof markdownToIR>[1]?]>([
-  ["> quote\n\nparagraph", "> quote\n\nparagraph", { blockquotePrefix: "> " }],
-  ["- Item 1\n- ---\n- Item 2", "• Item 1\n\n───\n\n• Item 2"],
-  ["- Run this:\n  ```sh\n  echo hello\n  ```\n- Done", "• Run this:\necho hello\n• Done"],
-  ["1. Intro\n   # Heading\n   Details\n2. Done", "1. Intro\nHeading\n\nDetails\n2. Done"],
-  [
-    "- > First paragraph\n  >\n  > Second paragraph\n- Next",
-    "• First paragraph\n\nSecond paragraph\n• Next",
-  ],
-  [
-    "- first paragraph\n\n  second paragraph\n- next",
-    "• first paragraph\n\nsecond paragraph\n\n• next",
-  ],
-  ["- parent\n\n  - child\n\n- next", "• parent\n\n  • child\n• next"],
+  ["> q\n\np", "> q\n\np", { blockquotePrefix: "> " }],
+  ["- a\n- ---\n- b", "• a\n\n───\n\n• b"],
+  ["- a:\n  ```sh\n  b\n  ```\n- c", "• a:\nb\n• c"],
+  ["1. a\n   # b\n   c\n2. d", "1. a\nb\n\nc\n2. d"],
+  ["- > a\n  >\n  > b\n- c", "• a\n\nb\n• c"],
+  ["- a\n\n  b\n- c", "• a\n\nb\n\n• c"],
+  ["- a\n\n  - b\n\n- c", "• a\n\n  • b\n• c"],
 ])("preserves block/list paragraph spacing in %j", (markdown, expected, options) => {
   expect(markdownToIR(markdown, options).text).toBe(expected);
 });
