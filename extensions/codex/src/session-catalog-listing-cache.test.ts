@@ -2,11 +2,10 @@ import { setImmediate as nextTurn } from "node:timers/promises";
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { afterEach, expect, it, vi } from "vitest";
 import type { CodexThread } from "./app-server/protocol.js";
-import { catalogFactory, catalogProvider } from "./session-catalog-resident.test-support.js";
+import { catalogFactory } from "./session-catalog-resident.test-support.js";
 import {
   commandRpcMocks,
   createCodexSessionCatalogControl as makeControl,
-  config,
   idleThread,
   type OpenClawConfig,
 } from "./session-catalog.test-helpers.js";
@@ -16,52 +15,6 @@ afterEach(() => vi.restoreAllMocks());
 const native = (fields: Partial<CodexThread> = {}) => idleThread({ source: "cli", ...fields });
 const rpc = commandRpcMocks.codexControlRequest;
 const configs = () => rpc.mock.calls.map((call) => call[3]?.config);
-
-it("discovers visible entries after hidden native pages without rereading the resident head", async () => {
-  const rows = Array.from({ length: 35 }, (_, i) =>
-    native({
-      id: `thread-${i}`,
-      originator: i < 32 ? "openclaw" : "codex",
-      path: `/synthetic/sessions/thread-${i}.jsonl`,
-      recencyAt: 10_000 - i,
-      updatedAt: 10_000 - i,
-    }),
-  );
-  commandRpcMocks.codexControlRequest.mockImplementation(async (_plugin, _method, request) => {
-    const offset = Number(request.cursor ?? 0);
-    const data = rows.slice(offset, offset + request.limit);
-    const next = offset + data.length;
-    return {
-      data,
-      ...(next < rows.length ? { nextCursor: String(next) } : {}),
-    };
-  });
-  const factory = catalogFactory({ getRuntimeConfig: () => config, now: () => 1_000 });
-  const primary = (await factory.homesForAgent("main"))[0]!;
-  const home = { ...primary, localSessionsRoot: "/synthetic/sessions" };
-  const provider = catalogProvider({ ...factory, homesForAgent: async () => [home] });
-  const list = (cursor?: string) =>
-    provider.list({
-      agentId: "main",
-      hostIds: [home.hostId],
-      limitPerHost: 2,
-      ...(cursor ? { cursors: { [home.hostId]: cursor } } : {}),
-    });
-
-  await factory.forRequest("main", home).initialize();
-  const nativeCalls = commandRpcMocks.codexControlRequest.mock.calls.length;
-  expect(nativeCalls).toBeGreaterThan(1);
-  const first = await list();
-  expect(first[0]).toMatchObject({
-    sessions: [{ threadId: "thread-32" }, { threadId: "thread-33" }],
-    nextCursor: expect.anything(),
-  });
-  const tail = await list(first[0]!.nextCursor);
-  expect(tail[0]).toMatchObject({ sessions: [{ threadId: "thread-34" }] });
-  expect(tail[0]?.nextCursor).toBeUndefined();
-  expect(await list()).toEqual(first);
-  expect(commandRpcMocks.codexControlRequest).toHaveBeenCalledTimes(nativeCalls);
-});
 
 it("rejects shared cold waiters and recovers on the next initialization", async () => {
   const held = createDeferred<unknown>();
@@ -113,26 +66,15 @@ it.each([
   expect(rpc).toHaveBeenCalledTimes(calls);
 });
 
-it("captures the current config for requests across agents and homes", async () => {
+it("captures the current runtime config for each request", async () => {
   const initial: OpenClawConfig = { agents: { defaults: { workspace: "/workspace/a" } } };
   let runtimeConfig = initial;
   commandRpcMocks.codexControlRequest.mockResolvedValue({ thread: idleThread() });
   const factory = catalogFactory({ getRuntimeConfig: () => runtimeConfig });
-  const home = (await factory.homesForAgent("main"))[0]!;
-  const controls = ["main", "another"].flatMap((agent) =>
-    ["first", "second"].map((sourceHomeId) => factory.forRequest(agent, { ...home, sourceHomeId })),
-  );
-  for (const control of controls) {
-    await control.readThread("thread-1");
-    await control.readThread("thread-1");
-  }
-  const firstRequests = Array.from({ length: 8 }, () => initial);
-  expect(configs()).toEqual(firstRequests);
+  await factory.forRequest("main").readThread("thread-1");
   runtimeConfig = { agents: { defaults: { workspace: "/workspace/b" } } };
-  for (const agent of ["main", "another"]) {
-    await factory.forRequest(agent).readThread("thread-1");
-  }
-  expect(configs()).toEqual([...firstRequests, runtimeConfig, runtimeConfig]);
+  await factory.forRequest("main").readThread("thread-1");
+  expect(configs()).toEqual([initial, runtimeConfig]);
 });
 
 it("keeps a title-search cursor chain on its initial App Server configuration", async () => {

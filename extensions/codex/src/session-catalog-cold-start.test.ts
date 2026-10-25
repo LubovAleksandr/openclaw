@@ -3,9 +3,9 @@ import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { afterEach, expect, it, vi } from "vitest";
 import type { CodexThreadListParams } from "./app-server/protocol.js";
 import { catalogThread } from "./session-catalog-client.test-support.js";
-import type { CodexCatalogState, StoredCodexCatalogEntry } from "./session-catalog-index-state.js";
+import type { CodexCatalogState } from "./session-catalog-index-state.js";
 import { CodexCatalogIndex } from "./session-catalog-index.js";
-import { catalogRow } from "./session-catalog-index.test-support.js";
+import { catalogRow, completeCatalogState } from "./session-catalog-index.test-support.js";
 
 const homeId = "cold-start";
 const indexes: CodexCatalogIndex[] = [];
@@ -34,15 +34,6 @@ function createIndex(
   const index = new CodexCatalogIndex({ homeId, assertCurrent: () => {}, ...options });
   indexes.push(index);
   return index;
-}
-
-function savedState(values: StoredCodexCatalogEntry[]): CodexCatalogState {
-  return {
-    entries: async () =>
-      values.map((value, index) => ({ key: String(index), createdAt: 0, value })),
-    register: vi.fn(async () => {}),
-    delete: vi.fn(async () => false),
-  };
 }
 
 function gatedPages(head: ReturnType<typeof row>[], tailRows: ReturnType<typeof row>[]) {
@@ -124,11 +115,7 @@ it("does not expose an invalid saved snapshot's stale tail", async () => {
   const entered = gate();
   const release = gate();
   const index = createIndex({
-    state: savedState([
-      { version: 1, kind: "row", row: row("stale-tail") },
-      { version: 1, kind: "complete" },
-      { version: 1, kind: "row", row: invalid },
-    ]),
+    state: completeCatalogState([row("stale-tail"), invalid]),
     readNative: async () => {
       entered.resolve();
       await release.promise;
@@ -150,16 +137,14 @@ it("does not expose an invalid saved snapshot's stale tail", async () => {
 it("bounds a stalled restore without starting competing native work", async () => {
   const entries = createDeferred<Awaited<ReturnType<CodexCatalogState["entries"]>>>();
   releases.push(() => entries.resolve([]));
-  const state = { ...savedState([]), entries: () => entries.promise };
+  const state = { ...completeCatalogState([]), entries: () => entries.promise };
   const readNative = vi.fn(async () => ({ rows: [] }));
   const index = createIndex({ state, readNative, requestTimeoutMs: 20 });
-  const listed = index.list({}).then(
-    (page) => ({ page }),
-    (error: unknown) => ({ error }),
-  );
+  const listed = index.list({});
   pending.push(listed);
-  const result = await Promise.race([listed, delay(100).then(() => "still waiting")]);
-  expect(result).toMatchObject({ error: { code: "APP_SERVER_UNAVAILABLE" } });
+  await expect(Promise.race([listed, delay(100)])).rejects.toMatchObject({
+    code: "APP_SERVER_UNAVAILABLE",
+  });
   expect(readNative).not.toHaveBeenCalled();
   entries.resolve([{ key: "complete", createdAt: 0, value: { version: 1, kind: "complete" } }]);
   expect(await index.list({})).toEqual({ sessions: [] });

@@ -66,31 +66,16 @@ describe("Codex supervision request lifetime", () => {
   });
   afterEach(() => clients.splice(0).forEach((client) => client.close()));
 
-  it("refuses a transcript when the selected account is revoked after the server response", async () => {
-    let selected: string | undefined = "synthetic:account";
-    const harness = respondingClient(() => {
-      selected = undefined;
-      return threadResponse("idle", { turns: [{ text: "private transcript" }] });
-    });
-    sharedClientMocks.getLeasedSharedCodexAppServerClient.mockResolvedValue(harness.client);
-    const tool = createTool("codex_session_read", readConfig, {
-      resolveAuthProfileId: async () => "synthetic:account",
-      withAuthProfileIdAtEffect: async (_params, consume) =>
-        consume({ read: async () => selected, assertCurrent() {} }),
-    });
-    await expect(tool.execute("read", sessionParams)).rejects.toThrow(
-      "endpoint local was removed or changed",
-    );
-  });
-
-  it.each(
-    ["codex_session_read", "codex_sessions_list", "codex_endpoint_probe"].flatMap((toolName) =>
+  it.each([
+    { toolName: "codex_session_read", timing: "account" },
+    ...["codex_session_read", "codex_sessions_list", "codex_endpoint_probe"].flatMap((toolName) =>
       ["response", "final-auth"].map((timing) => ({ toolName, timing })),
     ),
-  )("$toolName honors policy revocation at $timing", async ({ toolName, timing }) => {
+  ])("$toolName honors revocation at $timing", async ({ toolName, timing }) => {
     const privateText = "private transcript contents";
     const pluginConfig = readConfig();
     let responseReturned = false;
+    let selected: string | undefined = "synthetic:account";
     const revoke = () => {
       pluginConfig.supervision = {
         enabled: toolName !== "codex_endpoint_probe",
@@ -102,6 +87,8 @@ describe("Codex supervision request lifetime", () => {
         responseReturned = true;
         if (timing === "response") {
           revoke();
+        } else if (timing === "account") {
+          selected = undefined;
         }
       }
       return method === "thread/loaded/list"
@@ -121,13 +108,15 @@ describe("Codex supervision request lifetime", () => {
             if (responseReturned && timing === "final-auth") {
               revoke();
             }
-            return "synthetic:account";
+            return selected;
           },
           assertCurrent() {},
         }),
     });
     const result = tool.execute("read", sessionParams);
-    if (toolName === "codex_sessions_list") {
+    if (timing === "account") {
+      await expect(result).rejects.toThrow("endpoint local was removed or changed");
+    } else if (toolName === "codex_sessions_list") {
       expect(JSON.stringify(await result)).not.toContain(privateText);
     } else {
       await expect(result).rejects.toThrow(/Codex (?:supervision|session reads).*disabled/);
