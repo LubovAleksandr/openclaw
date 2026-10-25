@@ -213,42 +213,37 @@ describe("cron controller", () => {
     });
   });
 
-  it.each([
-    { label: "filters", patch: { cronRunsStatuses: ["error"], cronRunsQuery: "filtered" } },
-  ] satisfies Array<{ label: string; patch: Parameters<typeof updateCronRunsFilter>[1] }>)(
-    "drops an older append after replacing history $label",
-    async ({ patch }) => {
-      const current = { ...runEntry("filtered", 3), status: "error" as const };
-      const older = createDeferred<CronRunsResult>();
-      const request = vi
-        .fn()
-        .mockResolvedValueOnce(
-          createCronRunsResult([runEntry("previous", 2)], {
-            total: 2,
-            hasMore: true,
-            nextOffset: 1,
-          }),
-        )
-        .mockReturnValueOnce(older.promise)
-        .mockResolvedValueOnce(createCronRunsResult([current]));
-      const state = createStateWithRequest(request);
-      await loadCronRuns(state);
-      const pending = loadCronRuns(state, { append: true });
-      expect(state.cronRunsLoadingMore).toBe(true);
-      updateCronRunsFilter(state, patch);
-      await expect(loadCronRuns(state)).resolves.toBe("ok");
-      expect(state.cronRunsLoadingMore).toBe(false);
-      older.resolve(
-        createCronRunsResult([runEntry("stale", 1)], { total: 9, hasMore: true, nextOffset: 2 }),
-      );
-      await expect(pending).resolves.toBe("skipped");
-      expect(state).toMatchObject({
-        cronRuns: [current],
-        cronRunsHasMore: false,
-        cronRunsLoadingMore: false,
-      });
-    },
-  );
+  it("drops an older append after replacing history filters", async () => {
+    const current = { ...runEntry("filtered", 3), status: "error" as const };
+    const older = createDeferred<CronRunsResult>();
+    const request = vi
+      .fn()
+      .mockResolvedValueOnce(
+        createCronRunsResult([runEntry("previous", 2)], {
+          total: 2,
+          hasMore: true,
+          nextOffset: 1,
+        }),
+      )
+      .mockReturnValueOnce(older.promise)
+      .mockResolvedValueOnce(createCronRunsResult([current]));
+    const state = createStateWithRequest(request);
+    await loadCronRuns(state);
+    const pending = loadCronRuns(state, { append: true });
+    expect(state.cronRunsLoadingMore).toBe(true);
+    updateCronRunsFilter(state, { cronRunsStatuses: ["error"], cronRunsQuery: "filtered" });
+    await expect(loadCronRuns(state)).resolves.toBe("ok");
+    expect(state.cronRunsLoadingMore).toBe(false);
+    older.resolve(
+      createCronRunsResult([runEntry("stale", 1)], { total: 9, hasMore: true, nextOffset: 2 }),
+    );
+    await expect(pending).resolves.toBe("skipped");
+    expect(state).toMatchObject({
+      cronRuns: [current],
+      cronRunsHasMore: false,
+      cronRunsLoadingMore: false,
+    });
+  });
 });
 
 describe("selected automation runtime refresh", () => {
