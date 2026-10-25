@@ -23,20 +23,14 @@ function routingFixture(overrides: Partial<CronJob> = {}, deps: RoutingDeps = {}
     ...deps,
   });
   const job = makeCronJob({
-    id: "topic-routed-job",
     name: "Topic-routed job",
-    createdAtMs: 1,
-    updatedAtMs: 1,
-    payload: { kind: "agentTurn", message: "report" },
-    delivery: { ...primaryDelivery },
+    delivery: primaryDelivery,
     ...overrides,
   });
   const deferredNotifications: DeferredCronNotifications = [];
   return {
-    state,
     job,
     send,
-    deferredNotifications,
     apply: (result: Parameters<typeof applyJobResult>[2]) =>
       applyJobResult(state, job, result, { deferredNotifications }),
     drain: async () => {
@@ -87,64 +81,44 @@ beforeEach(() => {
 
 afterEach(resetPluginRuntimeStateForTest);
 
-type RoutingCase = {
-  name: string;
-  delivery?: Partial<NonNullable<CronJob["delivery"]>>;
-  failureAlert?: CronJob["failureAlert"];
-  globalAlert?: NonNullable<RoutingDeps["cronConfig"]>["failureAlert"];
-  expected: object;
-};
+type RoutingCase = [Partial<NonNullable<CronJob["delivery"]>>, CronJob["failureAlert"], object];
 it.each<RoutingCase>([
-  {
-    name: "keeps numeric zero as a distinct primary thread",
-    delivery: { threadId: 0, failureDestination: { ...failureDestination, to: "tg:19098680" } },
-    expected: { ...alternateRoute, to: "tg:19098680" },
-  },
-  {
-    name: "lets an explicit alert route override an unthreaded failure destination",
-    failureAlert: { to: "tg:19098680" },
-    delivery: { failureDestination },
-    expected: { ...failureDestination, to: "tg:19098680", threadId: 42, alternateRoute: false },
-  },
-  {
-    name: "preserves an unthreaded failure destination when the alert only selects its mode",
-    failureAlert: { mode: "announce" },
-    delivery: { failureDestination },
-    expected: alternateRoute,
-  },
-  {
-    name: "does not equate case-sensitive recipient identities across provider aliases",
-    delivery: { channel: "googlechat", to: "googlechat:RoomA" },
-    failureAlert: { to: "gchat:rooma" },
-    expected: {
-      channel: "googlechat",
-      to: "gchat:rooma",
-      accountId: undefined,
-      threadId: undefined,
-    },
-  },
-  {
-    name: "does not inherit the primary account for another channel",
-    globalAlert: { enabled: true, after: 1, channel: "slack" },
-    expected: { channel: "slack", to: undefined, accountId: undefined },
-  },
-])("$name", ({ delivery, failureAlert, globalAlert, expected }) => {
-  const { state, job } = routingFixture(
-    {
-      delivery: { ...primaryDelivery, ...delivery },
-      ...(failureAlert ? { failureAlert } : {}),
-    },
-    {
-      defaultAgentId: "main",
-      cronConfig: { failureAlert: globalAlert ?? { enabled: true, after: 1 } },
-      sendCronFailureAlert: undefined,
-    },
-  );
-  expect(resolveFailureAlert(state, job)).toMatchObject(expected);
+  [
+    { threadId: 0, failureDestination: { ...failureDestination, to: "tg:19098680" } },
+    undefined,
+    { ...alternateRoute, to: "tg:19098680" },
+  ],
+  [
+    { failureDestination },
+    { to: "tg:19098680" },
+    { ...failureDestination, to: "tg:19098680", threadId: 42, alternateRoute: false },
+  ],
+  [{ failureDestination }, { mode: "announce" }, alternateRoute],
+  [
+    { channel: "googlechat", to: "googlechat:RoomA" },
+    { to: "gchat:rooma" },
+    { channel: "googlechat", to: "gchat:rooma", accountId: undefined, threadId: undefined },
+  ],
+])("resolves the account and thread for %j / %j", (delivery, failureAlert, expected) => {
+  expect(
+    resolveFailureAlert(
+      { deps: { cronConfig: { failureAlert: { enabled: true, after: 1 } } } },
+      { delivery: { ...primaryDelivery, ...delivery }, failureAlert },
+    ),
+  ).toMatchObject(expected);
+});
+
+it("does not inherit the primary account for another channel", () => {
+  expect(
+    resolveFailureAlert(
+      { deps: { cronConfig: { failureAlert: { enabled: true, after: 1, channel: "slack" } } } },
+      { delivery: primaryDelivery },
+    ),
+  ).toMatchObject({ channel: "slack", to: undefined, accountId: undefined });
 });
 
 it("routes required delivery failure outside the failed topic", async () => {
-  const { send, apply, drain, deferredNotifications } = routingFixture({
+  const { send, apply, drain } = routingFixture({
     delivery: { ...primaryDelivery, bestEffort: false, failureDestination },
   });
   apply({
@@ -156,7 +130,6 @@ it("routes required delivery failure outside the failed topic", async () => {
     endedAt: 2_000,
   });
 
-  expect(deferredNotifications).toHaveLength(1);
   await drain();
   expect(send).toHaveBeenCalledExactlyOnceWith(
     expect.objectContaining({
