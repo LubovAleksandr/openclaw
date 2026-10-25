@@ -246,11 +246,7 @@ export class ChatSessionVirtualizerHost implements ChatTranscriptSession {
       () => this.scrollElement,
       this.virtualizer,
       () => this.rowRefs.elements,
-      () => {
-        if (!this.initialRange.pending) {
-          this.offsetState.syncNativeOffset?.();
-        }
-      },
+      () => !this.initialRange.pending && this.offsetState.syncNativeOffset?.(),
     );
     this.rowRefs = new TranscriptRowRefs(this.virtualizer, {
       isCurrentRow: (element, key) =>
