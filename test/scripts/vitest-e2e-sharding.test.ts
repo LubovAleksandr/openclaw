@@ -134,10 +134,9 @@ it("keeps the UI worker borrowers together without changing discovered or select
       "post-deploy-session-entry",
       "question-guest",
       "screen-requester-routing",
-      "stale-build-recovery",
     ].map((name) => path.join(repoRoot, "ui/src/e2e", `${name}.e2e.test.ts`)),
   );
-  expect(discovered.filter((file) => borrowerPaths.has(file.moduleId))).toHaveLength(5);
+  expect(discovered.filter((file) => borrowerPaths.has(file.moduleId))).toHaveLength(4);
   const partition = (files: TestSpecification[]) =>
     Promise.all(
       Array.from({ length: 6 }, (_, offset) =>
