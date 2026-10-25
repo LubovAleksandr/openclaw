@@ -1,11 +1,10 @@
 import type { Range, Virtualizer } from "@tanstack/virtual-core";
-import { cancelLayout, scheduleLayout } from "../../../lib/layout-frame.ts";
 
-/** Prepare measured tail rows before resuming the ordinary overscan window. */
+/** Prepare the measured tail; admit offscreen overscan when the reader navigates. */
 export class TranscriptInitialRange {
   pending = true;
-  measuring = true;
   private tailRows: number;
+  private viewportOnly = false;
 
   constructor(
     initialOffset: number | null,
@@ -18,7 +17,7 @@ export class TranscriptInitialRange {
 
   extract(range: Range): number[] {
     if (!this.tailRows) {
-      return this.normalRange(range);
+      return this.normalRange(this.viewportOnly ? { ...range, overscan: 0 } : range);
     }
     const count = Math.min(range.count, this.tailRows);
     return Array.from({ length: count }, (_, index) => range.count - count + index);
@@ -52,33 +51,23 @@ export class TranscriptInitialRange {
     return true;
   }
 
-  finish(afterPaint = false): void {
+  finish(viewportOnly = false): void {
     this.pending = false;
-    this.measuring = false;
     this.virtualizer().shouldAdjustScrollPositionOnItemSizeChange = undefined;
-    if (!this.tailRows) {
+    if (!this.tailRows && !this.viewportOnly) {
       return;
     }
-    const resumeOverscan = () => {
-      // Admit the ordinary window only while its new rows can be measured before paint.
-      this.measuring = afterPaint;
-      this.tailRows = 0;
-      this.refresh();
-      this.invalidate();
-    };
-    cancelLayout(this);
-    if (afterPaint) {
-      // Paint the measured viewport before preparing the ordinary offscreen overscan.
-      scheduleLayout(this, () => () => scheduleLayout(this, () => resumeOverscan));
-    } else {
-      resumeOverscan();
-    }
+    // The measured viewport stays adaptive; offscreen rows wait for reader navigation.
+    this.tailRows = 0;
+    this.viewportOnly = viewportOnly;
+    this.refresh();
+    this.invalidate();
   }
 
   disconnect(): void {
-    cancelLayout(this);
-    if (!this.pending && this.tailRows) {
+    if (!this.pending && (this.tailRows || this.viewportOnly)) {
       this.tailRows = 0;
+      this.viewportOnly = false;
       this.refresh();
     }
   }

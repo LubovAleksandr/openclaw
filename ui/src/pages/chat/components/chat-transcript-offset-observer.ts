@@ -5,6 +5,7 @@ import { CHAT_TRANSCRIPT_END_THRESHOLD_PX, type ChatScrollToEndOptions } from ".
 import type { TranscriptEndAnchor } from "./chat-transcript-end-anchor.ts";
 import { maxTranscriptScrollOffset } from "./chat-transcript-geometry.ts";
 import type { ChatTranscriptInteractionAnchor } from "./chat-transcript-interaction-anchor.ts";
+import type { TranscriptLayoutOwner } from "./chat-transcript-layout-owner.ts";
 import type { TranscriptPrependAnchor } from "./chat-transcript-prepend-anchor.ts";
 import {
   publishTranscriptScroll,
@@ -91,10 +92,16 @@ export function scrollTranscriptToEnd(
 
 export function scrollTranscriptOffset(
   state: TranscriptOffsetState,
+  host: { layout: TranscriptLayoutOwner; contentElement: HTMLElement | null },
+  headerHeight: number,
   offset: number,
   options: Parameters<typeof elementScroll>[1],
   instance: Virtualizer<HTMLDivElement, HTMLElement>,
 ): void {
+  if (options.behavior === undefined && host.contentElement) {
+    // Resize compensation must not clamp against the previous native extent.
+    host.layout.commitRange(host.contentElement, instance.getTotalSize() + headerHeight);
+  }
   const element = instance.scrollElement;
   const before = element?.scrollTop ?? 0;
   const command = state.scrollCommand;

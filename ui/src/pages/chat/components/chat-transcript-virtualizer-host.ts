@@ -214,8 +214,8 @@ export class ChatSessionVirtualizerHost implements ChatTranscriptSession {
       initialOffset: initialOffset ?? Number.MAX_SAFE_INTEGER,
       anchorTo: "end",
       followOnAppend: false,
-      scrollToFn: (offset, options, instance) =>
-        scrollTranscriptOffset(this.offsetState, offset, options, instance),
+      scrollToFn: (...args) =>
+        scrollTranscriptOffset(this.offsetState, this, this.headerHeight, ...args),
       observeElementRect: this.viewportRect.observe,
       observeElementOffset: (instance, callback) =>
         observeTranscriptOffset(
@@ -534,7 +534,7 @@ export class ChatSessionVirtualizerHost implements ChatTranscriptSession {
           measureRowRefFor: (key) => this.rowRefs.forKey(key),
           measureRows:
             // The first correction reveals new rows; their real sizes must land before retiring the anchor.
-            this.initialRange.measuring ||
+            this.initialRange.pending ||
             this.prependAnchor.messageKey !== null ||
             this.offsetState.scrollCommand?.target === "message" ||
             this.offsetState.scrollCommand?.target === "index",
@@ -684,6 +684,7 @@ export class ChatSessionVirtualizerHost implements ChatTranscriptSession {
   }
 
   handleFocusIn(event: FocusEvent): void {
+    this.initialRange.finish();
     this.focusedRowKey = focusedTranscriptRowKey(this.scrollElement, event.target);
   }
 
@@ -724,7 +725,7 @@ export class ChatSessionVirtualizerHost implements ChatTranscriptSession {
 
   private queueLayout(): void {
     if (
-      (this.initialRange.measuring && this.rowKeys.length) ||
+      (this.initialRange.pending && this.rowKeys.length) ||
       this.offsetState.scrollCommand?.target === "message"
     ) {
       this.renderer.queueAfterCommit(this.completeLayout);
@@ -742,12 +743,12 @@ export class ChatSessionVirtualizerHost implements ChatTranscriptSession {
       this.messageRowKeysById,
       this.rowIndexesByKey,
     );
-    if (!this.initialRange.measuring || !this.rowKeys.length || !this.scrollElement?.clientHeight) {
+    if (!this.initialRange.pending || !this.rowKeys.length || !this.scrollElement?.clientHeight) {
       return;
     }
     this.syncViewportGeometry();
     const measured = this.presentation.measureRows();
-    if ((this.initialRange.pending && this.initialRange.extend(this.scrollElement)) || measured) {
+    if (this.initialRange.extend(this.scrollElement) || measured) {
       this.invalidate();
       return;
     }
@@ -764,13 +765,8 @@ export class ChatSessionVirtualizerHost implements ChatTranscriptSession {
       this.offsetState.syncNativeOffset?.();
     }
     if (isTranscriptRangeCommitted(this.threadInnerElement, this.virtualizer)) {
-      if (this.initialRange.pending) {
-        this.initialRange.finish(true);
-        this.renderer.syncInitialPosition();
-      } else {
-        // Deferred overscan has replaced its estimates before this paint.
-        this.initialRange.measuring = false;
-      }
+      this.initialRange.finish(true);
+      this.renderer.syncInitialPosition();
     }
     this.invalidate();
   };
