@@ -11,11 +11,8 @@ import { createTestGatewayScheduler } from "../../../../src/test-utils/gateway-s
 import { createDeferred } from "../../../../test/helpers/promise.js";
 import type { CronJob } from "../../api/types.ts";
 import { invalidateStaleDeliveryRoute } from "../../pages/cron/delivery-conversations.ts";
-import {
-  createCronJob,
-  createStateWithRequest,
-  cronJobsListResponse,
-} from "./cron.test-support.ts";
+import { createCronJob, cronJobsListResponse } from "../../test-helpers/cron.ts";
+import { createStateWithRequest } from "./cron.test-support.ts";
 import { addCronJob, cancelCronEdit, startCronEdit } from "./index.ts";
 import type { CronFormState } from "./types.ts";
 

@@ -1,6 +1,9 @@
 // UI E2E projects share Chromium without acquiring a UI server.
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { chromium } from "playwright";
 import type { TestProject } from "vitest/node";
+import { normalizeControlUiBuildInfo } from "../../ui/src/build-info-normalizers.ts";
 import {
   canRunPlaywrightChromium,
   resolvePlaywrightChromiumExecutablePath,
@@ -32,6 +35,18 @@ export default async function setup(project: TestProject) {
   const available = canRunPlaywrightChromium(executablePath);
   if (available) {
     await assertUiE2ePreflight();
+  }
+  const productionRoot = process.env.OPENCLAW_UI_E2E_PRODUCTION_ARTIFACT_ROOT;
+  if (productionRoot) {
+    // Artifact restore owns digest/revision verification. Fixtures copy these
+    // immutable production bytes before changing HTML or service-worker identity.
+    const { buildId, version } = normalizeControlUiBuildInfo(
+      JSON.parse(readFileSync(path.join(productionRoot, "..", "build-info.json"), "utf8")),
+    );
+    root.provide("controlUiE2ePrebuiltAssets", {
+      root: path.resolve(productionRoot),
+      buildInfo: { buildId, version },
+    });
   }
   const browser = available
     ? await chromium.launchServer({

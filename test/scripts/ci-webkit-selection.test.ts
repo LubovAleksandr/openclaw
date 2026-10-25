@@ -34,7 +34,6 @@ describe("Control UI WebKit selection", () => {
     expect(JSON.parse(expectDefined(result.outputs.ui_test_matrix, "UI matrix")).include).toEqual([
       { shard: 1 },
       { shard: 2 },
-      { shard: 3 },
     ]);
   });
 
@@ -86,6 +85,6 @@ describe("Control UI WebKit selection", () => {
         ).toBe(expected);
       }
     }
-    expect(workflow.jobs["checks-ui"].strategy["max-parallel"]).toBe(3);
+    expect(workflow.jobs["checks-ui"].strategy["max-parallel"]).toBe(2);
   });
 });

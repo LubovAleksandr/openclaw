@@ -10445,9 +10445,9 @@ describe("ci workflow guards", () => {
     ).toBe(selected.mocked.length + selected.browser.length > 0);
     expect(manifest.outputs.run_ui_real_gateway).toBe(String(!isPr && selected.real.length > 0));
     expect(JSON.parse(expectDefined(manifest.outputs.ui_test_matrix, "UI matrix")).include).toEqual(
-      expectedUi.map((_, index) => ({ shard: index + 1 })),
+      expectedUi.slice(0, 2).map((_, index) => ({ shard: index + 1 })),
     );
-    expect(manifest.outputs.ui_test_shard_count).toBe(String(expectedUi.length));
+    expect(manifest.outputs.ui_test_shard_count).toBe(String(Math.min(2, expectedUi.length)));
     expect(
       resolveSelectedUiIncludes(
         expectDefined(manifest.outputs.ui_test_groups_gzip_base64, "UI selection"),
@@ -10705,7 +10705,7 @@ describe("ci workflow guards", () => {
       expect(manifest.outputs.run_ui_tests).toBe(String(selected));
       expect(
         JSON.parse(expectDefined(manifest.outputs.ui_test_matrix, "UI matrix")).include,
-      ).toEqual(expectedUi.map((_, index) => ({ shard: index + 1 })));
+      ).toEqual(expectedUi.slice(0, 2).map((_, index) => ({ shard: index + 1 })));
       expect(
         resolveSelectedUiIncludes(
           expectDefined(manifest.outputs.ui_test_groups_gzip_base64, "UI selection"),
@@ -10783,6 +10783,45 @@ describe("ci workflow guards", () => {
     },
   );
 
+  it.each([false, true])(
+    "runs production artifact fixtures only when the target owns the split (supported: %s)",
+    (supported) => {
+      const step = expectDefined(
+        readCiWorkflow().jobs["checks-ui-browser-extension"].steps.find(
+          (candidate: WorkflowStep) =>
+            candidate.name === "Test production Control UI deployment fixtures",
+        ),
+        "production deployment proof",
+      );
+      const root = tempDirs.make("openclaw-production-artifact-command-");
+      mkdirSync(path.join(root, "test/vitest"), { recursive: true });
+      mkdirSync(path.join(root, "scripts"), { recursive: true });
+      writeFileSync(
+        path.join(root, "test/vitest/vitest.ui-e2e.config.ts"),
+        supported ? "// ui-e2e-production-artifact-contract-v1" : "export default {};",
+      );
+      const receipt = path.join(root, "invocation.json");
+      writeFileSync(
+        path.join(root, "scripts/run-vitest.mjs"),
+        `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(receipt)}, JSON.stringify(process.argv.slice(2)));`,
+      );
+      const result = runWorkflowShellScript(step.run, { cwd: root });
+      expect(result.status, result.stdout + result.stderr).toBe(0);
+      expect(existsSync(receipt)).toBe(supported);
+      if (supported) {
+        expect(JSON.parse(readFileSync(receipt, "utf8"))).toEqual([
+          "run",
+          "--config",
+          "test/vitest/vitest.ui-e2e.config.ts",
+          "--configLoader",
+          "runner",
+          "--maxWorkers",
+          "2",
+        ]);
+      }
+    },
+  );
+
   it("gates current Control UI changes on ordinary and real-Gateway Chromium E2E", () => {
     const workflow = readCiWorkflow();
     const ui = workflow.jobs["checks-ui"];
@@ -10801,7 +10840,11 @@ describe("ci workflow guards", () => {
     );
     expect(uiE2e["runs-on"]).not.toBe(ui["runs-on"]);
     expect(uiE2e["timeout-minutes"]).toBe(25);
-    expect(uiE2e.env).toEqual({ OPENCLAW_UI_E2E_SKIP_REAL_GATEWAY: "1" });
+    expect(uiE2e.env).toEqual({
+      OPENCLAW_UI_E2E_SKIP_REAL_GATEWAY: "1",
+      OPENCLAW_UI_E2E_SKIP_PRODUCTION_ARTIFACT:
+        "${{ needs.preflight.outputs.reuse_browser_extension_build == 'true' && needs.preflight.outputs.run_ui_e2e == 'true' && needs.preflight.outputs.compatibility_target != 'true' && '1' || '0' }}",
+    });
     expect(uiE2e.strategy["fail-fast"]).toBe(false);
     expect(uiE2e.strategy["max-parallel"]).toBe(14);
     expect(uiE2e.strategy.matrix).toBe("${{ fromJson(needs.preflight.outputs.ui_e2e_matrix) }}");
@@ -10874,6 +10917,44 @@ describe("ci workflow guards", () => {
       "node scripts/run-vitest.mjs extensions/browser/chrome-extension/bootstrap.chromium.test.ts",
     );
     expect(browserScenario.run).not.toContain("qaRuntime");
+    const productionScenario = expectDefined(
+      uiBrowser.steps.find(
+        (step: WorkflowStep) => step.name === "Test production Control UI deployment fixtures",
+      ),
+      "production Control UI deployment fixtures",
+    );
+    const restoreIndex = uiBrowser.steps.findIndex(
+      (step: WorkflowStep) => step.name === "Restore public runtime for browser extension tests",
+    );
+    expect(uiBrowser.steps.indexOf(productionScenario)).toBeGreaterThan(restoreIndex);
+    expect(productionScenario.env.OPENCLAW_UI_E2E_PRODUCTION_ARTIFACT_ROOT).toBe(
+      "${{ github.workspace }}/dist/control-ui",
+    );
+    expect(productionScenario.run).toContain("--config test/vitest/vitest.ui-e2e.config.ts");
+    for (const reuse of [false, true]) {
+      for (const runUi of [false, true]) {
+        for (const compatibility of [false, true]) {
+          const context = {
+            eventName: "pull_request" as const,
+            repository: "openclaw/openclaw",
+            runAttempt: 1,
+            preflightOutputs: {
+              reuse_browser_extension_build: String(reuse),
+              run_ui_e2e: String(runUi),
+              compatibility_target: String(compatibility),
+            },
+          };
+          const delegated = reuse && runUi && !compatibility;
+          expect(
+            evaluateWorkflowExpression(uiE2e.env.OPENCLAW_UI_E2E_SKIP_PRODUCTION_ARTIFACT, context),
+          ).toBe(delegated ? "1" : "0");
+          // The browser artifact job itself is admitted only when reuse is true.
+          expect(reuse && evaluateWorkflowCondition(productionScenario.if, context)).toBe(
+            delegated,
+          );
+        }
+      }
+    }
     const artifactSteps = workflow.jobs["build-artifacts"].steps as WorkflowStep[];
     expect(artifactSteps.findIndex((step) => step.id === "browser_runtime_package")).toBeLessThan(
       artifactSteps.findIndex((step) => step.id === "built_artifact_checks"),

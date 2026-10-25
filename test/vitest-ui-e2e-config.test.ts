@@ -79,6 +79,7 @@ type OwnershipProbe = {
     url?: string | null;
     buildInfo?: typeof prebuiltBuildInfo | null;
     bridge: boolean;
+    productionRoot?: string;
   }>;
   leases: Array<{ outDir: string; closed: boolean; removed: boolean }>;
   shards: string[][];
@@ -86,6 +87,7 @@ type OwnershipProbe = {
   admissions: string[];
   canonicalAssetsIntact: boolean;
   rootWorkers: number;
+  passWithNoTests: boolean;
   setupError?: string;
 };
 
@@ -100,6 +102,8 @@ function expectInventory(result: OwnershipProbe, inventory: string[]) {
 function probeOwnership(
   options: {
     prebuilt?: boolean;
+    productionArtifact?: boolean;
+    skipProductionArtifact?: boolean;
     filters?: string[];
     cli?: string[];
     project?: string[];
@@ -116,6 +120,7 @@ function probeOwnership(
   const canonicalRoot = path.join(directory, "canonical-ui");
   fs.mkdirSync(canonicalRoot);
   fs.writeFileSync(path.join(canonicalRoot, "bundle.html"), "canonical fixture");
+  fs.writeFileSync(path.join(directory, "build-info.json"), JSON.stringify(prebuiltBuildInfo));
   const resourceFile = path.join(directory, "resources.mjs");
   fs.writeFileSync(
     resourceFile,
@@ -247,8 +252,10 @@ function probeOwnership(
         contexts: [...new Set(specs.map(spec => spec.project))].map(project => ({ name: project.name,
           url: project.getProvidedContext().controlUiE2eServerBaseUrl,
           buildInfo: project.getProvidedContext().controlUiE2eServerBuildInfo,
+          productionRoot: project.getProvidedContext().controlUiE2ePrebuiltAssets?.root,
           bridge: project.config.setupFiles.some(file => file.endsWith("/vitest.ui-e2e.setup.ts")),
         })), shards, steps, setupError, rootWorkers: ctx.config.maxWorkers,
+        passWithNoTests: ctx.config.passWithNoTests,
         admissions: fs.existsSync(${JSON.stringify(admissionsFile)})
           ? fs.readFileSync(${JSON.stringify(admissionsFile)}, "utf8").trim().split("\\n").map(JSON.parse) : [],
       };
@@ -272,6 +279,8 @@ function probeOwnership(
         CI: "1",
         OPENCLAW_VITEST_INCLUDE_FILE: "",
         OPENCLAW_UI_E2E_SKIP_REAL_GATEWAY: options.skipRealGateway ? "1" : "",
+        OPENCLAW_UI_E2E_SKIP_PRODUCTION_ARTIFACT: options.skipProductionArtifact ? "1" : "",
+        OPENCLAW_UI_E2E_PRODUCTION_ARTIFACT_ROOT: options.productionArtifact ? canonicalRoot : "",
       },
     },
   );
@@ -383,6 +392,40 @@ describe("Control UI E2E resource ownership", () => {
     );
     expect(result.admissions).toEqual([]);
     expect(skipped.admissions).toEqual([]);
+  });
+
+  it("routes production deployment fixtures exactly once with or without artifact reuse", async () => {
+    const { uiE2eProductionArtifactTestFiles } = await import("./vitest/vitest.ui-e2e.config.ts");
+    const files = uiE2eProductionArtifactTestFiles.toSorted();
+    const local = probeOwnership({ filters: files });
+    expectInventory(local, files);
+    expect(local.files.every((entry) => entry.project === "ui-e2e-standalone")).toBe(true);
+    expect(local.leases).toEqual([]);
+    expect(local.passWithNoTests).toBe(false);
+    expect(local.contexts.every((entry) => entry.productionRoot === undefined)).toBe(true);
+
+    const skipped = probeOwnership({ filters: files, skipProductionArtifact: true });
+    const artifact = probeOwnership({ productionArtifact: true });
+    expect(skipped.files).toEqual([]);
+    expect(skipped.passWithNoTests).toBe(true);
+    expectInventory(artifact, files);
+    expect(artifact.setupError).toBeUndefined();
+    expect(
+      artifact.contexts.every((entry) => entry.productionRoot?.endsWith("/canonical-ui")),
+    ).toBe(true);
+    expect(artifact.leases).toEqual([]);
+    expect(artifact.canonicalAssetsIntact).toBe(true);
+    expectInventory(
+      {
+        ...artifact,
+        files: [...skipped.files, ...artifact.files],
+        shards: [...skipped.shards, ...artifact.shards],
+      },
+      files,
+    );
+
+    const partial = probeOwnership({ productionArtifact: true, filters: [files[0]!] });
+    expectInventory(partial, [files[0]!]);
   });
 
   it.each([undefined, 1])(

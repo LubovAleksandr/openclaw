@@ -109,14 +109,38 @@ Add `ci:full` before a PR run to select every `checks-ui` unit shard, all
 same UI inventories and shard budgets as scheduled `main` CI. Unlabeled PRs keep
 change-selected UI coverage; the label does not expand unrelated platform lanes.
 
+Current UI unit/browser CI uses two native shards with three workers each,
+removing one repeated checkout and setup while preserving complete discovery,
+runtime ownership, and first-shard WebKit selection.
+
+The mocked Control UI sharder keeps five measured source fixtures that need
+compiled subprocesses together in one existing shard. Their combined timing
+weight participates in normal packing, so preparation is shared without adding
+jobs or changing test selection, isolation, or worker limits. The group is an
+explicit scheduling hint; a new subprocess borrower can add preparation to
+another shard until the measured group is refreshed.
+
+UI fixtures import pure protocol constants and data builders directly, so mocked
+browser cases do not load backend stores or Gateway policy. The shared E2E
+cleanup hook reads the canonical admission state through its thin state module;
+policy and logging remain owned by the Gateway admission module.
+
+When artifact reuse is enabled, the service-worker-update and phone stale-build
+fixtures run in the existing browser-extension artifact job. Each copies the
+verified production UI artifact and refreshes its own build identity before
+serving it. Local, compatibility, and frozen targets retain their ordinary build
+path.
+
 Real-Gateway UI shards have a 30-minute whole-job budget on the normal Blacksmith
 path. Successful 16-class jobs reached 19:04, leaving too little margin under the
 former 20-minute limit. Hosted and retry paths retain their 40-minute budget;
 runner size, worker count, shard split, and individual test deadlines are unchanged.
 Current targets overlap desktop transport proof with the one-worker serial UI
 phase, then join both cleanup owners before running qualified fixtures with the
-existing two-worker ceiling. One-worker overrides, desktop-only selections, and
-frozen targets retain sequential execution.
+existing two-worker ceiling. The serial and qualified phases share one prepared
+worker generation when both run; the desktop carrier keeps its separate lifecycle,
+and the shared generation is disposed only after both borrowers join. One-worker
+overrides, desktop-only selections, and frozen targets retain sequential execution.
 
 First-hop compatibility uses a 3,200-second container budget and a 3,500-second lane
 budget, based on hosted 4-vCPU measurements with a slow-host margin. The release
@@ -313,9 +337,9 @@ coverage plus qualified Bun coverage; see
 Both runtimes group uncached, non-isolated UI files by environment in batches
 to reduce worker restarts while retaining native shard ownership and worker budgets.
 Bun UI workers also use an [allocation-based collection trigger](/ci/scope-and-routing/job-budgets)
-to preserve memory headroom across the three native shards.
+to preserve memory headroom across the two native shards.
 Main runs UI on Node, so a PR changing the runtime owner
-(`scripts/lib/ci-test-runtime.mts`) selects the three existing UI unit shards on
+(`scripts/lib/ci-test-runtime.mts`) selects the two existing UI unit shards on
 Bun; see [scope selection](/ci/scope-and-routing/selection).
 
 Frozen-target CI loads its Node shard planner, planning helpers, and measured

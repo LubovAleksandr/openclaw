@@ -101,12 +101,17 @@ export const uiE2eRuntimeBudgetTestFile = resolveUiTypeScriptPath(
 
 // These independent fixture/build owners do not share the source optimizer cache.
 // New files stay bundled unless they own every UI server they use.
+export const uiE2eProductionArtifactTestFiles = [
+  "ui/src/e2e/service-worker-update.e2e.test.ts",
+  "ui/src/e2e/phone-stale-build-recovery.e2e.test.ts",
+].map((file) => resolveUiTypeScriptPath(file));
+
 const uiE2eStandaloneTestFiles = [
+  ...uiE2eProductionArtifactTestFiles,
   "ui/src/e2e/board-fixture.e2e.test.ts",
   "ui/src/e2e/boot-module-boundaries.e2e.test.ts",
   "ui/src/e2e/control-ui-build-publication.e2e.test.ts",
   "ui/src/e2e/control-ui-stale-build-reload.e2e.test.ts",
-  "ui/src/e2e/service-worker-update.e2e.test.ts",
 ].map((file) => resolveUiTypeScriptPath(file));
 
 // Real Gateways never overlap the parallel phase when the CI skip is absent.
@@ -131,12 +136,23 @@ export function createUiE2eVitestConfig(
   const exclude = [
     ...(baseTest.exclude ?? []).filter((pattern) => pattern !== vitestE2eTestGlob),
     ...realGatewayExclude,
+    ...(env.OPENCLAW_UI_E2E_SKIP_PRODUCTION_ARTIFACT === "1"
+      ? uiE2eProductionArtifactTestFiles
+      : []),
   ];
   const includeFromEnv = loadPatternListFromEnv("OPENCLAW_VITEST_INCLUDE_FILE", env);
-  const include =
+  const selectedInclude =
     includeFromEnv ??
     narrowIncludePatternsForCli(uiE2eIncludePatterns, argv) ??
     uiE2eIncludePatterns;
+  // ui-e2e-production-artifact-contract-v1: older frozen targets keep these tests in ordinary shards.
+  const include = env.OPENCLAW_UI_E2E_PRODUCTION_ARTIFACT_ROOT
+    ? (intersectIncludePatterns(
+        uiE2eProductionArtifactTestFiles,
+        selectedInclude,
+        matchesVitestGlob,
+      ) ?? [])
+    : selectedInclude;
   const serialInclude = (
     intersectIncludePatterns(uiE2eSerialTestFiles, include, matchesVitestGlob) ?? []
   ).toSorted();
@@ -178,6 +194,12 @@ export function createUiE2eVitestConfig(
       // the inline projects when `projects` is present.
       include,
       maxWorkers,
+      // A partial plan containing only delegated fixtures legitimately has no
+      // ordinary tests; all other empty selections retain Vitest's failure.
+      passWithNoTests:
+        env.OPENCLAW_UI_E2E_SKIP_PRODUCTION_ARTIFACT === "1" &&
+        include.length > 0 &&
+        include.every((file) => uiE2eProductionArtifactTestFiles.includes(file)),
       // ui-e2e-projects-contract-v1: frozen-target preflight may select these projects.
       // Each project already composes the complete shared config and must not inherit it again.
       projects: [

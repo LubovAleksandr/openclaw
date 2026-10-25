@@ -2389,7 +2389,7 @@ jobs:
     timeout-minutes: ${{ ((needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND) == 'github' || (contains(fromJSON('["hybrid","runson"]'), (needs.preflight.outputs.ci_qualification == 'true' && (github.run_attempt == 1 && needs.preflight.outputs.qualification_runner_backend || 'github') || vars.OPENCLAW_CI_RUNNER_BACKEND)) && github.run_attempt > 1) || (github.event_name == 'workflow_dispatch' && needs.preflight.outputs.ci_shape != 'main') || (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name != github.repository)) && (needs.preflight.outputs.ui_test_runtime_policy == 'dual-all' && 70 || 35) || (needs.preflight.outputs.ui_test_runtime_policy == 'dual-all' && 40 || 20) }}
     strategy:
       fail-fast: false
-      max-parallel: 3
+      max-parallel: 2
       matrix: ${{ fromJSON(needs.preflight.outputs.ui_test_matrix) }}
     env:
       COMPATIBILITY_TARGET: *historical_target
@@ -2476,6 +2476,7 @@ jobs:
     timeout-minutes: 25
     env:
       OPENCLAW_UI_E2E_SKIP_REAL_GATEWAY: "1"
+      OPENCLAW_UI_E2E_SKIP_PRODUCTION_ARTIFACT: ${{ needs.preflight.outputs.reuse_browser_extension_build == 'true' && needs.preflight.outputs.run_ui_e2e == 'true' && needs.preflight.outputs.compatibility_target != 'true' && '1' || '0' }}
     strategy:
       fail-fast: false
       max-parallel: 14
@@ -2674,6 +2675,35 @@ jobs:
         run: |
           node --import ./scripts/tsx.mjs scripts/ensure-playwright-chromium.mts --require-playwright-chromium
           node scripts/run-vitest.mjs extensions/browser/chrome-extension/bootstrap.chromium.test.ts
+
+      - name: Test production Control UI deployment fixtures
+        if: needs.preflight.outputs.run_ui_e2e == 'true' && needs.preflight.outputs.compatibility_target != 'true'
+        env:
+          OPENCLAW_UI_E2E_PRODUCTION_ARTIFACT_ROOT: ${{ github.workspace }}/dist/control-ui
+          OPENCLAW_UI_E2E_DIAGNOSTIC_DIR: .artifacts/control-ui-e2e-timeouts/production-artifact-attempt-${{ github.run_attempt }}
+        run: |
+          if ! node --input-type=module <<'NODE'
+          import { readFileSync } from "node:fs";
+          const config = readFileSync("test/vitest/vitest.ui-e2e.config.ts", "utf8");
+          process.exit(config.includes("ui-e2e-production-artifact-contract-v1") ? 0 : 1);
+          NODE
+          then
+            echo "Target retains production deployment fixtures in ordinary UI shards."
+            exit 0
+          fi
+          node scripts/run-vitest.mjs run \
+            --config test/vitest/vitest.ui-e2e.config.ts \
+            --configLoader runner \
+            --maxWorkers 2
+
+      - name: Upload production Control UI deployment timeout diagnostics
+        if: failure() && hashFiles('.artifacts/control-ui-e2e-timeouts/production-artifact-attempt-*/failure-*/failure.public.json') != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: control-ui-production-artifact-timeout-${{ github.run_attempt }}
+          path: .artifacts/control-ui-e2e-timeouts/production-artifact-attempt-${{ github.run_attempt }}/failure-*/failure.public.json
+          if-no-files-found: ignore
+          retention-days: 7
 
   checks-ui-e2e-real-gateway:
     permissions:

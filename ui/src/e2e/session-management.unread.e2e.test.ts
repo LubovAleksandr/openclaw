@@ -1,6 +1,6 @@
-import { GATEWAY_SERVER_CAPS } from "@openclaw/gateway-protocol";
 import type { Page } from "playwright";
 import { it, expect } from "vitest";
+import { GATEWAY_SERVER_CAPS } from "../../../packages/gateway-protocol/src/server-capabilities.js";
 import { getControlUiContextHandle } from "../test-helpers/control-ui-e2e-context.ts";
 import { createControlUiSessionRow as sessionRow } from "../test-helpers/control-ui-session-fixtures.ts";
 import { captureUiProof, expectRequestCountStable } from "./chat-flow.test-support.ts";

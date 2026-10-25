@@ -10,7 +10,10 @@ import {
 import { runQaGatewayFixture } from "../../../test/helpers/qa-gateway-cleanup.ts";
 import { createRequireRecord } from "../../../test/helpers/record.js";
 import type { CronJob } from "../api/types.ts";
+import { evaluateControlUiContext } from "../test-helpers/control-ui-e2e-context.ts";
+import { captureControlUiE2eFailureDiagnostics } from "../test-helpers/control-ui-e2e-diagnostics.ts";
 import { waitForControlUiGatewayReady } from "../test-helpers/control-ui-e2e-readiness.ts";
+import { installControlUiE2eRendererStallProbe } from "../test-helpers/control-ui-e2e-renderer-stall.ts";
 import { openPicker, pickerValue, selectPickerValue } from "../test-helpers/select-picker-e2e.ts";
 import {
   createControlUiE2eContextOptions,
@@ -315,54 +318,81 @@ function cronJobId(result: Record<string, unknown>): string {
   return job.id;
 }
 
+let cronPage: CronPageEvidence | undefined;
+
 async function withCronJobPage(
   cliJson: CliJson,
   jobId: string,
   run: (evidence: CronPageEvidence) => Promise<void>,
 ) {
-  const handoff = await cliJson(["dashboard", "--json"]);
-  expect(handoff.ok).toBe(true);
-  if (typeof handoff.browserUrl !== "string") {
-    throw new Error("Dashboard did not return its normal browser handoff");
-  }
-  const issued = new URL(handoff.browserUrl);
-  const url = new URL("cron", issued);
-  url.hash = issued.hash;
-  url.searchParams.set("job", jobId);
-  await suite.withPage(
-    {
-      ...createControlUiE2eContextOptions(),
-    },
-    async ({ page }) => {
-      const requests: Record<string, unknown>[] = [];
-      const replies: Record<string, unknown>[] = [];
-      page.on("websocket", (socket) => {
-        socket.on("framesent", ({ payload }) => {
-          const frame = requireRecord(JSON.parse(payload.toString()));
-          if (
-            frame.type === "req" &&
-            (frame.method === "cron.update" || frame.method === "cron.add")
-          ) {
-            requests.push(frame);
-          }
-        });
-        socket.on("framereceived", ({ payload }) => {
-          const frame = requireRecord(JSON.parse(payload.toString()));
-          if (frame.type === "res" && requests.some(({ id }) => id === frame.id)) {
-            replies.push(frame);
-          }
-        });
+  const firstVisit = !cronPage;
+  if (!cronPage) {
+    const context = await suite.newBrowserContext(createControlUiE2eContextOptions());
+    const page = await context.newPage();
+    await installControlUiE2eRendererStallProbe(page);
+    const requests: Record<string, unknown>[] = [];
+    const replies: Record<string, unknown>[] = [];
+    page.on("websocket", (socket) => {
+      socket.on("framesent", ({ payload }) => {
+        const frame = requireRecord(JSON.parse(payload.toString()));
+        if (
+          frame.type === "req" &&
+          (frame.method === "cron.update" || frame.method === "cron.add")
+        ) {
+          requests.push(frame);
+        }
       });
+      socket.on("framereceived", ({ payload }) => {
+        const frame = requireRecord(JSON.parse(payload.toString()));
+        if (frame.type === "res" && requests.some(({ id }) => id === frame.id)) {
+          replies.push(frame);
+        }
+      });
+    });
+    cronPage = { page, requests, replies };
+  }
+  const evidence = cronPage;
+  const { page, requests, replies } = evidence;
+  requests.length = 0;
+  replies.length = 0;
+  try {
+    if (firstVisit) {
+      const handoff = await cliJson(["dashboard", "--json"]);
+      expect(handoff.ok).toBe(true);
+      if (typeof handoff.browserUrl !== "string") {
+        throw new Error("Dashboard did not return its normal browser handoff");
+      }
+      const issued = new URL(handoff.browserUrl);
+      const url = new URL("cron", issued);
+      url.hash = issued.hash;
+      url.searchParams.set("job", jobId);
       const document = await page.goto(url.toString());
       if (!document) {
         throw new Error("Gateway did not return the Control UI document");
       }
       expect(document.status()).toBe(200);
-      await waitForControlUiGatewayReady(page);
-      expect(new URL(page.url()).hash.length).toBe(0);
-      await run({ page, requests, replies });
-    },
-  );
+    } else {
+      // Retire the previous editor and its open disclosures through normal routing.
+      await evaluateControlUiContext(page, (app) => app.navigate("about"));
+      await page.locator("openclaw-about-page").waitFor();
+      await page.locator("openclaw-cron-page").waitFor({ state: "detached" });
+      await evaluateControlUiContext(
+        page,
+        (app, id) => app.navigate("cron", { search: `?job=${encodeURIComponent(id)}`, hash: "" }),
+        jobId,
+      );
+      await page.locator("openclaw-cron-page").waitFor();
+    }
+    await waitForControlUiGatewayReady(page);
+    expect(new URL(page.url()).hash.length).toBe(0);
+    await run(evidence);
+  } catch (error) {
+    await captureControlUiE2eFailureDiagnostics(page, {
+      error: error instanceof Error ? error : new Error(String(error)),
+      label: "Control UI exact stagger with a real Gateway",
+    });
+    throw error;
+  }
 }
 
 async function submitCronForm(

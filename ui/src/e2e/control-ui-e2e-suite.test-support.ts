@@ -12,7 +12,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, inject, v
 import {
   getActiveGatewayRootWorkCount,
   getActiveGatewayRootWorkHolders,
-} from "../../../src/process/gateway-work-admission.js";
+} from "../../../src/process/gateway-work-admission-state.js";
 import { createDeferredCore } from "../../../src/shared/deferred.ts";
 import { runQaGatewayFixture } from "../../../test/helpers/qa-gateway-cleanup.js";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
