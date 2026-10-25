@@ -20,6 +20,7 @@ import {
   TranscriptTestHost,
 } from "../test-helpers/chat-transcript-native.tsx";
 import { createChatTranscript } from "./chat-transcript-controller.ts";
+import { projectChatTranscript } from "./chat-transcript-projection.ts";
 import {
   flushDeferredRowPrune,
   installTranscriptDomMocks,
@@ -736,4 +737,44 @@ it("preserves saved reader restoration when initial rows include typing", async 
     renderRows(rows);
   }
   expect(container.scrollTop).toBe(420);
+});
+
+it("keeps late reactions when geometry replays an older projection", async () => {
+  const sessionKey = "agent:main:reaction-replay";
+  const props = threadProps("reaction-replay", sessionKey, [
+    {
+      role: "assistant",
+      content: "A retained reply",
+      timestamp: 1_000,
+      __openclaw: { id: "reply" },
+    },
+  ]);
+  const transcript = createTestTranscript();
+  const container = document.body.appendChild(document.createElement("div"));
+  transcript.start();
+  onTestFinished(() => {
+    render(null, container);
+    transcript.dispose();
+    container.remove();
+  });
+  const project = (messageReactions: NonNullable<typeof props.messageReactions>) =>
+    transcript.renderSession(sessionKey, (session) =>
+      projectChatTranscript({ ...props, messageReactions, onReact: vi.fn() }, session),
+    );
+  const before = project(new Map());
+  render(before.renderRows(), container);
+  await flushDeferredRowPrune();
+  const bubble = requireElement(container, ".chat-bubble");
+  const after = project(
+    new Map([["reply", [{ emoji: "👍", count: 1, identities: [{ id: "peer", label: "Peer" }] }]]]),
+  );
+
+  // A queued geometry pass can replay the accepted snapshot before the new one commits.
+  render(before.renderRows(), container);
+  flush();
+  render(after.renderRows(), container);
+  flush();
+
+  expect(requireElement(container, ".chat-message-reactions").textContent).toContain("👍");
+  expect(requireElement(container, ".chat-bubble")).toBe(bubble);
 });
