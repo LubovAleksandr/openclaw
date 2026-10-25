@@ -48,6 +48,7 @@ import {
   startProductionControlUiE2eServer,
   startBuiltControlUiE2eServer,
 } from "../ui/src/test-helpers/control-ui-e2e.ts";
+import { navigationDrawerToggle } from "../ui/src/test-helpers/control-ui-navigation.ts";
 import { createControlUiSandboxFixtureServer } from "../ui/src/test-helpers/control-ui-sandbox-fixture-server.ts";
 import { createTeamScaleSidebarListOwner } from "../ui/src/test-helpers/control-ui-sidebar-list-fixture.ts";
 import {
@@ -776,6 +777,8 @@ try {
   });
   const context = await browser.newContext({
     viewport,
+    isMobile: viewportName === "mobile",
+    hasTouch: viewportName === "mobile",
     ...(colorScheme ? { colorScheme } : {}),
     serviceWorkers: "block",
     permissions: ["local-network-access"],
@@ -1450,13 +1453,11 @@ try {
   };
   if (!firstLoad) {
     await page.goto(chatUrl);
-    if (viewportName === "mobile") {
-      await page
-        .locator('.agent-chat__header--mobile button[aria-expanded="false"]')
-        .first()
-        .click();
-    }
     try {
+      if (viewportName === "mobile") {
+        await navigationDrawerToggle(page).click();
+        await page.locator(".shell--nav-drawer-open").waitFor();
+      }
       await page.locator("#sidebar-session-owner-title").click();
       await page
         .locator(
@@ -1480,6 +1481,10 @@ try {
     }
     await settle("chat");
     await expandSidebar();
+    if (viewportName === "mobile") {
+      await page.keyboard.press("Escape");
+      await page.locator(".shell--nav-drawer-open").waitFor({ state: "detached" });
+    }
     if (values["chat-dashboard-route"] || (face === "dashboard" && values["dashboard-widget"])) {
       // Save the operator's dashboard-first layout through its normal action.
       if (
@@ -1513,26 +1518,21 @@ try {
       }
       await settle("chat");
     }
-    await page.locator('aside.sidebar[data-snapshot-saved="true"]').waitFor();
+    await page.locator('aside.sidebar[data-snapshot-saved="true"]').waitFor({ state: "attached" });
     const { storage: warmStorage, ...snapshotSave } = await page.evaluate(
       persistColdLoadWarmState,
       warmInput,
     );
     warmStates.push(warmStorage);
     snapshotSaves.push(snapshotSave);
-    if (viewportName === "mobile") {
-      await page.keyboard.press("Escape");
-    }
     for (let index = 1; index < bundleSlots.length; index++) {
       await restoreColdLoadWarmState(page, warmStorage);
       await selectComparisonBundle(index, page);
       await page.reload({ waitUntil: "domcontentloaded" });
       await settle("chat");
       if (viewportName === "mobile") {
-        await page
-          .locator('.agent-chat__header--mobile button[aria-expanded="false"]')
-          .first()
-          .click();
+        await navigationDrawerToggle(page).click();
+        await page.locator(".shell--nav-drawer-open").waitFor();
       }
       await expandSidebar();
       const { storage, ...saved } = await page.evaluate(persistColdLoadWarmState, warmInput);
@@ -1540,6 +1540,7 @@ try {
       snapshotSaves.push(saved);
       if (viewportName === "mobile") {
         await page.keyboard.press("Escape");
+        await page.locator(".shell--nav-drawer-open").waitFor({ state: "detached" });
       }
     }
   }

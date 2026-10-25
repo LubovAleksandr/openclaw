@@ -109,7 +109,9 @@ export function installCriticalPathProbe(bootRoute: "chat" | "new" | "sessions" 
       case "cold-settings":
       case "settings":
         ready = Boolean(
-          enabled(".settings-sidebar__search-input") && visible("#settings-font-chat"),
+          (document.querySelector(".shell--mobile-nav:not(.shell--nav-drawer-open)") ||
+            enabled(".settings-sidebar__search-input")) &&
+          enabled("#settings-font-chat"),
         );
         break;
       case "cron":
