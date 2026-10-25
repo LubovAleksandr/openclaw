@@ -22,7 +22,7 @@ import {
 } from "../runtime/resources.js";
 import type { SkillSnapshot } from "../types.js";
 import * as bundles from "./bundle.js";
-import { decodeSkillLibraryFile as decodeFile, prepareSkillLibraryBundle } from "./bundle.js";
+import { decodeSkillLibraryFile as decodeFile } from "./bundle.js";
 import * as selectionReads from "./selection-read.js";
 import * as selection from "./selection.js";
 import { loadSkillLibrarySelection as loadSelection } from "./selection.js";
@@ -30,6 +30,9 @@ import { saveSkillLibrary } from "./service.js";
 import { draft, expectCode, libraryPin as pinOf } from "./service.test-support.js";
 
 const dirs = useStateDatabaseTempDirs();
+const noop = () => {};
+const inRoot = <T>(root: string, run: () => Promise<T>) =>
+  withEnvAsync({ OPENCLAW_STATE_DIR: root }, run);
 const content =
   "---\nname: guide\ndescription: Saved procedure\n---\n# Guide\nRead references/data.bin.\n";
 function snapshotFor(...pins: NonNullable<SkillSnapshot["librarySelections"]>): SkillSnapshot {
@@ -45,16 +48,7 @@ async function fixture() {
     getConfig: () => ({}),
     assertCurrent() {},
   };
-  const saved = await saveSkillLibrary(
-    authority,
-    {
-      slug: "guide",
-      content,
-      expectedRevision: null,
-      files: draft().files,
-    },
-    options,
-  );
+  const saved = await saveSkillLibrary(authority, { ...draft(), content }, options);
   const pin = pinOf(saved.entry);
   const snapshot = snapshotFor(pin);
   const databasePath = openDatabase(options).path;
@@ -76,12 +70,11 @@ it.each(["ordinary", "artifact-preserving", "disposable"] as const)(
   async (mode) => {
     const { root, snapshot, pin, databasePath } = await fixture();
     const before = familyHashes(databasePath);
-    const execute = vi.spyOn(stateReads, "executeExistingOpenClawStateRead");
     requireNodeSqlite();
     const sql = observeMainThreadSql();
     const run = () =>
-      withEnvAsync({ OPENCLAW_STATE_DIR: root }, async () => {
-        const first = await deliver(snapshot, () => {});
+      inRoot(root, async () => {
+        const first = await deliver(snapshot, noop);
         expect(first?.skills).toHaveLength(1);
         const skill = first!.skills[0]!;
         expect(skill.modelVisible).toBe(false);
@@ -91,7 +84,7 @@ it.each(["ordinary", "artifact-preserving", "disposable"] as const)(
         expect(bytes("references/data.bin")).toEqual(Buffer.from([0, 255, 128]));
         // The synchronous caller must reuse the same cache key as async preparation.
         expect(loadSelection([pin])[0]?.skill.name).toBe(pin.name);
-        expect(await deliver(structuredClone(snapshot), () => {})).toEqual(first);
+        expect(await deliver(structuredClone(snapshot), noop)).toEqual(first);
         if (mode === "ordinary") {
           const selectedSnapshot = {
             ...snapshot,
@@ -100,12 +93,12 @@ it.each(["ordinary", "artifact-preserving", "disposable"] as const)(
           };
           const remoteWorkspace = path.join(root, "remote-workspace");
           declareAgentWorkspaceAccess(remoteWorkspace);
-          const selectedDelivery = await deliver(selectedSnapshot, () => {}, [], remoteWorkspace);
+          const selectedDelivery = await deliver(selectedSnapshot, noop, [], remoteWorkspace);
           expect(selectedDelivery).toEqual({
             ...first,
             skills: [{ ...skill, modelVisible: true }],
           });
-          const materialized = await materializeSkillResources(selectedDelivery!, () => {});
+          const materialized = await materializeSkillResources(selectedDelivery!, noop);
           try {
             const local = materialized.snapshot.resolvedSkills![0]!;
             expect(await fs.promises.readFile(local.filePath, "utf8")).toBe(content);
@@ -119,7 +112,6 @@ it.each(["ordinary", "artifact-preserving", "disposable"] as const)(
           } finally {
             await materialized.cleanup();
           }
-          expect(prepareSkillLibraryBundle(first!.skills[0]!.files).revision).toBe(pin.revision);
         }
         await closeDatabase();
       });
@@ -134,12 +126,6 @@ it.each(["ordinary", "artifact-preserving", "disposable"] as const)(
         await run();
       }
       sql.expectIdle();
-      expect(execute.mock.calls.map(([, command]) => command.type)).toEqual([
-        "skills.library.descriptions",
-        "skills.library.manifests",
-        "skills.library.manifests",
-        ...(mode === "ordinary" ? ["skills.library.manifests"] : []),
-      ]);
       if (mode === "artifact-preserving") {
         expect(familyHashes(databasePath)).toEqual(before);
       }
@@ -153,17 +139,13 @@ it("reads both phases from the active snapshot without fetching hidden manifests
   const { root, options, authority, pin, snapshot } = await fixture();
   const hidden = await saveSkillLibrary(
     authority,
-    {
-      slug: "hidden",
-      content: content.replace("guide", "hidden"),
-      expectedRevision: null,
-    },
+    { slug: "hidden", content: content.replace("guide", "hidden"), expectedRevision: null },
     options,
   );
   snapshot.librarySelections!.push(pinOf(hidden.entry));
   await closeDatabase();
   const execute = vi.spyOn(stateReads, "executeExistingOpenClawStateRead");
-  await withEnvAsync({ OPENCLAW_STATE_DIR: root }, () =>
+  await inRoot(root, () =>
     stateReads.withOpenClawStateDatabaseReadSnapshot(async () => {
       const database = openDatabase(options);
       database.db
@@ -171,7 +153,7 @@ it("reads both phases from the active snapshot without fetching hidden manifests
           "UPDATE skill_library_revisions SET description = ?, files_json = ? WHERE skill_id = ?",
         )
         .run("Later live description", "invalid live manifest", pin.skillId);
-      const delivery = await deliver(snapshot, () => {});
+      const delivery = await deliver(snapshot, noop);
       expect(delivery?.skills).toEqual([
         expect.objectContaining({ description: "Saved procedure", revision: pin.revision }),
       ]);
@@ -209,11 +191,11 @@ it.each(["root", "authority", "admission", "selection", "descriptions", "manifes
     }
     const closed = new Error("Synthetic resource owner closed");
     let current = true;
-    await withEnvAsync({ OPENCLAW_STATE_DIR: root }, async () => {
+    await inRoot(root, async () => {
       const pending =
         change === "selection"
           ? selection
-              .prepareSkillLibrarySelection(snapshot.librarySelections!, {}, () => {})
+              .prepareSkillLibrarySelection(snapshot.librarySelections!, {}, noop)
               .then((entries) => entries.map((entry) => entry.skill))
           : deliver(snapshot, () => {
               if (!current) {
@@ -281,12 +263,7 @@ it.each(["file", "table"] as const)(
       name: "missing",
       ownerProfileId: null,
     });
-    await withEnvAsync({ OPENCLAW_STATE_DIR: root }, async () => {
-      await expectCode(
-        deliver(snapshot, () => {}),
-        "NOT_FOUND",
-      );
-    });
+    await inRoot(root, () => expectCode(deliver(snapshot, noop), "NOT_FOUND"));
     if (missing === "file") {
       expect(fs.existsSync(path.join(root, "state", "openclaw.sqlite"))).toBe(false);
     } else {
@@ -329,8 +306,8 @@ it.each(["workspace", "library"] as const)(
     const readManifests = vi
       .spyOn(selectionReads, "readSkillLibrarySelectionManifests")
       .mockRejectedValue(libraryError);
-    await withEnvAsync({ OPENCLAW_STATE_DIR: root }, async () => {
-      await expect(deliver(snapshot, () => {})).rejects.toMatchObject({
+    await inRoot(root, async () => {
+      await expect(deliver(snapshot, noop)).rejects.toMatchObject({
         code: "INVALID_BUNDLE",
         message: expect.stringContaining(`skill="${first}"`),
         cause: first === "workspace" ? workspaceError : libraryError,

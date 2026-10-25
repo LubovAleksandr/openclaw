@@ -58,17 +58,17 @@ function withSql<T>(run: (sql: ReturnType<typeof observeHostDataSql>) => T): T {
 }
 const readLibrary = skillLibraryReadOperations["skillLibrary.read"];
 
+function role(scopes: string[], others: "none" | "view" = "none", agents: "*" | string[] = "*") {
+  return { scopes, sessions: { others }, agents };
+}
+
 const writerConfig: ReturnType<SkillLibraryAuthority["getConfig"]> = {
   gateway: {
     roles: {
       default: "writer",
       definitions: {
-        writer: {
-          sessions: { others: "none" },
-          agents: "*",
-          scopes: ["operator.read", "operator.write"],
-        },
-        blocked: { sessions: { others: "none" }, agents: [], scopes: [] },
+        writer: role(["operator.read", "operator.write"]),
+        blocked: role([], "none", []),
       },
     },
   },
@@ -109,9 +109,11 @@ it("projects shared-owner catalogs with bounded SQL and skips disabled seed rows
   const revision = db.prepare(`INSERT INTO skill_library_revisions
       SELECT ?, revision, description, files_json, created_at
       FROM skill_library_revisions WHERE skill_id = ?`);
+  const ids = [saved.entry.skillId];
   db.exec("BEGIN");
   for (let index = 1; index < 100; index++) {
     const id = `catalog-${index}`;
+    ids.push(id);
     entry.run(id, id, saved.entry.skillId);
     revision.run(id, saved.entry.skillId);
   }
@@ -160,17 +162,17 @@ it("projects shared-owner catalogs with bounded SQL and skips disabled seed rows
       sql.restore();
     }
   };
+  const expectCost = (measured: ReturnType<typeof measure>, profiles: number) => {
+    expect(measured.counts).toEqual({ entries: 1, profiles, other: 0 });
+    expect(measured.blobs).toBe(0);
+  };
   const listed = measure("list");
   assert.equal(listed.result.kind, "list");
   expect(listed.result.value.profileId).toBe(alice.profileId);
   expect(listed.result.value.entries.map((item) => item.skillId).toSorted()).toEqual(
-    [
-      saved.entry.skillId,
-      ...Array.from({ length: 99 }, (_, index) => `catalog-${index + 1}`),
-    ].toSorted(),
+    ids.toSorted(),
   );
-  expect(listed.counts).toEqual({ entries: 1, profiles: 3, other: 0 });
-  expect.soft(listed.blobs).toBe(0);
+  expectCost(listed, 3);
   const session = measure("session");
   expect(session.result).toMatchObject({
     kind: "session",
@@ -181,8 +183,7 @@ it("projects shared-owner catalogs with bounded SQL and skips disabled seed rows
   });
   assert.equal(session.result.kind, "session");
   expect(session.result.value.selections).toHaveLength(64);
-  expect(session.counts).toEqual({ entries: 1, profiles: 1, other: 0 });
-  expect(session.blobs).toBe(0);
+  expectCost(session, 1);
   expect(listed.result.value.entries.find((item) => item.skillId === saved.entry.skillId)).toEqual(
     saved.entry,
   );
@@ -194,8 +195,7 @@ it("projects shared-owner catalogs with bounded SQL and skips disabled seed rows
     value: { profileId: alice.profileId, entries: listed.result.value.entries },
   });
   // Together with the canonical read's three profile queries, this retains the seven-query bound.
-  expect(merged.counts).toEqual({ entries: 1, profiles: 4, other: 0 });
-  expect(merged.blobs).toBe(0);
+  expectCost(merged, 4);
   setUserProfileRole(alice.profileId!, "blocked", options);
   const blocked = measure("list", alias.id, writerConfig);
   expect(blocked.result).toMatchObject({ value: { profileId: alice.profileId, entries: [] } });
@@ -224,8 +224,7 @@ it("projects shared-owner catalogs with bounded SQL and skips disabled seed rows
       UPDATE skill_library_entries SET owner_profile_id = 'missing-owner' WHERE skill_id = 'catalog-5'`);
   db.exec("COMMIT");
   const cohorts = measure("list");
-  expect(cohorts.counts).toEqual({ entries: 1, profiles: 5, other: 0 });
-  expect(cohorts.blobs).toBe(0);
+  expectCost(cohorts, 5);
   assert.equal(cohorts.result.kind, "list");
   expect(cohorts.result.value.entries).toHaveLength(501);
   expect(cohorts.result.value.defaultSelectionNotice).toContain("detach");
@@ -248,9 +247,8 @@ it("projects shared-owner catalogs with bounded SQL and skips disabled seed rows
   const seeded = measure("seed");
   expect(seeded.result).toMatchObject({ kind: "seed", value: [] });
   expect.soft(seeded.entryRows).toBe(0);
-  expect.soft(seeded.blobs).toBe(0);
   expect(measure("list").entryRows).toBe(501);
-  expect(seeded.counts).toEqual({ entries: 1, profiles: 1, other: 0 });
+  expectCost(seeded, 1);
 });
 
 it("keeps solo defaults, counts aliases once, and never creates library tables on discovery", async () => {
@@ -293,12 +291,8 @@ it("skips empty-session SQL and refreshes committed profile and library facts", 
       roles: {
         default: "administrator",
         definitions: {
-          administrator: {
-            scopes: ["operator.admin"],
-            agents: "*",
-            sessions: { others: "view" },
-          },
-          reader: { scopes: ["operator.read"], agents: "*", sessions: { others: "view" } },
+          administrator: role(["operator.admin"], "view"),
+          reader: role(["operator.read"], "view"),
         },
       },
     },
