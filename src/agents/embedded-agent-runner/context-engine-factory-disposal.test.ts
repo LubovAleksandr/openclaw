@@ -2,8 +2,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { once } from "node:events";
 import { DatabaseSync } from "node:sqlite";
 import { setImmediate } from "node:timers/promises";
+import { expectDefined } from "@openclaw/normalization-core";
 import { expect, it, vi } from "vitest";
-import type { ContextEngine } from "../../context-engine/types.js";
 import { racePromiseWithAbortSignal } from "../../infra/abort-signal.js";
 import { resetCommandQueueStateForTest } from "../../process/command-queue.test-support.js";
 import {
@@ -38,24 +38,17 @@ it.for([
   const sessionKey = "agent:main:factory-disposal";
   const disposals: string[] = [];
   const values: { factory: unknown[]; cleanup: unknown[] } = { factory: [], cleanup: [] };
-  const callbacks: Array<{ closed: Promise<void>; force: () => Promise<void> }> = [];
+  const closeFactories: Array<() => Promise<void>> = [];
   const background: Promise<unknown>[] = [];
   const closings: [boolean, boolean][] = [];
-  const engines = new Map<
-    string,
-    { engine: ContextEngine; stop: () => void; signals: AbortSignal[]; wait: Promise<void> }
-  >();
+  const engines = new Map<string, ReturnType<typeof makeEngine>>();
   const pending: Promise<void>[] = [];
-  const getEngine = (id: string) => {
-    const existing = engines.get(id);
-    if (existing) {
-      return existing;
-    }
-    const stop = createDeferredCore();
+  function makeEngine(id: string) {
+    const done = createDeferredCore();
     const signals: AbortSignal[] = [];
-    const item = {
+    return {
       signals,
-      stop: () => stop.resolve(),
+      done,
       engine: createMaintenanceEngine(
         async () => {
           if (id === "active") {
@@ -70,19 +63,12 @@ it.for([
           async dispose() {
             disposals.push(id);
             await Promise.all(
-              signals.map(async (signal) => {
-                if (!signal.aborted) {
-                  await once(signal, "abort");
-                }
-              }),
+              signals.filter((signal) => !signal.aborted).map((signal) => once(signal, "abort")),
             );
-            stop.resolve();
-            const signal = getAsyncWorkSignal();
-            if (!signal) {
-              throw new Error("Disposal did not inherit its cleanup owner");
-            }
+            done.resolve();
+            const signal = expectDefined(getAsyncWorkSignal(), "Disposal cleanup owner");
             const tail = trackAsyncWork(async () => {
-              await stop.promise;
+              await done.promise;
               signal.throwIfAborted();
               values.cleanup.push(db.prepare("SELECT value FROM answer").get()?.value);
               completedCleanup.add(id);
@@ -92,17 +78,14 @@ it.for([
           },
         },
       ),
-      wait: stop.promise,
     };
-    engines.set(id, item);
-    return item;
-  };
+  }
   const schedule = async (id: string, index: number) => {
-    const item = getEngine(id);
+    const item = engines.get(id) ?? makeEngine(id);
+    engines.set(id, item);
     const work = new AsyncWorkScope();
     const label = `${id}:${index}`;
     const captured = context.run(label, () => work.run(() => AsyncLocalStorage.snapshot()));
-    const closed = createDeferredCore();
     work.signal.addEventListener(
       "abort",
       () => {
@@ -110,7 +93,6 @@ it.for([
           context.getStore() === label && getAsyncWorkSignal() === work.signal,
           disposals.includes(id),
         ]);
-        closed.resolve();
       },
       { once: true },
     );
@@ -118,7 +100,7 @@ it.for([
     let factorySettled = false;
     const service = captured(() =>
       trackAsyncWork(async () => {
-        await item.wait;
+        await item.done.promise;
         values.factory.push(db.prepare("SELECT value FROM answer").get()?.value);
         factorySettled = true;
       }),
@@ -126,7 +108,7 @@ it.for([
     background.push(service);
     void service.catch(() => {});
     const closeFactoryWork = () => captured(() => work.drain());
-    callbacks.push({ closed: closed.promise, force: closeFactoryWork });
+    closeFactories.push(closeFactoryWork);
     await runContextEngineMaintenance({
       contextEngine: item.engine,
       sessionId: "factory-disposal",
@@ -155,21 +137,14 @@ it.for([
     await schedule(ids[2], 2);
     finishActive.resolve();
     await racePromiseWithAbortSignal(releaseEntered.promise, ctx.signal);
-    let completed = false;
-    const completion = waitForSessionMaintenance(sessionKey).then(() => {
-      completed = true;
-    });
-    pending.push(completion);
+    const completed = vi.fn();
+    pending.push(waitForSessionMaintenance(sessionKey).then(completed));
     await setImmediate();
-    expect(completed).toBe(false);
+    expect(completed).not.toHaveBeenCalled();
     finishReleases.resolve();
-    await racePromiseWithAbortSignal(
-      Promise.all(callbacks.map(({ closed }) => closed)),
-      ctx.signal,
-    );
-    expect(closings).toEqual(Array.from({ length: 3 }, () => [true, true]));
     await waitForSessionMaintenance(sessionKey);
     await Promise.all(pending);
+    expect(closings).toEqual(Array.from({ length: 3 }, () => [true, true]));
     expect(values).toEqual({ factory: [42, 42, 42], cleanup: Array(new Set(ids).size).fill(42) });
     expect(disposals.toSorted()).toEqual([...new Set(ids)].toSorted());
     expect(releaseFacts.toSorted(([left], [right]) => left - right)).toEqual(
@@ -185,9 +160,9 @@ it.for([
     finishReleases.resolve();
     finishActive.resolve();
     for (const engine of engines.values()) {
-      engine.stop();
+      engine.done.resolve();
     }
-    await Promise.all(callbacks.map(({ force }) => force()));
+    await Promise.all(closeFactories.map((close) => close()));
     await Promise.allSettled([...background, ...pending]);
     await waitForSessionMaintenance(sessionKey);
     db.close();
