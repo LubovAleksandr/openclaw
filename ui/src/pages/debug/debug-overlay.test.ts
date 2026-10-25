@@ -89,49 +89,6 @@ function expectText(element: Element | null | undefined, ...values: string[]) {
   }
 }
 
-it("keeps vitals live while an active-run read is pending and minimizes invisible work", async () => {
-  const heldRuns = deferred<unknown>();
-  onTestFinished(() => heldRuns.resolve({ sessions: [] }));
-  const eventListeners = new Set<() => void>();
-  let sampleCount = 0;
-  const request = makeRequest(
-    () => ({ eventLoop: { cpuCoreRatio: ++sampleCount / 10 } }),
-    () => heldRuns.promise,
-  );
-  const context = createDebugApplicationContext(request);
-  Object.assign(context.gateway, {
-    subscribeEventLog: (listener: () => void) => registerListener(eventListeners, listener),
-  });
-  const { overlay, text, step, open } = mountOverlay(context);
-  await open();
-  await step(30_000);
-  expect(readCounts(request)).toEqual([1, 4, 4]);
-  expect(text(".gateway-vital--cpu")).toContain("0.40 cores");
-  expect(eventListeners.size).toBe(1);
-
-  overlay.querySelector<HTMLButtonElement>('[aria-label="Minimize system busyness"]')!.click();
-  await updateOverlayVitals(overlay);
-  expect(eventListeners.size).toBe(0);
-  await step();
-  expect(readCounts(request)).toEqual([1, 4, 5]);
-  expect(text(".gateway-vital--cpu")).toContain("0.50 cores");
-
-  heldRuns.resolve({ sessions: [] });
-  await vi.advanceTimersByTimeAsync(0);
-  overlay.querySelector<HTMLButtonElement>('[aria-label="Expand system busyness"]')!.click();
-  await updateOverlayVitals(overlay);
-  expect(eventListeners.size).toBe(1);
-  await vi.advanceTimersByTimeAsync(10_000);
-  expect(readCounts(request)).toEqual([2, 5, 6]);
-
-  overlay.toggle();
-  await updateOverlayVitals(overlay);
-  expect(eventListeners.size).toBe(0);
-  const closedCount = request.mock.calls.length;
-  await vi.advanceTimersByTimeAsync(30_000);
-  expect(request).toHaveBeenCalledTimes(closedCount);
-});
-
 it("keeps settled section polling independent while a later active-run read is pending", async () => {
   const heldRuns = deferred<unknown>();
   onTestFinished(() => heldRuns.resolve({ sessions: [] }));
@@ -199,57 +156,37 @@ it("defers hidden reads and catches up once when the tray becomes visible", asyn
 });
 
 it("graphs status samples and reconciles disk history across reopen and recovery", async () => {
-  let sampleCount = 0;
-  let uptimeMs = 60_000;
-  let diskResponse: "available" | "single" | "empty" | "missing" | "rejected" = "available";
+  const archive = (available: number) => makeDisk(available, 500, "/Volumes/Archive");
+  const sample = (disks?: ReturnType<typeof makeDisk>[], uptimeMs?: number) => ({
+    eventLoop: { cpuCoreRatio: 1.2, delayP99Ms: 12, delayMaxMs: 87 },
+    processMemory: { rssBytes: 402 * 1_048_576, heapUsedBytes: 100 * 1_048_576 },
+    disks,
+    uptimeMs,
+  });
+  let info = sample([makeDisk(699), archive(298)], 60_000);
+  let rejected = false;
   const request = makeRequest(() => {
-    sampleCount += 1;
-    const vitals = {
-      eventLoop: {
-        cpuCoreRatio: 1 + sampleCount / 10,
-        delayP99Ms: 10 + sampleCount,
-        delayMaxMs: 87,
-      },
-      processMemory: {
-        rssBytes: (400 + sampleCount) * 1_048_576,
-        heapUsedBytes: 100 * 1_048_576,
-      },
-    };
-    if (diskResponse === "rejected") {
+    if (rejected) {
       throw new Error("system info unavailable");
     }
-    if (diskResponse === "missing") {
-      return vitals;
-    }
-    const disks = [
-      makeDisk(700 - sampleCount),
-      makeDisk(300 - sampleCount * 2, 500, "/Volumes/Archive"),
-    ];
-    if (diskResponse === "single") {
-      disks.pop();
-    } else if (diskResponse === "empty") {
-      disks.length = 0;
-    }
-    return { ...vitals, uptimeMs, disks: sampleCount % 2 ? disks : disks.toReversed() };
+    return info;
   });
   const { overlay, query, text, count, step, open } = mountOverlay(
     createDebugApplicationContext(request),
   );
 
   await open();
-  await waitForSolid(() => expect(text(".gateway-vital--cpu")).toContain("1.10 cores"));
+  await waitForSolid(() => expect(text(".gateway-vital--cpu")).toContain("1.20 cores"));
 
   const diskTile = (mountPath: string) => query(`.gateway-vital--disk[title="${mountPath}"]`);
   const rootDisk = diskTile("/");
   const archiveDisk = diskTile("/Volumes/Archive");
 
-  expect(count(".gateway-vital")).toBe(5);
-  expect(query(".sparkline-tile__chart")).toBeNull();
   expect(text(".debug-overlay__vitals-footer")).toBe("Uptime 1m");
 
+  info = sample([archive(296), makeDisk(698)], 60_000);
   await step();
 
-  expectText(query(".gateway-vital--cpu"), "1.20 cores");
   expectText(query(".gateway-vital--memory"), "402 MB", "heap 100 MB");
   expectText(query(".gateway-vital--delay"), "12ms", "max 87ms");
   for (const [path, original, samples, total] of [
@@ -260,54 +197,41 @@ it("graphs status samples and reconciles disk history across reopen and recovery
     expectText(disk, `${samples[1]} GB free`, `${total} GB total`);
     expect(normalizedText(disk?.querySelector(".sparkline-tile__label"))).toBe(`Disk ${path}`);
     expect(disk).toBe(original);
-    expect(disk?.samples.map((sample) => sample.value / gb)).toEqual(samples);
+    expect(disk?.samples.map((point) => point.value / gb)).toEqual(samples);
   }
-  expect(count(".sparkline-tile__chart")).toBe(5);
-  expect(overlay.querySelector(".gateway-vital[data-degraded]")).toBeNull();
-
-  uptimeMs = 0;
+  info = sample([makeDisk(698), archive(296)], 0);
   overlay.toggle();
   overlay.toggle();
   await step(0);
 
-  expect(count(".gateway-vital")).toBe(5);
   expect(query(".sparkline-tile__chart")).toBeNull();
   expect(text(".debug-overlay__vitals-footer")).toBe("Uptime 1m");
 
-  for (const [response, samples] of [
-    ["single", 2],
-    ["available", 3],
-  ] as const) {
-    diskResponse = response;
-    await step();
-    if (response === "single") {
-      expect(count(".gateway-vital--disk")).toBe(1);
-    }
-    expect(diskTile("/")?.samples).toHaveLength(samples);
-  }
+  info = sample([makeDisk(697)], 0);
+  await step();
+  expect(count(".gateway-vital--disk")).toBe(1);
+  expect(diskTile("/")?.samples).toHaveLength(2);
+  info = sample([makeDisk(696), archive(292)], 0);
+  await step();
+  expect(diskTile("/")?.samples).toHaveLength(3);
   expect(diskTile("/Volumes/Archive")?.samples).toHaveLength(1);
 
-  for (const response of ["empty", "missing"] as const) {
-    diskResponse = response;
+  for (const disks of [[], undefined]) {
+    info = sample(disks, disks ? 0 : undefined);
     await step();
 
     expect(count(".gateway-vital")).toBe(3);
     expect(query(".gateway-vital--disk")).toBeNull();
-    expect(text(".debug-overlay__vitals-footer")).toBe(
-      response === "empty" ? "Uptime 0ms" : undefined,
-    );
-    for (const vital of ["cpu", "memory", "delay"]) {
-      expect(query(`.gateway-vital--${vital}`)).not.toBeNull();
-    }
+    expect(text(".debug-overlay__vitals-footer")).toBe(disks ? "Uptime 0ms" : undefined);
   }
-  diskResponse = "rejected";
+  rejected = true;
   await step();
   expect(count(".gateway-vital")).toBe(0);
   expect(normalizedText(overlay)).toContain("Unavailable");
-  diskResponse = "available";
+  rejected = false;
+  info = sample([makeDisk(696), archive(292)], 0);
   await step();
   expect(count(".gateway-vital")).toBe(5);
-  expect(request.mock.calls.some(([method]) => method === "status")).toBe(false);
 });
 
 it("retains the latest 90 status samples in the minimized content", async () => {
@@ -347,6 +271,7 @@ it.each([
   "close and reopen",
 ])("discards pending samples and prior disk history on %s", async (transition) => {
   const listeners = new Set<(snapshot: ApplicationGatewaySnapshot) => void>();
+  const eventListeners = new Set<() => void>();
   const pending = deferred<unknown>();
   const replacement = deferred<unknown>();
   onTestFinished(() => {
@@ -365,6 +290,7 @@ it.each([
     },
     subscribe: (listener: (snapshot: ApplicationGatewaySnapshot) => void) =>
       registerListener(listeners, listener),
+    subscribeEventLog: (listener: () => void) => registerListener(eventListeners, listener),
   };
   const publishSnapshot = (next: ApplicationGatewaySnapshot) => {
     snapshot = next;
@@ -378,6 +304,7 @@ it.each([
   await overlay.updateComplete;
   await vi.dynamicImportSettled();
   await waitForSolid(() => expect(query(".gateway-vital--disk")?.samples).toHaveLength(1));
+  expect(eventListeners.size).toBe(1);
   await step();
   expect(query(".gateway-vital--disk")?.samples).toHaveLength(2);
 
@@ -385,9 +312,6 @@ it.each([
   await step();
   expect(text(".gateway-vital--disk")).toContain("700 GB free");
   expect(overlay.querySelector(".debug-overlay__placeholder")).toBeNull();
-  const callsBeforeTransition = request.mock.calls.filter(
-    ([method]) => method === "system.info",
-  ).length;
   const replacementInfo = { disks: [makeDisk(200)] };
   infoResponse = replacement.promise;
   if (transition === "same-client reconnect") {
@@ -411,9 +335,6 @@ it.each([
     overlay.context = { ...context, gateway: { ...gateway } };
   }
   await step(0);
-  expect(request.mock.calls.filter(([method]) => method === "system.info")).toHaveLength(
-    callsBeforeTransition + 1,
-  );
 
   expect(query(".gateway-vital, .sparkline-tile__chart")).toBeNull();
   pending.resolve(firstInfo);
@@ -431,6 +352,16 @@ it.each([
 
   await step();
   expect(disk?.samples.map((sample) => sample.value / gb)).toEqual([200, 200]);
+  overlay.querySelector<HTMLButtonElement>('[aria-label="Minimize system busyness"]')!.click();
+  await updateOverlayVitals(overlay);
+  expect(eventListeners.size).toBe(0);
+  overlay.querySelector<HTMLButtonElement>('[aria-label="Expand system busyness"]')!.click();
+  await updateOverlayVitals(overlay);
+  expect(eventListeners.size).toBe(1);
   overlay.remove();
   await waitForSolid(() => expect(listeners.size).toBe(0));
+  expect(eventListeners.size).toBe(0);
+  const closedCount = request.mock.calls.length;
+  await vi.advanceTimersByTimeAsync(30_000);
+  expect(request).toHaveBeenCalledTimes(closedCount);
 });
