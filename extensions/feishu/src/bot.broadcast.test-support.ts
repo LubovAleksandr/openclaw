@@ -1,8 +1,6 @@
 import {
   buildChannelInboundEventContext,
-  type BuildChannelInboundEventContextAsyncParams,
   type BuildChannelInboundEventContextParams,
-  type BuiltChannelInboundEventContext,
   type ChannelInboundSupplementalResolutionOptions,
   type ChannelInboundTurnPlan,
 } from "openclaw/plugin-sdk/channel-inbound";
@@ -45,36 +43,6 @@ const mocks = vi.hoisted(() => {
   };
 });
 
-vi.mock(import("openclaw/plugin-sdk/channel-inbound"), async (importOriginal) => {
-  const actual = await importOriginal();
-  const finalize: NonNullable<BuildChannelInboundEventContextParams["finalize"]> = (ctx) => {
-    mocks.builtInboundContextCalls.push(ctx);
-    return ctx;
-  };
-  function buildContext(
-    params: BuildChannelInboundEventContextAsyncParams,
-  ): Promise<BuiltChannelInboundEventContext>;
-  function buildContext(
-    params: BuildChannelInboundEventContextParams,
-  ): BuiltChannelInboundEventContext;
-  function buildContext(
-    params: BuildChannelInboundEventContextParams &
-      Partial<ChannelInboundSupplementalResolutionOptions>,
-  ): BuiltChannelInboundEventContext | Promise<BuiltChannelInboundEventContext> {
-    return params.resolveSupplementalMedia
-      ? actual.buildChannelInboundEventContext({
-          ...params,
-          finalize,
-          resolveSupplementalMedia: true,
-        })
-      : actual.buildChannelInboundEventContext({ ...params, finalize });
-  }
-  return {
-    ...actual,
-    buildChannelInboundEventContext: buildContext,
-  };
-});
-
 vi.mock(import("openclaw/plugin-sdk/session-store-runtime"), async (importOriginal) => ({
   ...(await importOriginal()),
   resolveStorePath: mocks.mockResolveStorePath,
@@ -94,6 +62,10 @@ export function setupFeishuBroadcastTestHarness() {
   const mockGetChatInfo = vi.fn();
   const resolvedTurnCalls: ChannelInboundTurnPlan[] = [];
   const mockCurrentConfig = vi.fn(() => createBroadcastConfig());
+  const finalize: NonNullable<BuildChannelInboundEventContextParams["finalize"]> = (ctx) => {
+    mocks.builtInboundContextCalls.push(ctx);
+    return ctx;
+  };
   const runtimeStub = {
     config: { current: mockCurrentConfig },
     channel: {
@@ -105,7 +77,17 @@ export function setupFeishuBroadcastTestHarness() {
       commands: { shouldComputeCommandAuthorized: vi.fn(() => false) },
       inbound: {
         ingress: createPluginRuntimeMock().channel.inbound.ingress,
-        buildContext: buildChannelInboundEventContext,
+        buildContext: (
+          params: BuildChannelInboundEventContextParams &
+            Partial<ChannelInboundSupplementalResolutionOptions>,
+        ) =>
+          params.resolveSupplementalMedia
+            ? buildChannelInboundEventContext({
+                ...params,
+                finalize,
+                resolveSupplementalMedia: true,
+              })
+            : buildChannelInboundEventContext({ ...params, finalize }),
         run: vi.fn(async (params: Parameters<PluginRuntime["channel"]["inbound"]["run"]>[0]) => {
           const input = await params.adapter.ingest(params.raw);
           if (!input) {
