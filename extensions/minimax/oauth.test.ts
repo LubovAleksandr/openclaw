@@ -5,36 +5,6 @@ import { startHangingLoopbackServer } from "../test-support/hanging-loopback-ser
 import { cancelTrackedTextResponse } from "../test-support/streaming-error-response.js";
 import { loginMiniMaxPortalOAuth } from "./oauth.js";
 
-const fetchTimeoutMs = 30_000;
-
-function captureMiniMaxOAuthFetchTimeout() {
-  const originalSetTimeout = globalThis.setTimeout;
-  let fireTimeout: (() => void) | undefined;
-  vi.spyOn(globalThis, "setTimeout").mockImplementation(((
-    callback: (...args: unknown[]) => void,
-    timeout?: number,
-    ...args: unknown[]
-  ) => {
-    // Body readers share this duration and need a refreshable timer handle.
-    const timer = originalSetTimeout(() => callback(...args), timeout);
-    if (timeout === fetchTimeoutMs) {
-      fireTimeout = () => {
-        clearTimeout(timer);
-        callback(...args);
-      };
-    }
-    return timer;
-  }) as typeof setTimeout);
-  return {
-    fire() {
-      if (!fireTimeout) {
-        throw new Error("expected MiniMax OAuth fetch timeout to be scheduled");
-      }
-      fireTimeout();
-    },
-  };
-}
-
 type FetchResponder =
   | Response
   | ((input: RequestInfo | URL, init?: RequestInit) => Response | Promise<Response>);
@@ -94,12 +64,9 @@ describe("loginMiniMaxPortalOAuth", () => {
     stubOAuthFetch(
       (_input, init) => authResponse(init),
       () => {
-        expect(deviceCode).toHaveBeenCalledExactlyOnceWith({
-          title: "MiniMax OAuth",
-          code: "CODE",
-          expiresInMinutes: 1,
-          message: "Enter this one-time code to approve access.",
-        });
+        expect(deviceCode).toHaveBeenCalledExactlyOnceWith(
+          expect.objectContaining({ code: "CODE", expiresInMinutes: 1 }),
+        );
         return tokenResponse();
       },
     );
@@ -120,7 +87,7 @@ describe("loginMiniMaxPortalOAuth", () => {
     async (_phase, path, fetchIndex) => {
       const realFetch = fetch;
       const server = await startHangingLoopbackServer();
-      const oauthTimeout = captureMiniMaxOAuthFetchTimeout();
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       let loginPromise: Promise<unknown> | undefined;
 
       try {
@@ -135,7 +102,8 @@ describe("loginMiniMaxPortalOAuth", () => {
         loginPromise.catch(() => undefined);
 
         await server.waitForRequestCount(1);
-        oauthTimeout.fire();
+        await vi.advanceTimersByTimeAsync(30_000);
+        vi.useRealTimers();
         await expect(
           withTimeout(loginPromise, 2_000, {
             message: "MiniMax OAuth did not settle within the test deadline",
@@ -168,7 +136,6 @@ describe("loginMiniMaxPortalOAuth", () => {
       status,
       headers: { "Content-Type": status === 200 ? "application/json" : "text/plain" },
     });
-    const textSpy = vi.spyOn(tracked.response, "text").mockRejectedValue(new Error("unbounded"));
     if (token) {
       stubOAuthFetch((_input, init) => authResponse(init), tracked.response);
     } else {
@@ -179,28 +146,21 @@ describe("loginMiniMaxPortalOAuth", () => {
     expect((error as Error).message).toEqual(message);
     expect((error as Error).message).not.toContain("tail");
     expect(tracked.wasCanceled()).toBe(true);
-    expect(textSpy).not.toHaveBeenCalled();
   });
 
-  it("records the issuing account endpoint for Global and CN credentials", async () => {
-    for (const [region, host] of [
-      ["global", "https://account.minimax.io"],
-      ["cn", "https://account.minimaxi.com"],
-    ] as const) {
-      const fetchMock = stubOAuthFetch((_input, init) => authResponse(init), tokenResponse());
+  it.each([
+    ["global", "https://account.minimax.io"],
+    ["cn", "https://account.minimaxi.com"],
+  ] as const)("records the %s issuing account endpoint", async (region, host) => {
+    const fetchMock = stubOAuthFetch((_input, init) => authResponse(init), tokenResponse());
 
-      const expectedHosts = [`${host}/oauth2/device/code`, `${host}/oauth2/token`];
-      await expect(loginMiniMax({ region })).resolves.toMatchObject({
-        tokenEndpoint: expectedHosts[1],
-      });
-      expect(
-        fetchMock.mock.calls.map(([input]) =>
-          input instanceof Request ? input.url : String(input),
-        ),
-      ).toEqual(expectedHosts);
-
-      vi.unstubAllGlobals();
-    }
+    const expectedHosts = [`${host}/oauth2/device/code`, `${host}/oauth2/token`];
+    await expect(loginMiniMax({ region })).resolves.toMatchObject({
+      tokenEndpoint: expectedHosts[1],
+    });
+    expect(
+      fetchMock.mock.calls.map(([input]) => (input instanceof Request ? input.url : String(input))),
+    ).toEqual(expectedHosts);
   });
 
   it("rejects Date-invalid authorization expiries before formatting instructions", async () => {

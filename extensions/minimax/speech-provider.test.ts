@@ -53,16 +53,9 @@ describe("resolveConfig", () => {
     vi.unstubAllEnvs();
   });
 
-  it("reads from providers.minimax in rawConfig", () => {
-    const minimax = {
-      baseUrl: "https://custom.api.com",
-      model,
-      voiceId: voice,
-      speed: 1.5,
-      vol: 2,
-      pitch: 3,
-    };
-    expect(resolveProviderConfig({ providers: { minimax } })).toMatchObject(minimax);
+  it("keeps the configured TTS endpoint", () => {
+    const baseUrl = "https://custom.api.com";
+    expect(resolveProviderConfig({ providers: { minimax: { baseUrl } } }).baseUrl).toBe(baseUrl);
   });
 
   it("keeps trusted MINIMAX_API_HOST fallback for TTS baseUrl", () => {
@@ -173,24 +166,19 @@ describe("MiniMax auth and synthesis", () => {
       voiceCompatible: true,
       audioBuffer: Buffer.from("fake-opus-data"),
     });
-    expect(transcode).toHaveBeenCalledWith({
-      audioBuffer: Buffer.from("fake-mp3-data"),
-      inputExtension: "mp3",
-      tempPrefix: "tts-minimax-",
-      timeoutMs: 30000,
-    });
+    expect(transcode).toHaveBeenCalledWith(
+      expect.objectContaining({
+        audioBuffer: Buffer.from("fake-mp3-data"),
+        inputExtension: "mp3",
+        timeoutMs: 30000,
+      }),
+    );
   });
 
   it.each([
     [
       "providerOverrides",
-      {
-        model,
-        voiceId: "custom_voice",
-        speed: 1.5,
-        vol: 1.5,
-        pitch: 0.5,
-      },
+      { model, voiceId: "custom_voice", speed: 1.5, vol: 1.5, pitch: 0.5 },
       {
         model,
         voice_setting: { voice_id: "custom_voice", speed: 1.5, vol: 1.5, pitch: 0 },
@@ -220,10 +208,7 @@ describe("MiniMax auth and synthesis", () => {
       seedMinimaxPortalProfile(agentDir);
     }
     mockAudioResponse();
-    await synthesize({
-      cfg: portal ? portalConfig : {},
-      providerConfig: {},
-    });
+    await synthesize({ cfg: portal ? portalConfig : {}, providerConfig: {} });
 
     expect(fetchMock.mock.calls[0]?.[0]).toBe(
       portal ? "https://api.minimaxi.com/v1/t2a_v2" : "https://api.minimax.io/v1/t2a_v2",

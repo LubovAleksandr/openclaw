@@ -1,14 +1,13 @@
-import { once } from "node:events";
-import { createServer, type ServerResponse } from "node:http";
-import type { AddressInfo, Socket } from "node:net";
+import { createServer, type RequestListener, type ServerResponse } from "node:http";
 import { promisify } from "node:util";
 import { MAX_TIMER_TIMEOUT_MS } from "openclaw/plugin-sdk/number-runtime";
 import {
   isProviderAuthProfileConfigured,
   isProviderAuthProfileConfiguredAsync,
 } from "openclaw/plugin-sdk/provider-auth";
-import { acquireTestPortBlock } from "openclaw/plugin-sdk/test-env";
+import { withServer } from "openclaw/plugin-sdk/test-env";
 import { afterEach, expect, it, vi } from "vitest";
+import { listenOnLoopback } from "../test-support/hanging-loopback-server.js";
 
 const guardedFetch = vi.hoisted(() => vi.fn());
 
@@ -52,9 +51,7 @@ afterEach(() => {
 it("forwards the capped request timeout to the guarded transport", async () => {
   mockTtsResponse({ data: { audio: Buffer.from("audio").toString("hex") } });
   await expect(tts({ timeoutMs: Number.MAX_SAFE_INTEGER })).resolves.toEqual(Buffer.from("audio"));
-  expect(guardedFetch.mock.calls[0]?.[0]).toMatchObject({
-    timeoutMs: MAX_TIMER_TIMEOUT_MS,
-  });
+  expect(guardedFetch.mock.calls[0]?.[0]).toMatchObject({ timeoutMs: MAX_TIMER_TIMEOUT_MS });
 });
 
 it("throws on base_resp envelope error even when data.audio is present (regression #76904)", async () => {
@@ -88,15 +85,13 @@ it.each([
 ] as const)(
   "settles guarded speech transport and releases its socket (%s)",
   async (mode, body, errorMessage) => {
-    const claim = await acquireTestPortBlock({ offsets: [0] });
     const ready = Promise.withResolvers<number>();
     const released = Promise.withResolvers<void>();
     const didRelease = vi.fn();
     const closed = Promise.withResolvers<void>();
-    const sockets = new Set<Socket>();
     const requests: string[] = [];
     let receivedResponse: ServerResponse | undefined;
-    const server = createServer((request, response) => {
+    const handler: RequestListener = (request, response) => {
       requests.push(request.url ?? "");
       request.resume();
       request.socket.once("close", () => closed.resolve());
@@ -113,17 +108,8 @@ it.each([
       } else {
         response.end(body);
       }
-    });
-    server.on("connection", (socket) => {
-      sockets.add(socket);
-      socket.once("close", () => sockets.delete(socket));
-    });
-    let pending: Promise<unknown> | undefined;
-    try {
-      await new Promise<void>((resolve, reject) => {
-        server.once("error", reject);
-        server.listen(claim.port, "127.0.0.1", resolve);
-      });
+    };
+    await withServer(handler, async (baseUrl) => {
       vi.stubEnv("OPENCLAW_DEBUG_PROXY_ENABLED", "0");
       const actual = await vi.importActual<typeof import("openclaw/plugin-sdk/ssrf-runtime")>(
         "openclaw/plugin-sdk/ssrf-runtime",
@@ -142,7 +128,7 @@ it.each([
       });
       vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
       const outcome = tts({
-        providerConfig: { apiKey: "fixture-key", baseUrl: `http://127.0.0.1:${claim.port}` },
+        providerConfig: { apiKey: "fixture-key", baseUrl },
         timeoutMs: 1_000,
       }).then(
         (audio) => ({ ok: true as const, audio }),
@@ -151,60 +137,47 @@ it.each([
           return { ok: false as const, error };
         },
       );
-      pending = outcome;
-      const status = await ready.promise;
-      if (mode.startsWith("stalled")) {
-        expect(status).toBe(mode === "stalled-body" ? 200 : 0);
-        const settled = vi.fn();
-        void outcome.then(settled);
-        await vi.advanceTimersByTimeAsync(999);
-        expect(settled).not.toHaveBeenCalled();
-        await vi.advanceTimersByTimeAsync(1);
-        expect(await outcome).toMatchObject({ ok: false, error: expect.any(Error) });
-        expect(receivedResponse?.writableEnded).toBe(false);
-      } else if (errorMessage) {
-        const failure = await outcome;
-        expect(failure).toMatchObject({ ok: false, error: expect.any(Error) });
-        expect(failure).toHaveProperty("error.message", errorMessage);
-      } else {
-        expect(await outcome).toEqual({ ok: true, audio: Buffer.from("pong") });
-      }
-      if (mode !== "stalled-headers") {
-        await released.promise;
-        expect(didRelease).toHaveBeenCalledOnce();
-      }
-      await closed.promise;
-      expect(requests).toEqual(["/v1/t2a_v2"]);
-    } finally {
-      vi.useRealTimers();
       try {
-        if (server.listening) {
-          await new Promise<void>((resolve, reject) => {
-            server.close((error) => (error ? reject(error) : resolve()));
-            for (const socket of sockets) {
-              socket.destroy();
-            }
-          });
+        const status = await ready.promise;
+        if (mode.startsWith("stalled")) {
+          expect(status).toBe(mode === "stalled-body" ? 200 : 0);
+          const settled = vi.fn();
+          void outcome.then(settled);
+          await vi.advanceTimersByTimeAsync(999);
+          expect(settled).not.toHaveBeenCalled();
+          await vi.advanceTimersByTimeAsync(1);
+          expect(await outcome).toMatchObject({ ok: false, error: expect.any(Error) });
+          expect(receivedResponse?.writableEnded).toBe(false);
+        } else if (errorMessage) {
+          const failure = await outcome;
+          expect(failure).toMatchObject({ ok: false, error: expect.any(Error) });
+          expect(failure).toHaveProperty("error.message", errorMessage);
+        } else {
+          expect(await outcome).toEqual({ ok: true, audio: Buffer.from("pong") });
         }
-        await pending;
+        if (mode !== "stalled-headers") {
+          await released.promise;
+          expect(didRelease).toHaveBeenCalledOnce();
+        }
+        await closed.promise;
+        expect(requests).toEqual(["/v1/t2a_v2"]);
       } finally {
-        await claim.release();
+        vi.useRealTimers();
       }
-    }
+    });
   },
 );
 
 type WireFixture = {
   provider?: "minimax" | "minimax-portal";
-  frames?: Array<{ status?: number | string; audio?: string } | "[DONE]">;
+  frames: Array<{ status?: number | string; audio?: string } | "[DONE]">;
   mediaMaxMb?: number;
 };
 
 async function runFixture(fixture: WireFixture) {
-  const originalFetch = globalThis.fetch;
   const body =
     fixture.frames
-      ?.map((frame) =>
+      .map((frame) =>
         frame === "[DONE]" ? "data: [DONE]" : `data: ${JSON.stringify(successBody(frame))}`,
       )
       .join("\n\n") + "\n\n";
@@ -213,17 +186,10 @@ async function runFixture(fixture: WireFixture) {
     response.writeHead(200, { "content-type": "text/event-stream" });
     response.end(body);
   });
-  await once(server.listen(0, "127.0.0.1"), "listening");
-  const { port } = server.address() as AddressInfo;
+  const port = await listenOnLoopback(server);
   vi.stubEnv("MINIMAX_API_KEY", "sk-test");
-  vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
-    const { dispatcher: _dispatcher, ...forwardedInit } = (init ?? {}) as RequestInit & {
-      dispatcher?: unknown;
-    };
-    return originalFetch(`http://127.0.0.1:${port}`, forwardedInit);
-  });
-  guardedFetch.mockImplementation(async ({ url, init }) => ({
-    response: await fetch(url, init),
+  guardedFetch.mockImplementation(async ({ init }) => ({
+    response: await fetch(`http://127.0.0.1:${port}`, init),
     release: vi.fn(async () => {}),
   }));
 

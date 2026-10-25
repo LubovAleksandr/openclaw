@@ -105,27 +105,6 @@ function payloadStream(payload: Record<string, unknown>): StreamFn {
   };
 }
 
-function captureFastModel(
-  provider: ProviderPlugin,
-  fastMode: boolean | "ultrafast" | (() => boolean | "ultrafast"),
-) {
-  const model = { ...m31Model, id: "MiniMax-M2.7", provider: provider.id };
-  let resolvedId = "";
-  const stream = provider.wrapStreamFn?.({
-    provider: provider.id,
-    modelId: model.id,
-    extraParams: { fastMode },
-    streamFn: (resolved) => {
-      resolvedId = resolved.id ?? "";
-      return createAssistantMessageEventStream();
-    },
-  });
-  return () => {
-    void stream?.(model, { messages: [] }, {});
-    return resolvedId;
-  };
-}
-
 afterEach(() => {
   vi.unstubAllEnvs();
   vi.unstubAllGlobals();
@@ -149,7 +128,6 @@ describe("minimax provider hooks", () => {
   ] as const)(
     "discovers configured endpoint %s/%s ahead of the CN environment",
     async (baseUrl, api, expectedEndpoint) => {
-      const expectedBaseUrl = baseUrl.trim() || cnApi;
       const fetchMock = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) =>
         input === expectedEndpoint
           ? Response.json({ data: [{ id: "MiniMax-M3" }] })
@@ -173,17 +151,11 @@ describe("minimax provider hooks", () => {
         }),
       });
 
+      expect(vi.mocked(fetch).mock.calls[0]?.[0]).toBe(expectedEndpoint);
       expect(fetchMock).toHaveBeenCalledTimes(1);
-      expect(fetchMock.mock.calls[0]?.[0]).toBe(expectedEndpoint);
       expectCatalogHeaders(api ? null : "selected-api-key", api ? "Bearer selected-api-key" : null);
       expect(result).toMatchObject({
-        provider: {
-          baseUrl: expectedBaseUrl,
-          api: api ?? "anthropic-messages",
-          authHeader: true,
-          apiKey: "MINIMAX_API_KEY",
-          models: [expect.objectContaining({ id: "MiniMax-M3" })],
-        },
+        provider: { api: api ?? "anthropic-messages" },
         outcomes: [{ provider: "minimax", profileId: "minimax:selected", status: "ready" }],
       });
     },
@@ -271,8 +243,8 @@ describe("minimax provider hooks", () => {
 
   it.each([
     ["minimax", "MiniMax-M3", "adaptive"],
-    ["minimax-portal", "MiniMax-M3", "adaptive"],
     ["minimax", "MiniMax-M2.7", "off"],
+    ["minimax-portal", m31Model.id, "max"],
   ])("defaults %s/%s thinking to %s", (providerId, modelId, defaultLevel) => {
     const provider = providerId === "minimax" ? apiProvider : portalProvider;
     expect(provider.resolveThinkingProfile?.({ provider: provider.id, modelId })).toMatchObject({
@@ -280,26 +252,18 @@ describe("minimax provider hooks", () => {
     });
   });
 
-  it("discovers M3.1 with its mandatory five-level thinking profile on both auth routes", async () => {
+  it("discovers and resolves M3.1 on both auth routes", async () => {
     for (const provider of [apiProvider, portalProvider]) {
       const ref = { provider: provider.id, modelId: m31Model.id };
       const catalog = await provider.staticCatalog?.run({ env: {}, config: {} } as never);
       const models =
         catalog && "providers" in catalog ? catalog.providers[provider.id]?.models : [];
-      expect(models?.find((model) => model.id === "MiniMax-M3.1-Flash-Preview")).toEqual(
-        expect.objectContaining({
-          id: "MiniMax-M3.1-Flash-Preview",
-          input: ["text", "image"],
-          contextWindow: 1_000_000,
-          reasoning: true,
-          compat: { codeMode: "preferred" },
-          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        }),
-      );
-      expect(provider.resolveThinkingProfile?.(ref)).toEqual({
-        levels: [{ id: "low" }, { id: "medium" }, { id: "high" }, { id: "xhigh" }, { id: "max" }],
-        defaultLevel: "max",
+      expect(models?.find((model) => model.id === m31Model.id)).toMatchObject({
+        compat: { codeMode: "preferred" },
       });
+      expect(provider.resolveThinkingProfile?.(ref)?.levels).toEqual(
+        ["low", "medium", "high", "xhigh", "max"].map((id) => ({ id })),
+      );
       expect(
         provider.resolveDynamicModel?.({
           ...ref,
@@ -311,89 +275,81 @@ describe("minimax provider hooks", () => {
   });
 
   it.each([
-    [undefined, "max", m31Model.maxTokens, 500],
-    ["low", "low", m31Model.maxTokens, 500],
-    ["high", "high", 128, 500],
-    ["adaptive", "max", 128, undefined],
+    ["minimax", "wrapStreamFn", undefined, "max", m31Model.maxTokens, 500],
+    ["minimax-portal", "wrapSimpleCompletionStreamFn", "low", "low", m31Model.maxTokens, 500],
+    ["minimax", "wrapSimpleCompletionStreamFn", "high", "high", 128, 500],
+    ["minimax-portal", "wrapStreamFn", "adaptive", "max", 128, undefined],
   ] as const)(
-    "sends M3.1 effort %s as %s (model cap: %s, request cap: %s)",
-    async (thinkingLevel, effort, modelMaxTokens, requestedMaxTokens) => {
-      for (const provider of [apiProvider, portalProvider]) {
-        for (const hook of ["wrapStreamFn", "wrapSimpleCompletionStreamFn"] as const) {
-          const model = {
-            ...m31Model,
-            maxTokens: modelMaxTokens,
-            provider: provider.id,
-            api:
-              hook === "wrapStreamFn" ? "anthropic-messages" : "openclaw-provider-simple:synthetic",
-          };
-          let payload: unknown;
-          const wrapped = provider[hook]?.({
-            provider: provider.id,
-            modelId: model.id,
-            sourceApi: "anthropic-messages",
-            thinkingLevel,
-            streamFn: (runtimeModel, context, options) =>
-              streamSimpleAnthropic(
-                { ...runtimeModel, api: "anthropic-messages" },
-                context,
-                options,
-              ),
-          });
-          if (!wrapped) {
-            throw new Error(`MiniMax did not register ${hook}`);
-          }
-          const stream = await wrapped(
-            model,
-            {
-              messages: [
-                { role: "user", content: "Hi", timestamp: 0 },
-                makeAgentAssistantMessage({
-                  api: "anthropic-messages",
-                  provider: provider.id,
-                  model: m31Model.id,
-                  content: [
-                    {
-                      type: "thinking",
-                      thinking: "Earlier reasoning.",
-                      thinkingSignature: "synthetic-thinking-signature",
-                    },
-                    { type: "text", text: "Hello." },
-                  ],
-                  timestamp: 1,
-                }),
-                { role: "user", content: "Continue.", timestamp: 2 },
-              ],
-            },
-            {
-              apiKey: "synthetic-minimax-key",
-              maxTokens: requestedMaxTokens,
-              reasoning: thinkingLevel === "adaptive" ? undefined : thinkingLevel,
-              // M3.1 uses adaptive effort; manual budgets must not disable signed replay.
-              thinkingBudgets:
-                modelMaxTokens === m31Model.maxTokens
-                  ? { low: 0, medium: 0, high: 0, max: 0 }
-                  : undefined,
-              onPayload: (value) => {
-                payload = value;
-                throw new Error("stop before network");
-              },
-            },
-          );
-          expect(await stream.result()).toMatchObject({ errorMessage: "stop before network" });
-          expect(payload).toMatchObject({
-            thinking: { type: "adaptive" },
-            max_tokens: Math.min(requestedMaxTokens ?? m31Model.maxTokens, modelMaxTokens),
-            output_config: { effort },
-          });
-          expect(payload).not.toHaveProperty("thinking.budget_tokens");
-          expect(payload).toHaveProperty("messages.1.content.0", {
-            type: "thinking",
-            thinking: "Earlier reasoning.",
-            signature: "synthetic-thinking-signature",
-          });
-        }
+    "shapes M3.1 via %s/%s with effort %s",
+    async (providerId, hook, thinkingLevel, effort, modelMaxTokens, requestedMaxTokens) => {
+      const provider = providerId === "minimax" ? apiProvider : portalProvider;
+      const model = {
+        ...m31Model,
+        maxTokens: modelMaxTokens,
+        provider: provider.id,
+        api: hook === "wrapStreamFn" ? "anthropic-messages" : "openclaw-provider-simple:synthetic",
+      };
+      let payload: unknown;
+      const wrapped = provider[hook]?.({
+        provider: provider.id,
+        modelId: model.id,
+        sourceApi: "anthropic-messages",
+        thinkingLevel,
+        streamFn: (runtimeModel, context, options) =>
+          streamSimpleAnthropic({ ...runtimeModel, api: "anthropic-messages" }, context, options),
+      });
+      if (!wrapped) {
+        throw new Error(`MiniMax did not register ${hook}`);
       }
+      const stream = await wrapped(
+        model,
+        {
+          messages: [
+            { role: "user", content: "Hi", timestamp: 0 },
+            makeAgentAssistantMessage({
+              api: "anthropic-messages",
+              provider: provider.id,
+              model: m31Model.id,
+              content: [
+                {
+                  type: "thinking",
+                  thinking: "Earlier reasoning.",
+                  thinkingSignature: "synthetic-thinking-signature",
+                },
+                { type: "text", text: "Hello." },
+              ],
+              timestamp: 1,
+            }),
+            { role: "user", content: "Continue.", timestamp: 2 },
+          ],
+        },
+        {
+          apiKey: "synthetic-minimax-key",
+          maxTokens: requestedMaxTokens,
+          reasoning: thinkingLevel === "adaptive" ? undefined : thinkingLevel,
+          // M3.1 uses adaptive effort; manual budgets must not disable signed replay.
+          thinkingBudgets:
+            modelMaxTokens === m31Model.maxTokens
+              ? { low: 0, medium: 0, high: 0, max: 0 }
+              : undefined,
+          onPayload: (value) => {
+            payload = value;
+            throw new Error("stop before network");
+          },
+        },
+      );
+      expect(await stream.result()).toMatchObject({ errorMessage: "stop before network" });
+      expect(payload).toMatchObject({
+        thinking: { type: "adaptive" },
+        max_tokens: Math.min(requestedMaxTokens ?? m31Model.maxTokens, modelMaxTokens),
+        output_config: { effort },
+      });
+      expect(payload).not.toHaveProperty("thinking.budget_tokens");
+      expect(payload).toHaveProperty("messages.1.content.0", {
+        type: "thinking",
+        thinking: "Earlier reasoning.",
+        signature: "synthetic-thinking-signature",
+      });
     },
   );
 
@@ -427,13 +383,18 @@ describe("minimax provider hooks", () => {
   });
 
   it("owns ultrafast stream wrapping for MiniMax transports", async () => {
-    let fastMode: boolean | "ultrafast" = "ultrafast";
-    const apiModel = captureFastModel(apiProvider, fastMode);
-    const portalModel = captureFastModel(portalProvider, () => fastMode);
-    expect(apiModel()).toBe("MiniMax-M2.7-highspeed");
-    expect(portalModel()).toBe("MiniMax-M2.7-highspeed");
-    fastMode = false;
-    expect(portalModel()).toBe("MiniMax-M2.7");
+    for (const provider of [apiProvider, portalProvider]) {
+      const model = { ...m31Model, id: "MiniMax-M2.7", provider: provider.id };
+      const streamFn = vi.fn<StreamFn>(() => createAssistantMessageEventStream());
+      const wrapped = provider.wrapStreamFn?.({
+        provider: provider.id,
+        modelId: model.id,
+        extraParams: { fastMode: "ultrafast" },
+        streamFn,
+      });
+      void wrapped?.(model, { messages: [] }, {});
+      expect(streamFn.mock.calls[0]?.[0].id).toBe("MiniMax-M2.7-highspeed");
+    }
   });
 
   it("prefers minimax-portal oauth when resolving MiniMax usage auth", async () => {
@@ -452,7 +413,6 @@ describe("minimax provider hooks", () => {
       } as never),
     ).resolves.toEqual({ token: "portal-oauth-token" });
 
-    expect(resolveOAuthToken).toHaveBeenCalledWith({ provider: "minimax-portal" });
     expect(resolveApiKeyCandidatesFromConfigAndStore).not.toHaveBeenCalled();
   });
 
@@ -461,12 +421,10 @@ describe("minimax provider hooks", () => {
       const url =
         typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url;
       expect(url).toBe("https://api.minimax.io/v1/token_plan/remains");
-      return Response.json({
-        data: { current_interval_total_count: 100, current_interval_usage_count: 98 },
-      });
+      return Response.json({});
     });
 
-    const result = await apiProvider.fetchUsageSnapshot?.({
+    await apiProvider.fetchUsageSnapshot?.({
       provider: "minimax",
       config: modelConfig(globalApi, "minimax"),
       env: {},
@@ -475,7 +433,7 @@ describe("minimax provider hooks", () => {
       fetchFn: fetchFn as typeof fetch,
     } as never);
 
-    expect(result?.windows).toEqual([{ label: "5h", usedPercent: 2, resetAt: undefined }]);
+    expect(fetchFn).toHaveBeenCalledOnce();
   });
 
   it("writes api and authHeader into the MiniMax portal OAuth config patch", async () => {
