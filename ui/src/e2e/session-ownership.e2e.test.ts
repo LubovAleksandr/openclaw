@@ -52,7 +52,7 @@ function ownerSessions(visibility: "draft" | "shared" | "read-only", single = fa
 }
 
 async function newPage(width = 1200) {
-  const context = await suite.browser.newContext({ viewport: { height: 800, width } });
+  const context = await suite.newBrowserContext({ viewport: { height: 800, width } });
   activePage = await context.newPage();
   return activePage;
 }
@@ -118,11 +118,10 @@ function geometry(element: Element) {
 
 suite.define(() => {
   afterEach(async () => {
-    await activePage
-      ?.context()
-      .close()
-      .catch(() => {});
-    activePage = undefined;
+    if (activePage) {
+      await suite.closeBrowserContext(activePage.context());
+      activePage = undefined;
+    }
   });
 
   it("keeps collaborative owner stacks legible without shifting session rows", async () => {

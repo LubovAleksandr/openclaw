@@ -45,6 +45,7 @@
 
   --shell-nav-expanded-width: 258px;
   --shell-nav-width: var(--shell-nav-expanded-width);
+  --shell-nav-resize-size: 14px;
   --shell-chrome-controls-inset: 10px;
   --shell-chrome-control-size: 32px;
   --shell-chrome-controls-gap: 4px;
@@ -757,16 +758,19 @@ html.openclaw-native-desktop .shell:not(.shell--mobile-nav) {
   display: none;
 }
 
-/* Keep the full resize target on the content side of the boundary so it
-   cannot intercept the sidebar scrollbar. The shell owns the resting line. */
+/* Reserve the resize target inside navigation, clear of its scrollbar and
+   the page controls. The shell owns the resting line at the outer edge. */
+.shell-nav:has(+ .sidebar-resizer) {
+  padding-inline-end: var(--shell-nav-resize-size);
+}
+
 .sidebar-resizer {
-  --resize-handle-size: 14px;
+  --resize-handle-size: var(--shell-nav-resize-size);
   --resize-handle-rest-color: transparent;
-  --resize-handle-line-inline: 0%;
+  --resize-handle-line-inline: 100%;
   grid-area: nav;
   align-self: stretch;
   justify-self: end;
-  margin-inline-end: calc(-1 * var(--resize-handle-size));
   z-index: 20;
 }
 
