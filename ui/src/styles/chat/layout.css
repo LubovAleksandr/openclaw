@@ -947,7 +947,7 @@ openclaw-pending-session-create {
 }
 
 .context-ring__track {
-  stroke: color-mix(in srgb, currentColor 22%, transparent);
+  stroke: var(--context-ring-track, color-mix(in srgb, currentColor 22%, transparent));
 }
 
 .context-ring__fill {

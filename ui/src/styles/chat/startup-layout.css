@@ -360,6 +360,14 @@
   }
 }
 
+/* Persistent header controls need more emphasis than tertiary content chrome. */
+.chat-pane__header,
+.side-panel__header,
+.sidebar-region__panels-toggle {
+  --icon-interactive: color-mix(in srgb, var(--text) 65%, transparent);
+  --rail-header-action-color: var(--icon-interactive);
+}
+
 .chat-pane__header {
   display: flex;
   flex: 0 0 auto;
@@ -403,6 +411,21 @@
   height: 32px;
   gap: 6px;
   padding-inline: 8px;
+}
+
+.chat-pane__header:not(.chat-pane__header--mobile)
+  :is(.chat-icon-btn, .chat-details-toggle, .chat-pane__layout-trigger):not(
+    :hover,
+    :focus-visible,
+    [aria-expanded="true"]
+  ),
+.sidebar-region__panels-toggle
+  .chat-pane__panels-toggle:not(:hover, :focus-visible, [aria-expanded="true"]) {
+  color: var(--control-secondary-text, var(--muted));
+
+  svg {
+    color: var(--icon-interactive, inherit);
+  }
 }
 
 .chat-pane__header:not(.chat-pane__header--mobile) .chat-icon-btn {
@@ -838,11 +861,10 @@
   gap: 6px;
 }
 
-/* House separator treatment: an aria-hidden glyph tinted with --muted, spacing
-   from the row gap, no size or color of its own beyond matching the title. */
+/* The project and its separator share the header's secondary foreground. */
 .chat-pane__crumb-sep {
   flex: 0 0 auto;
-  color: var(--muted);
+  color: var(--icon-interactive);
   font-size: 12px;
 }
 
@@ -861,8 +883,8 @@
 
 /* A breadcrumb segment, not a badge: flat and inline, sharing the title's type
    size so the two read as one trail and the hierarchy comes from colour alone —
-   the project is --muted, the session --text. Hover and focus reuse the sibling
-   title button's tint, which keeps a visible focus indicator without a border. */
+   the project shares the resting action ink, the session --text. Hover and focus
+   reuse the sibling title button's tint, keeping visible focus without a border. */
 .chat-pane__workspace-chip {
   display: inline-flex;
   max-width: 180px;
@@ -876,7 +898,7 @@
   border: 0;
   border-radius: var(--radius-sm);
   background: transparent;
-  color: var(--muted);
+  color: var(--icon-interactive);
   font-size: 12px;
   cursor: var(--cursor-action);
 }
@@ -936,7 +958,7 @@
   .sidebar-region__header .chat-pane__header .chat-pane__workspace-chip,
   .sidebar-region__header .chat-pane__header .chat-pane__workspace-chip:hover,
   .sidebar-region__header .chat-pane__header .chat-pane__workspace-chip:focus-visible {
-    color: var(--muted);
+    color: var(--icon-interactive);
   }
 
   .sidebar-region__header .chat-pane__header .chat-pane__session-title {

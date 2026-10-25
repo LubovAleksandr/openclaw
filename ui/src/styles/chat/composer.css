@@ -2009,7 +2009,7 @@ html[dir="rtl"] .chat-attachment-loading > span {
   flex: 0 0 auto;
   align-items: center;
   justify-content: center;
-  color: var(--muted);
+  color: var(--icon-interactive, var(--muted));
   transform: rotate(180deg);
   transition: transform var(--duration-fast) ease;
 }
@@ -2149,6 +2149,17 @@ html[dir="rtl"] .chat-attachment-loading > span {
 .agent-chat__input .chat-controls__permission-trigger,
 .agent-chat__input .chat-controls__model-settings .chat-controls__inline-select-trigger {
   color: var(--chat-composer-secondary);
+}
+
+.agent-chat__input
+  .chat-controls__permission-trigger--default:not(
+    :hover,
+    :focus-visible,
+    [aria-expanded="true"],
+    .chat-controls__permission-trigger--full
+  )
+  .chat-controls__permission-icon {
+  color: var(--icon-interactive, inherit);
 }
 
 .chat-controls__permission-option-state {
@@ -2420,7 +2431,7 @@ html[dir="rtl"] .chat-attachment-loading > span {
 /* Chat uses a neutral OpenAI mark in persistent chrome. New-session deliberately
    has no --chat surface marker, so its provider trigger retains brand color. */
 .agent-chat__input .chat-controls__trigger-provider-icon {
-  color: var(--chat-composer-secondary);
+  color: var(--icon-interactive, var(--chat-composer-secondary));
 }
 
 .chat-controls__model-options {
@@ -3046,6 +3057,13 @@ html[dir="rtl"] .chat-attachment-loading > span {
 .chat-controls__effort-gauge,
 .chat-controls__effort-speed {
   display: none;
+}
+
+.agent-chat__input
+  .chat-controls__effort-picker:not([open])
+  > .chat-controls__effort-trigger:not(:hover, :focus-visible)
+  .chat-controls__effort-gauge {
+  color: var(--icon-interactive, inherit);
 }
 
 .chat-controls__effort-gauge-needle {

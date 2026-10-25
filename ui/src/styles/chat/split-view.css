@@ -778,6 +778,18 @@
   border-radius: var(--radius-full);
   background: var(--session-header-control-surface);
   font-size: 12px;
+  color: var(--muted);
+}
+
+.chat-pane__sharing-menu--desktop
+  > .btn.chat-pane__sharing-trigger:not(
+    :hover,
+    :focus-visible,
+    [aria-expanded="true"],
+    [data-public="true"]
+  )
+  svg {
+  color: var(--icon-interactive, inherit);
 }
 
 .chat-pane__sharing-menu--desktop
@@ -792,9 +804,8 @@
   gap: 6px;
 }
 
-/* Preserve the button geometry while keeping the disclosure glyph secondary. */
+/* Size the disclosure glyph without attenuating its shared foreground again. */
 .chat-pane__sharing-menu--desktop .chat-pane__sharing-trigger .chat-pane__sharing-chevron {
-  opacity: 0.8;
   transform: scale(0.875);
 }
 

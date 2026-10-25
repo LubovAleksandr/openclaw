@@ -731,7 +731,7 @@ html.openclaw-native-desktop .shell:not(.shell--mobile-nav) {
 }
 
 .settings-sidebar__item--active .settings-sidebar__item-icon {
-  color: var(--accent);
+  color: var(--navigation-selected-icon, var(--accent));
 }
 
 .settings-sidebar__item-label {
@@ -996,7 +996,7 @@ openclaw-settings-save-indicator:empty {
   border: none;
   border-radius: var(--radius-md);
   background: transparent;
-  color: var(--muted);
+  color: var(--icon-interactive, var(--muted));
   transition:
     background var(--duration-fast) ease,
     color var(--duration-fast) ease;
@@ -1270,7 +1270,7 @@ openclaw-settings-save-indicator:empty {
   border: none;
   border-radius: var(--radius-sm);
   background: transparent;
-  color: var(--muted);
+  color: var(--icon-interactive, var(--muted));
   transition:
     opacity var(--duration-fast) ease,
     background var(--duration-fast) ease,
@@ -1282,6 +1282,10 @@ openclaw-settings-save-indicator:empty {
   height: 22px;
   padding: 0;
   opacity: 0.55;
+}
+
+.sidebar-session-toolbar__button:not(:disabled, [aria-disabled="true"]) {
+  opacity: var(--sidebar-toolbar-action-opacity, 0.55);
 }
 
 .sidebar-session-toolbar .sidebar-recent-sessions__label-text {
@@ -1640,7 +1644,7 @@ openclaw-settings-save-indicator:empty {
 .sidebar-recent-sessions__head:where(:hover, :has(:focus-visible)) .sidebar-session-group-actions,
 .sidebar-session-group-actions[aria-expanded="true"],
 .sidebar-session-group-actions.sidebar-session-sort--filtered {
-  opacity: 0.55;
+  opacity: var(--sidebar-toolbar-action-opacity, 1);
   pointer-events: auto;
 }
 
@@ -1671,7 +1675,7 @@ openclaw-settings-save-indicator:empty {
   }
 
   .sidebar-session-group-actions {
-    opacity: 0.55;
+    opacity: var(--sidebar-toolbar-action-opacity, 1);
     pointer-events: auto;
   }
 }
@@ -3093,7 +3097,7 @@ a:is(
 .nav-item.active .nav-item__icon,
 .nav-item--active .nav-item__icon {
   opacity: 1;
-  color: var(--accent);
+  color: var(--navigation-selected-icon, var(--accent));
 }
 
 /* Pinned sessions share the page-nav chrome (hover/active fill, muted glyphs and
@@ -4497,7 +4501,7 @@ html.openclaw-native-web-chrome
   font-weight: 650;
   letter-spacing: -0.03em;
   line-height: 1.2;
-  color: var(--accent);
+  color: var(--text-strong);
 }
 
 .page-subtitle {
