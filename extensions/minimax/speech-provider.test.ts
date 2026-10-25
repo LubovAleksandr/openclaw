@@ -40,6 +40,13 @@ if (!resolveConfig || !parseDirectiveToken) {
 }
 const resolveProviderConfig = (rawConfig: Record<string, unknown>) =>
   resolveConfig({ rawConfig, cfg: {}, timeoutMs: 30000 });
+const voice = "Chinese (Mandarin)_Warm_Girl";
+const model = "speech-01-turbo";
+const portalConfig = {
+  models: {
+    providers: { "minimax-portal": { baseUrl: "https://api.minimaxi.com/anthropic", models: [] } },
+  },
+};
 
 describe("resolveConfig", () => {
   afterEach(() => {
@@ -49,8 +56,8 @@ describe("resolveConfig", () => {
   it("reads from providers.minimax in rawConfig", () => {
     const minimax = {
       baseUrl: "https://custom.api.com",
-      model: "speech-01-turbo",
-      voiceId: "Chinese (Mandarin)_Warm_Girl",
+      model,
+      voiceId: voice,
       speed: 1.5,
       vol: 2,
       pitch: 3,
@@ -60,11 +67,11 @@ describe("resolveConfig", () => {
 
   it("keeps trusted MINIMAX_API_HOST fallback for TTS baseUrl", () => {
     vi.stubEnv("MINIMAX_API_HOST", "https://api.minimax.io/anthropic");
-    vi.stubEnv("MINIMAX_TTS_MODEL", "speech-01-turbo");
+    vi.stubEnv("MINIMAX_TTS_MODEL", model);
     vi.stubEnv("MINIMAX_TTS_VOICE_ID", "Chinese (Mandarin)_Gentle_Boy");
     expect(resolveProviderConfig({})).toMatchObject({
       baseUrl: "https://api.minimax.io",
-      model: "speech-01-turbo",
+      model,
       voiceId: "Chinese (Mandarin)_Gentle_Boy",
     });
   });
@@ -74,13 +81,8 @@ describe("parseDirectiveToken", () => {
   const policy = createSpeechDirectivePolicy();
 
   it.each([
-    [
-      "voice",
-      "Chinese (Mandarin)_Warm_Girl",
-      {},
-      { handled: true, overrides: { voiceId: "Chinese (Mandarin)_Warm_Girl" } },
-    ],
-    ["model", "speech-01-turbo", {}, { handled: true, overrides: { model: "speech-01-turbo" } }],
+    ["voice", voice, {}, { handled: true, overrides: { voiceId: voice } }],
+    ["model", model, {}, { handled: true, overrides: { model } }],
     ["speed", "1.5", {}, { handled: true, overrides: { speed: 1.5 } }],
     ["vol", "10", {}, { handled: true, overrides: { vol: 10 } }],
     ["pitch", "-3", {}, { handled: true, overrides: { pitch: -3 } }],
@@ -137,17 +139,14 @@ describe("MiniMax auth and synthesis", () => {
     await rm(stateDir, { recursive: true, force: true });
   });
 
-  it.each([false, true])(
-    "reports configured=%s for portal profile availability",
-    async (available) => {
-      if (available) {
-        seedMinimaxPortalProfile(agentDir);
-      }
-      await expect(
-        provider.isConfiguredAsync?.({ providerConfig: {}, timeoutMs: 30000 }),
-      ).resolves.toBe(available);
-    },
-  );
+  it.each([false, true])("reports portal configured=%s", async (available) => {
+    if (available) {
+      seedMinimaxPortalProfile(agentDir);
+    }
+    await expect(
+      provider.isConfiguredAsync?.({ providerConfig: {}, timeoutMs: 30000 }),
+    ).resolves.toBe(available);
+  });
 
   const firstFetchInit = () => fetchMock.mock.calls[0]?.[1];
 
@@ -164,7 +163,6 @@ describe("MiniMax auth and synthesis", () => {
     transcode.mockResolvedValueOnce(Buffer.from("fake-opus-data"));
 
     const result = await synthesize({
-      text: "Hello world",
       providerConfig: { apiKey: "sk-test", baseUrl: "https://api.minimaxi.com" },
       target: "voice-note",
     });
@@ -187,14 +185,14 @@ describe("MiniMax auth and synthesis", () => {
     [
       "providerOverrides",
       {
-        model: "speech-01-turbo",
+        model,
         voiceId: "custom_voice",
         speed: 1.5,
         vol: 1.5,
         pitch: 0.5,
       },
       {
-        model: "speech-01-turbo",
+        model,
         voice_setting: { voice_id: "custom_voice", speed: 1.5, vol: 1.5, pitch: 0 },
       },
     ],
@@ -223,15 +221,7 @@ describe("MiniMax auth and synthesis", () => {
     }
     mockAudioResponse();
     await synthesize({
-      cfg: portal
-        ? {
-            models: {
-              providers: {
-                "minimax-portal": { baseUrl: "https://api.minimaxi.com/anthropic", models: [] },
-              },
-            },
-          }
-        : {},
+      cfg: portal ? portalConfig : {},
       providerConfig: {},
     });
 

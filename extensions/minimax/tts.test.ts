@@ -65,12 +65,33 @@ it("throws on base_resp envelope error even when data.audio is present (regressi
   await expect(tts()).rejects.toThrow("MiniMax TTS API error (1002): Quota exceeded");
 });
 
-it.each(["success", "http-error", "stalled-headers", "stalled-body"] as const)(
+it.each([
+  ["success", '{"data":{"audio":"706f6e67"}}', undefined],
+  ["http-error", "Unauthorized", "MiniMax TTS API error (401): Unauthorized"],
+  ["stalled-headers", "", undefined],
+  ["stalled-body", '{"data":{"audio":"', undefined],
+  ["null envelope", "null", "minimax.tts: malformed JSON response"],
+  ["numeric audio", '{"data":{"audio":42}}', "MiniMax TTS API returned no audio data"],
+  [
+    "nonstring error message",
+    JSON.stringify({
+      data: { audio: "706c616365686f6c646572" },
+      base_resp: { status_code: 1002, status_msg: {} },
+    }),
+    "MiniMax TTS API error (1002): unknown error",
+  ],
+  [
+    "odd hex audio",
+    JSON.stringify(successBody({ audio: "666f6" })),
+    "MiniMax TTS API returned malformed hex audio",
+  ],
+] as const)(
   "settles guarded speech transport and releases its socket (%s)",
-  async (mode) => {
+  async (mode, body, errorMessage) => {
     const claim = await acquireTestPortBlock({ offsets: [0] });
     const ready = Promise.withResolvers<number>();
     const released = Promise.withResolvers<void>();
+    const didRelease = vi.fn();
     const closed = Promise.withResolvers<void>();
     const sockets = new Set<Socket>();
     const requests: string[] = [];
@@ -88,9 +109,9 @@ it.each(["success", "http-error", "stalled-headers", "stalled-body"] as const)(
         "content-type": "application/json",
       });
       if (mode === "stalled-body") {
-        response.write('{"data":{"audio":"');
+        response.write(body);
       } else {
-        response.end(mode === "http-error" ? "Unauthorized" : '{"data":{"audio":"706f6e67"}}');
+        response.end(body);
       }
     });
     server.on("connection", (socket) => {
@@ -114,6 +135,7 @@ it.each(["success", "http-error", "stalled-headers", "stalled-body"] as const)(
           ...result,
           release: async () => {
             await result.release();
+            didRelease();
             released.resolve();
           },
         };
@@ -140,16 +162,16 @@ it.each(["success", "http-error", "stalled-headers", "stalled-body"] as const)(
         await vi.advanceTimersByTimeAsync(1);
         expect(await outcome).toMatchObject({ ok: false, error: expect.any(Error) });
         expect(receivedResponse?.writableEnded).toBe(false);
-      } else if (mode === "success") {
-        expect(await outcome).toEqual({ ok: true, audio: Buffer.from("pong") });
+      } else if (errorMessage) {
+        const failure = await outcome;
+        expect(failure).toMatchObject({ ok: false, error: expect.any(Error) });
+        expect(failure).toHaveProperty("error.message", errorMessage);
       } else {
-        expect(await outcome).toMatchObject({
-          ok: false,
-          error: expect.objectContaining({ message: "MiniMax TTS API error (401): Unauthorized" }),
-        });
+        expect(await outcome).toEqual({ ok: true, audio: Buffer.from("pong") });
       }
       if (mode !== "stalled-headers") {
         await released.promise;
+        expect(didRelease).toHaveBeenCalledOnce();
       }
       await closed.promise;
       expect(requests).toEqual(["/v1/t2a_v2"]);
@@ -173,27 +195,22 @@ it.each(["success", "http-error", "stalled-headers", "stalled-body"] as const)(
 );
 
 type WireFixture = {
-  entryPoint: "speech" | "music";
   provider?: "minimax" | "minimax-portal";
-  responseBody?: unknown;
   frames?: Array<{ status?: number | string; audio?: string } | "[DONE]">;
   mediaMaxMb?: number;
 };
 
 async function runFixture(fixture: WireFixture) {
   const originalFetch = globalThis.fetch;
-  const release = vi.fn(async () => {});
-  const music = fixture.entryPoint === "music";
-  const body = music
-    ? fixture.frames
-        ?.map((frame) =>
-          frame === "[DONE]" ? "data: [DONE]" : `data: ${JSON.stringify(successBody(frame))}`,
-        )
-        .join("\n\n") + "\n\n"
-    : JSON.stringify(fixture.responseBody);
+  const body =
+    fixture.frames
+      ?.map((frame) =>
+        frame === "[DONE]" ? "data: [DONE]" : `data: ${JSON.stringify(successBody(frame))}`,
+      )
+      .join("\n\n") + "\n\n";
   const server = createServer((request, response) => {
     request.resume();
-    response.writeHead(200, { "content-type": music ? "text/event-stream" : "application/json" });
+    response.writeHead(200, { "content-type": "text/event-stream" });
     response.end(body);
   });
   await once(server.listen(0, "127.0.0.1"), "listening");
@@ -207,14 +224,10 @@ async function runFixture(fixture: WireFixture) {
   });
   guardedFetch.mockImplementation(async ({ url, init }) => ({
     response: await fetch(url, init),
-    release,
+    release: vi.fn(async () => {}),
   }));
 
   try {
-    if (fixture.entryPoint === "speech") {
-      return await tts({ text: "loopback fixture", timeoutMs: 1_000 });
-    }
-
     const providerId = fixture.provider ?? "minimax";
     const result = await buildMinimaxMusicGenerationProvider(providerId).generateMusic({
       provider: providerId,
@@ -225,36 +238,12 @@ async function runFixture(fixture: WireFixture) {
     return result.tracks[0]?.buffer;
   } finally {
     await promisify(server.close.bind(server))();
-    if (!music) {
-      expect(release).toHaveBeenCalledOnce();
-    }
   }
 }
 
 function successBody(data: unknown) {
   return { data, base_resp: { status_code: 0, status_msg: "success" } };
 }
-
-it.each([
-  ["null envelope", null, "minimax.tts: malformed JSON response"],
-  ["numeric audio", { data: { audio: 42 } }, "MiniMax TTS API returned no audio data"],
-  [
-    "nonstring error message",
-    {
-      data: { audio: "706c616365686f6c646572" },
-      base_resp: { status_code: 1002, status_msg: {} },
-    },
-    "MiniMax TTS API error (1002): unknown error",
-  ],
-] as const)("reports %s through the speech provider", async (_name, responseBody, error) => {
-  await expect(runFixture({ entryPoint: "speech", responseBody })).rejects.toThrow(error);
-});
-
-it("rejects odd-length hex TTS audio without truncating it", async () => {
-  await expect(
-    runFixture({ entryPoint: "speech", responseBody: successBody({ audio: "666f6" }) }),
-  ).rejects.toThrow("MiniMax TTS API returned malformed hex audio");
-});
 
 it.each([
   ["minimax", false],
@@ -266,7 +255,7 @@ it.each([
       { status: 1, audio: Buffer.from("partial-audio").toString("hex") },
       ...(done ? (["[DONE]"] as const) : []),
     ];
-    await expect(runFixture({ entryPoint: "music", provider, frames })).rejects.toThrow(
+    await expect(runFixture({ provider, frames })).rejects.toThrow(
       "MiniMax music generation stream ended without completion",
     );
   },
@@ -280,7 +269,6 @@ it.each([
   async (status, text, mediaMaxMb) => {
     const audio = Buffer.from(text);
     const result = runFixture({
-      entryPoint: "music",
       frames: [{ status, audio: audio.toString("hex") }],
       mediaMaxMb,
     });

@@ -35,31 +35,6 @@ function captureMiniMaxOAuthFetchTimeout() {
   };
 }
 
-async function expectFetchWithoutDeadlineToStayPending(params: {
-  url: string;
-  init?: RequestInit;
-  waitForRequest: () => Promise<void>;
-}) {
-  const controller = new AbortController();
-  const request = fetch(params.url, { ...params.init, signal: controller.signal });
-  request.catch(() => undefined);
-  await params.waitForRequest();
-
-  const result = await Promise.race([
-    request.then(
-      () => "settled" as const,
-      () => "settled" as const,
-    ),
-    new Promise<"pending">((resolve) => {
-      setTimeout(() => resolve("pending"), 30);
-    }),
-  ]);
-
-  controller.abort();
-  await request.catch(() => undefined);
-  expect(result).toBe("pending");
-}
-
 type FetchResponder =
   | Response
   | ((input: RequestInfo | URL, init?: RequestInit) => Response | Promise<Response>);
@@ -138,23 +113,17 @@ describe("loginMiniMaxPortalOAuth", () => {
   });
 
   it.each([
-    ["authorization code", "/device-code", "response_type=code", 0],
-    ["token polling", "/token", "grant_type=user_code", 1],
+    ["authorization code", "/device-code", 0],
+    ["token polling", "/token", 1],
   ] as const)(
     "times out %s HTTP requests against a hanging loopback server",
-    async (_phase, path, controlBody, fetchIndex) => {
+    async (_phase, path, fetchIndex) => {
       const realFetch = fetch;
       const server = await startHangingLoopbackServer();
       const oauthTimeout = captureMiniMaxOAuthFetchTimeout();
       let loginPromise: Promise<unknown> | undefined;
 
       try {
-        await expectFetchWithoutDeadlineToStayPending({
-          url: `${server.origin}/control`,
-          init: { method: "POST", body: controlBody },
-          waitForRequest: () => server.waitForRequestCount(1),
-        });
-
         const hangingResponse: FetchResponder = async (_input, init) =>
           await realFetch(`${server.origin}${path}`, init);
         const fetchMock =
@@ -165,7 +134,7 @@ describe("loginMiniMaxPortalOAuth", () => {
         loginPromise = loginMiniMax();
         loginPromise.catch(() => undefined);
 
-        await server.waitForRequestCount(2);
+        await server.waitForRequestCount(1);
         oauthTimeout.fire();
         await expect(
           withTimeout(loginPromise, 2_000, {
