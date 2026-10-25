@@ -70,7 +70,8 @@ const state = vi.hoisted(() => {
     heldRouteFault: new Error("synthetic held module route failure"),
     closeFault: new Error("synthetic context close failure") };
 });
-vi.mock("playwright", () => ({ chromium: { launch: async () => {
+vi.mock("playwright", () => {
+const acquire = async () => {
   if (${JSON.stringify(mode)} === "resources-browser-failure") throw new Error("synthetic browser startup failure");
   state.browserAcquired = true;
   return {
@@ -227,7 +228,9 @@ vi.mock("playwright", () => ({ chromium: { launch: async () => {
     },
     close: async () => { state.browserClosed = true; record(); },
   };
-} } }));
+};
+return { chromium: { launch: acquire, connect: acquire } };
+});
 import { createControlUiE2eSuite, holdModuleResponse } from ${JSON.stringify(helperPath)};
 const journalKeys = ["closeCalls", "arrived", "published", "browserAcquired", "browserClosed",
   "serverAcquired", "serverClosed", "events", "nativeAbortObserved", "firstCleanupEvent",
@@ -608,7 +611,7 @@ export default defineConfig({
     fsModuleCachePath: ${JSON.stringify(path.join(fixtureRoot, "transforms"))},
     testTimeout: 1000, hookTimeout,
     provide: {
-      controlUiE2eChromium: { available: true, executablePath: "/synthetic/chromium" },
+      controlUiE2eChromium: { available: true, executablePath: "/synthetic/chromium", wsEndpoint: "ws://synthetic/chromium" },
       controlUiE2eCleanup: { timeoutMs: hookTimeout, pool: "forks", isolate: true },
     },
   },

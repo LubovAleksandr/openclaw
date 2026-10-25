@@ -5,7 +5,6 @@ import { isSecretRef, normalizeSecretInputString } from "../config/types.secrets
 import { resolveUserPath, shortenHomePath } from "../utils.js";
 import { createSetupTranslator, resolveWizardLocale } from "../wizard/i18n/index.js";
 import type { SystemAgentChatEngine } from "./chat-engine.js";
-import { formatSystemAgentOnboardingWelcome } from "./overview.js";
 
 /**
  * The basic bootstrap is conversational: the welcome message carries the plan
@@ -75,6 +74,7 @@ export async function buildOnboardingWelcome(params: {
     setupModel &&
     (!requestedWorkspace || requestedWorkspace === authoredWorkspace)
   ) {
+    const { formatSystemAgentOnboardingWelcome } = await import("./overview.js");
     const welcome = formatSystemAgentOnboardingWelcome(overview, translate);
     params.engine.noteAssistantMessage(welcome);
     /**

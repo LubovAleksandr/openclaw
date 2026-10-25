@@ -27,7 +27,7 @@ import { createControlUiPaneRuntimeTestAdapterScript } from "../test-helpers/con
 
 declare module "vitest" {
   export interface ProvidedContext {
-    controlUiE2eChromium: { executablePath: string; available: boolean };
+    controlUiE2eChromium: { executablePath: string; available: boolean; wsEndpoint: string | null };
     controlUiE2eCleanup: { timeoutMs: number; pool: "forks"; isolate: true };
   }
 }
@@ -256,8 +256,11 @@ export function createControlUiE2eContextOptions(): BrowserContextOptions {
 }
 
 export function createControlUiE2eSuite(options: ControlUiE2eSuiteOptions): ControlUiE2eSuite {
-  const { executablePath: chromiumExecutablePath, available: chromiumAvailable } =
-    inject("controlUiE2eChromium");
+  const {
+    executablePath: chromiumExecutablePath,
+    available: chromiumAvailable,
+    wsEndpoint: chromiumWsEndpoint,
+  } = inject("controlUiE2eChromium");
   // Runner metadata crosses a process boundary; validate the injected runtime shape.
   const cleanupPolicy = asNullableRecord(inject("controlUiE2eCleanup"));
   if (
@@ -589,16 +592,18 @@ export function createControlUiE2eSuite(options: ControlUiE2eSuiteOptions): Cont
               return startControlUiE2eServer();
             });
           const launchBrowser = () =>
-            chromium.launch({
-              ...options.browserLaunchOptions,
-              // Full-tile CPU rasterization: GPU raster left paint-history-dependent edge pixels.
-              args: [
-                "--disable-partial-raster",
-                "--disable-gpu-rasterization",
-                ...(options.browserLaunchOptions?.args ?? []),
-              ],
-              executablePath: chromiumExecutablePath,
-            });
+            chromiumWsEndpoint && !options.browserLaunchOptions
+              ? chromium.connect(chromiumWsEndpoint, { timeout: 30_000 })
+              : chromium.launch({
+                  ...options.browserLaunchOptions,
+                  // Full-tile CPU rasterization: GPU raster left paint-history-dependent edge pixels.
+                  args: [
+                    "--disable-partial-raster",
+                    "--disable-gpu-rasterization",
+                    ...(options.browserLaunchOptions?.args ?? []),
+                  ],
+                  executablePath: chromiumExecutablePath,
+                });
           setupPromise = Promise.resolve().then(async () => {
             if (options.startServerBeforeBrowser) {
               server = await startServer();

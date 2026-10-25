@@ -17,6 +17,7 @@ import { enterControlUiSession } from "../test-helpers/control-ui-session-entry.
 import { revealChatModelOption } from "../test-helpers/select-picker-e2e.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
+const captureUiProof = process.env.OPENCLAW_CAPTURE_UI_PROOF === "1";
 const requireRecord = createRequireRecord("record", "expected-object-value");
 
 let instance: OpenClawTestInstance;
@@ -262,15 +263,19 @@ suite.define(() => {
             );
           expect(catalogNotices).toEqual([]);
           const stage = route === "new" ? "new" : "chat";
-          await page.screenshot({
-            path: path.join(suite.artifactDir, `${stage}-catalog.png`),
-            animations: "disabled",
-          });
+          if (captureUiProof) {
+            await page.screenshot({
+              path: path.join(suite.artifactDir, `${stage}-catalog.png`),
+              animations: "disabled",
+            });
+          }
           await model.click();
-          await page.screenshot({
-            path: path.join(suite.artifactDir, `${stage}-composer.png`),
-            animations: "disabled",
-          });
+          if (captureUiProof) {
+            await page.screenshot({
+              path: path.join(suite.artifactDir, `${stage}-composer.png`),
+              animations: "disabled",
+            });
+          }
           if (route !== "new") {
             // Model browsing is ready before history hydration unlocks effort changes.
             await expect
@@ -310,10 +315,12 @@ suite.define(() => {
           await expect
             .poll(() => composer.locator("[data-chat-thinking-slider]").isEnabled())
             .toBe(true);
-          await page.screenshot({
-            path: path.join(suite.artifactDir, `${stage}-effort.png`),
-            animations: "disabled",
-          });
+          if (captureUiProof) {
+            await page.screenshot({
+              path: path.join(suite.artifactDir, `${stage}-effort.png`),
+              animations: "disabled",
+            });
+          }
         },
       );
     }

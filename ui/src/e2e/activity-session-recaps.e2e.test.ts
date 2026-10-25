@@ -2,6 +2,7 @@ import path from "node:path";
 import { asNullableRecord } from "@openclaw/normalization-core/record-coerce";
 import type { Page } from "playwright";
 import { expect, it } from "vitest";
+import { pauseVirtualClock } from "../test-helpers/control-ui-e2e.ts";
 import { expectAttribute, expectText } from "./activity-assertions.test-support.ts";
 import { chatSessionListResponse, installMockGateway } from "./chat-flow.test-support.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
@@ -55,6 +56,8 @@ suite.define(() => {
               sessionKey: key,
               reason: "activity-summary",
             });
+            // Cross the refresh window and deliver its nested mock response timer.
+            await page.clock.runFor(5_001);
           };
           await expectText(recap).toContain(oldText);
           await expectAttribute(recap, "data-state").toBe("updating");
@@ -73,6 +76,8 @@ suite.define(() => {
               (request) => asNullableRecord(request.params)?.includeActivitySummary !== true,
             ).length;
           const ordinaryListCount = await ordinaryListRequests();
+          await page.clock.install();
+          await pauseVirtualClock(page);
 
           await publishRecap("current");
           await expectText(recap).toContain(newText);
@@ -88,6 +93,7 @@ suite.define(() => {
           await publishRecap("unavailable");
           await expectAttribute(recap, "data-state").toBe("unavailable");
           expect(await recap.textContent()).toContain(newText);
+          await page.clock.resume();
           await gateway.setMethodResponse(ensureMethod, ensuring(newText));
           await recap.getByRole("button", { name: "Retry recap", exact: true }).click();
           await expect.poll(async () => (await gateway.getRequests(ensureMethod)).length).toBe(2);
