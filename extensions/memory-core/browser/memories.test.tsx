@@ -3,7 +3,7 @@
 import type { MemorySearchResponse } from "openclaw/plugin-sdk/control-ui";
 import { flush } from "solid-js";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { memoriesView } from "./index.tsx";
+import { memoriesView } from "./memories.tsx";
 import {
   contextForTest,
   deferred,
@@ -18,7 +18,7 @@ import {
 afterEach(disposeTestViews);
 
 type Request = (method: string, params: Record<string, unknown>) => Promise<unknown>;
-async function createElement(request: Request, advertised = true, agentId: string | null = "main") {
+function createElement(request: Request, advertised = true, agentId: string | null = "main") {
   const lifetime = new AbortController();
   const formatError = vi.fn((error: unknown) =>
     error instanceof Error ? error.message : String(error),
@@ -36,9 +36,6 @@ async function createElement(request: Request, advertised = true, agentId: strin
   });
   const { container, update } = mountSettingsView(memoriesView, context);
   disposers.push(() => lifetime.abort());
-  await waitForSolid(() =>
-    expect(container.querySelector("openclaw-memory-memories")).not.toBeNull(),
-  );
   return Object.assign(container, {
     retire: () => lifetime.abort(),
     update,
@@ -67,8 +64,8 @@ function search(element: HTMLElement, query = "Ada") {
   typeQuery(element, query);
   submit(element);
 }
-async function searchElement(request: Request, query = "Ada") {
-  const element = await createElement(request);
+function searchElement(request: Request, query = "Ada") {
+  const element = createElement(request);
   search(element, query);
   return element;
 }
@@ -113,21 +110,21 @@ const waitMatch = (element: HTMLElement, text: string) =>
   waitForSolid(() => expect(match(element)).toBe(text));
 
 describe("Memory Core indexed-search presentation", () => {
-  it("applies host updates while the search renderer loads without starting a search", async () => {
-    const context = contextForTest(
-      snapshot({ advertisedMethods: ["memory.search"], routeIntent: "memories" }),
-    );
-    const { container, update } = mountSettingsView(memoriesView, context);
-    update({ agentId: null });
+  it("loads changed locales without replacing the search input or its draft", async () => {
+    const request = vi.fn<Request>().mockResolvedValue(searchResponse([]));
+    const element = createElement(request);
+    const input = element.querySelector<HTMLInputElement>("#memory-search-input")!;
+    typeQuery(element, "Ada");
+    element.update({ locale: "fr" });
     await waitForSolid(() =>
-      expect(container.querySelector("#memory-search-input")).not.toBeNull(),
+      expect(input.placeholder).toBe("Rechercher dans les souvenirs de cet agent"),
     );
-    typeQuery(container, "Ada");
-    expect(container.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(
-      true,
-    );
-    submit(container);
-    expect(context.request).not.toHaveBeenCalled();
+    expect(element.querySelector("#memory-search-input")).toBe(input);
+    expect(input.value).toBe("Ada");
+    expect(request).not.toHaveBeenCalled();
+    element.update({ locale: "en" });
+    expect(input.placeholder).toBe("Search this agent's memories");
+    expect(input.value).toBe("Ada");
   });
 
   it.each(["search", "detail"])("ignores retired %s errors before formatting", async (stage) => {
@@ -137,7 +134,7 @@ describe("Memory Core indexed-search presentation", () => {
         ? Promise.resolve(searchResponse([result]))
         : pending.promise,
     );
-    const element = await searchElement(request);
+    const element = searchElement(request);
     if (stage === "detail") {
       await openResult(element);
     }
@@ -155,15 +152,15 @@ describe("Memory Core indexed-search presentation", () => {
   it.each([
     [true, "Search for a person, project, decision"],
     [false, "Update the gateway to search memories"],
-  ] satisfies [boolean, string][])("advertised=%s", async (advertised, message) => {
-    const element = await createElement(vi.fn<Request>().mockResolvedValue({}), advertised);
+  ] satisfies [boolean, string][])("advertised=%s", (advertised, message) => {
+    const element = createElement(vi.fn<Request>().mockResolvedValue({}), advertised);
     expect(element.textContent).toContain(message);
     expect(element.querySelector("form") === null).toBe(!advertised);
   });
 
-  it("keeps search disabled when no agent is available", async () => {
+  it("keeps search disabled when no agent is available", () => {
     const request = vi.fn<Request>().mockResolvedValue({});
-    const element = await createElement(request, true, null);
+    const element = createElement(request, true, null);
     typeQuery(element, "Ada");
     expect(element.querySelector<HTMLButtonElement>('button[type="submit"]')?.disabled).toBe(true);
     submit(element);
@@ -176,7 +173,7 @@ describe("Memory Core indexed-search presentation", () => {
       .fn<Request>()
       .mockRejectedValueOnce(new Error("index unavailable"))
       .mockReturnValueOnce(retried.promise);
-    const element = await searchElement(request, "missing");
+    const element = searchElement(request, "missing");
     const input = element.querySelector("input");
     const submitButton = element.querySelector<HTMLButtonElement>('button[type="submit"]');
     await waitText(element, "index unavailable");
@@ -210,7 +207,7 @@ describe("Memory Core indexed-search presentation", () => {
           : Promise.resolve(memoryFileResponse("Another memory file")),
       [result, second, third],
     );
-    const element = await searchElement(request);
+    const element = searchElement(request);
     await waitForSolid(() => expect(element.querySelectorAll("article")).toHaveLength(3));
 
     const rows = element.querySelectorAll<HTMLButtonElement>("article > button");
@@ -257,7 +254,7 @@ describe("Memory Core indexed-search presentation", () => {
     const request = vi.fn<Request>(() =>
       Promise.resolve(searchResponse([{ ...result, path: "MEMORY.md" }, ...nonExpandable])),
     );
-    const element = await searchElement(request, "memory");
+    const element = searchElement(request, "memory");
     await waitForSolid(() => expect(element.querySelectorAll("article")).toHaveLength(6));
 
     expect(element.querySelectorAll("article > button")).toHaveLength(1);
@@ -267,7 +264,7 @@ describe("Memory Core indexed-search presentation", () => {
 
   it("keeps workspace read failures on the expanded row", async () => {
     const request = requestFiles(() => Promise.reject(new Error("workspace file not found")));
-    const element = await searchElement(request);
+    const element = searchElement(request);
     await openResult(element);
     await waitText(element, "Could not load this memory file: workspace file not found");
     expectText(element, [result.snippet], ["Memory search failed"]);
@@ -278,7 +275,7 @@ describe("Memory Core indexed-search presentation", () => {
     const current = deferred<unknown>();
     let readCount = 0;
     const request = requestFiles(() => (readCount++ === 0 ? previous.promise : current.promise));
-    const element = await createElement(request);
+    const element = createElement(request);
     for (const query of ["Ada", "Ada again"]) {
       search(element, query);
       flush();
@@ -306,7 +303,7 @@ describe("Memory Core indexed-search presentation", () => {
       .mockResolvedValueOnce(searchResponse([result]))
       .mockRejectedValueOnce(new Error("gateway closed"))
       .mockResolvedValueOnce(memoryFileResponse("first\nmatched two\nmatched three"));
-    const element = await searchElement(request);
+    const element = searchElement(request);
     await openResult(element);
     await waitText(element, "gateway closed");
 
@@ -342,7 +339,7 @@ describe("Memory Core indexed-search presentation", () => {
         }),
       )
       .mockResolvedValueOnce(searchResponse([fresh], { provider: "none", searchMode: "fts-only" }));
-    const element = await searchElement(request);
+    const element = searchElement(request);
     const readText = () => (element.textContent ?? "").replace(/\s+/gu, " ").trim();
     await waitText(element, "No memories matched");
     expect(element.querySelectorAll("article")).toHaveLength(0);

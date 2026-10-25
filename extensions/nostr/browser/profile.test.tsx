@@ -64,12 +64,6 @@ class ProfileFixture {
     });
     flush();
     this.click("Edit Profile");
-  }
-  async ready() {
-    await vi.waitFor(() => {
-      flush();
-      expect(this.input("name")).toBeTruthy();
-    });
     this.field("name", "Alice Updated");
   }
   button(label: string) {
@@ -112,9 +106,24 @@ class ProfileFixture {
   }
 }
 let f: ProfileFixture;
-beforeEach(async () => {
+beforeEach(() => {
   f = new ProfileFixture();
-  await f.ready();
+});
+
+it("loads a changed locale without replacing the edited profile input", async () => {
+  const input = f.input("name");
+  input.focus();
+  input.setSelectionRange(2, 5);
+  f.update({ locale: "sv" });
+  await f.waitForText("Spara och publicera");
+  expect(f.input("name")).toBe(input);
+  expect(input.value).toBe("Alice Updated");
+  expect(document.activeElement).toBe(input);
+  expect(input.selectionStart).toBe(2);
+  expect(input.selectionEnd).toBe(5);
+  expect(f.request).not.toHaveBeenCalled();
+  f.update({ locale: "en" });
+  expect(f.button("Save & Publish")).toBeDefined();
 });
 
 it("retains channel and profile facts while refreshed snapshots update their values", () => {

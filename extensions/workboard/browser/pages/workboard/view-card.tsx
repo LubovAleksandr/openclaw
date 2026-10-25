@@ -24,7 +24,7 @@ import {
   CardSession,
 } from "./view-card-content.tsx";
 import { openCardDetails, workboardCardDetailDrawerId } from "./view-card-details.tsx";
-import type { WorkboardProps } from "./view-helpers.tsx";
+import { workboardViewState, type WorkboardProps } from "./view-helpers.tsx";
 import { closeWorkboardPopoverOnAction, workboardPopoverRef } from "./view-popover.ts";
 import { getSessionStatus } from "./view-session-status.tsx";
 function isCardActionTarget(event: Event): boolean {
@@ -39,13 +39,27 @@ export function WorkboardCardView(input: {
   surface: WorkboardCardSurface;
   cardRefs?: ReturnType<typeof createElementRefs<HTMLElement>>;
 }) {
-  const action = createMemo(() => {
-    void input.workboard.revision;
-    return getCardActionState(input.workboard, input.card);
-  });
+  const state = workboardViewState(() => input.workboard);
+  const action = createMemo(
+    () => {
+      void input.workboard.revision;
+      return getCardActionState(input.workboard, input.card);
+    },
+    {
+      equals: (previous, next) =>
+        previous.busy === next.busy &&
+        previous.live === next.live &&
+        previous.linkedSessionKey === next.linkedSessionKey &&
+        previous.writable === next.writable &&
+        previous.showStartControls === next.showStartControls &&
+        previous.archived === next.archived &&
+        previous.sessionTarget?.sessionKey === next.sessionTarget?.sessionKey &&
+        previous.sessionTarget?.agentId === next.sessionTarget?.agentId,
+    },
+  );
   const widget = createMemo(() => input.surface === "widget");
   const dependencies = createMemo(() =>
-    getWorkboardDependencyState(input.card, action().state.cards, !action().state.nextCursor),
+    getWorkboardDependencyState(input.card, state().cards, !state().nextCursor),
   );
   const lifecycle = createMemo(() =>
     getWorkboardLifecycle(input.card, input.workboard.sessions, input.workboard.sessionResolution),
@@ -65,7 +79,7 @@ export function WorkboardCardView(input: {
     ),
   );
   const showDetails = () => {
-    openCardDetails(action().state, input.card);
+    openCardDetails(state(), input.card);
     input.workboard.onRequestUpdate?.();
   };
   const MoveAction = () => (
@@ -82,20 +96,25 @@ export function WorkboardCardView(input: {
       ) : null}
     </>
   );
-  const selected = createMemo(() => action().state.selectedCardIds.has(input.card.id));
+  const selected = createMemo(() => state().selectedCardIds.has(input.card.id));
+  const dragged = createMemo(() => state().draggedCardId === input.card.id);
+  const detailOpen = createMemo(() => state().detailCardId === input.card.id);
+  const draggable = createMemo(
+    () => action().writable && !action().archived && !state().dispatching && !state().nextCursor,
+  );
   const alertDescriptionId = createMemo(
     () => `workboard-card-alert-${input.surface}-${input.card.id}`,
   );
   const selectable = createMemo(() => !widget() && action().writable && !action().archived);
-  const selectionMode = createMemo(() => selectable() && action().state.selectedCardIds.size > 0);
+  const selectionMode = createMemo(() => selectable() && state().selectedCardIds.size > 0);
   const toggleSelection = () => {
-    if (!selectable() || action().busy || action().state.dispatching) {
+    if (!selectable() || action().busy || state().dispatching) {
       return;
     }
-    if (action().state.selectedCardIds.has(input.card.id)) {
-      action().state.selectedCardIds.delete(input.card.id);
+    if (state().selectedCardIds.has(input.card.id)) {
+      state().selectedCardIds.delete(input.card.id);
     } else {
-      action().state.selectedCardIds.add(input.card.id);
+      state().selectedCardIds.add(input.card.id);
     }
     input.workboard.onRequestUpdate?.();
   };
@@ -132,7 +151,7 @@ export function WorkboardCardView(input: {
                     type="button"
                     aria-label={t("workboard.viewDetails")}
                     aria-haspopup="dialog"
-                    aria-expanded={action().state.detailCardId === input.card.id ? "true" : "false"}
+                    aria-expanded={detailOpen() ? "true" : "false"}
                     aria-controls={workboardCardDetailDrawerId}
                     onClick={showDetails}
                   >
@@ -277,7 +296,7 @@ export function WorkboardCardView(input: {
         `priority-${input.card.priority}`,
         action().busy ? "workboard-card--busy" : "",
         action().archived ? "workboard-card--archived" : "",
-        action().state.draggedCardId === input.card.id ? "workboard-card--dragging" : "",
+        dragged() ? "workboard-card--dragging" : "",
         selected() ? "workboard-card--selected" : "",
         widget() ? "workboard-card--widget" : "workboard-card--openable",
       ]}
@@ -294,22 +313,9 @@ export function WorkboardCardView(input: {
             })
       }
       aria-haspopup={widget() || selectionMode() ? undefined : "dialog"}
-      aria-expanded={
-        widget() || selectionMode()
-          ? undefined
-          : action().state.detailCardId === input.card.id
-            ? "true"
-            : "false"
-      }
+      aria-expanded={widget() || selectionMode() ? undefined : detailOpen() ? "true" : "false"}
       aria-controls={widget() || selectionMode() ? undefined : workboardCardDetailDrawerId}
-      draggable={
-        action().writable &&
-        !action().archived &&
-        !action().state.dispatching &&
-        !action().state.nextCursor
-          ? "true"
-          : "false"
-      }
+      draggable={draggable() ? "true" : "false"}
       onMouseDown={(event) => {
         if (event.button === 0 && event.shiftKey && selectable() && !isCardActionTarget(event)) {
           event.preventDefault();
@@ -337,18 +343,13 @@ export function WorkboardCardView(input: {
         event.preventDefault();
       }}
       onDragStart={(event) => {
-        if (
-          !action().writable ||
-          action().archived ||
-          action().state.dispatching ||
-          action().state.nextCursor
-        ) {
+        if (!action().writable || action().archived || state().dispatching || state().nextCursor) {
           event.preventDefault();
           return;
         }
-        action().state.draggedCardId = input.card.id;
-        action().state.dragOverStatus = null;
-        action().state.dragBeforeCardId = null;
+        state().draggedCardId = input.card.id;
+        state().dragOverStatus = null;
+        state().dragBeforeCardId = null;
         if (event.dataTransfer) {
           event.dataTransfer.effectAllowed = "move";
           event.dataTransfer.setData("text/plain", input.card.id);
@@ -363,9 +364,9 @@ export function WorkboardCardView(input: {
         input.workboard.onRequestUpdate?.();
       }}
       onDragEnd={() => {
-        action().state.draggedCardId = null;
-        action().state.dragOverStatus = null;
-        action().state.dragBeforeCardId = null;
+        state().draggedCardId = null;
+        state().dragOverStatus = null;
+        state().dragBeforeCardId = null;
         input.workboard.onRequestUpdate?.();
       }}
     >

@@ -25,8 +25,9 @@ The workload uses a 300-card, six-status Workboard, the supported default 20-res
 Memory search, and the Nostr settings/profile editor. Nostr has no feed renderer.
 Workboard covers search, clearing search, selecting, scrolling, opening a card,
 dragging to another column, and a live update. Memory covers search, expansion and
-scrolling. Every meaningful state change has a visible assertion; drag also waits
-for the move RPC. Cold load starts with a new browser context; warm load remounts
+scrolling. Every meaningful state change has a visible assertion; drag waits for
+the move RPC and the card rendered in its destination within the timed interval.
+Cold load starts with a new browser context; warm load remounts
 the route in the same document with resident modules. Playwright routing disables
 HTTP cache, so warm load is not described as an HTTP-cache hit.
 
@@ -37,6 +38,8 @@ including failures and host load. `summary.json` includes distributions, plugin
 asset hashes/bytes, fixture counts, and instrumentation. Screenshots cover the
 first pair and failures. Trace runs retain renderer traces, CPU profiles and
 source-mapping coverage (unmapped production assets are reported explicitly).
+Coverage runs record cold navigation and warm route remount separately; warm
+coverage counts resident scripts observed by V8, not new network bytes.
 
 Compare task/script/style/layout CPU, long tasks, heap, node counts and loaded/
 unused bytes alongside automation-to-assertion wall time. The latter is not INP.

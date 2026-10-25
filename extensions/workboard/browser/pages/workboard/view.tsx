@@ -19,7 +19,6 @@ import {
   type WorkboardCard,
   type WorkboardStatus,
 } from "../../lib/workboard/types.ts";
-import "../../styles/workboard.css";
 import { agentDisplayName, buildAgentFilterOptions } from "./agent-filter.ts";
 import { buildBoardFilterOptions, WORKBOARD_ALL_BOARDS_FILTER } from "./board-filter.ts";
 import { getVisibleDetailCard, CardDetailsPanel } from "./view-card-details.tsx";

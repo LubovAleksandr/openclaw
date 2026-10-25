@@ -388,6 +388,79 @@ describe("WorkboardView", () => {
     expect(container.querySelector(".workboard-column--drop-target")).toBeNull();
   });
 
+  it("places variable-height card drops without measuring unrelated rows", async () => {
+    const request = vi.fn().mockResolvedValue({
+      card: createWorkboardCard({ id: "dragged", position: 1500 }),
+    });
+    const { state, container, renderView } = createWorkboardView({
+      canWrite: true,
+      client: { request },
+    });
+    state.viewMode = "board";
+    state.cards = ["first", "second", "dragged", "last"].map((id, index) =>
+      createWorkboardCard({ id, position: (index + 1) * 1000 }),
+    );
+    state.draggedCardId = "dragged";
+    renderView();
+    const column = expectDefined(container.querySelector(".workboard-column--todo"), "todo column");
+    const row = (id: string) =>
+      expectDefined(
+        column.querySelector<HTMLElement>(`.workboard-column__item[data-card-id="${id}"]`),
+        id,
+      );
+    const measurements = [
+      { id: "first", top: 0, height: 40 },
+      { id: "second", top: 52, height: 120 },
+      { id: "dragged", top: 184, height: 80 },
+      { id: "last", top: 276, height: 60 },
+    ].map(({ id, top, height }) =>
+      vi.spyOn(row(id), "getBoundingClientRect").mockReturnValue(new DOMRect(0, top, 240, height)),
+    );
+    const secondTitle = expectDefined(row("second").querySelector("h3"), "second title");
+    const hover = (target: Element, clientY: number, beforeId: string | null, reads: number) => {
+      measurements.forEach((measurement) => measurement.mockClear());
+      target.dispatchEvent(
+        new MouseEvent("dragover", { bubbles: true, cancelable: true, clientY }),
+      );
+      expect(state.dragBeforeCardId).toBe(beforeId);
+      expect(
+        measurements.reduce((count, measurement) => count + measurement.mock.calls.length, 0),
+      ).toBeLessThanOrEqual(reads);
+      renderView();
+      const marker = column.querySelector(
+        ".workboard-column__item--drop-before, .workboard-column__item--drop-after",
+      );
+      expect(marker?.getAttribute("data-card-id")).toBe(beforeId ?? "last");
+    };
+    hover(secondTitle, 111, "second", 1);
+    hover(secondTitle, 112, "last", 1);
+    hover(
+      expectDefined(column.querySelector(".workboard-column__cards"), "cards"),
+      45,
+      "second",
+      2,
+    );
+    hover(expectDefined(row("dragged").querySelector("h3"), "dragged title"), 190, "last", 0);
+    hover(row("first"), 19, "first", 1);
+    hover(row("last"), 306, null, 1);
+    measurements.forEach((measurement) => measurement.mockClear());
+    secondTitle.dispatchEvent(
+      new MouseEvent("drop", { bubbles: true, cancelable: true, clientY: 111 }),
+    );
+    expect(
+      measurements.reduce((count, measurement) => count + measurement.mock.calls.length, 0),
+    ).toBeLessThanOrEqual(1);
+    await waitForFast(() => {
+      expect(request).toHaveBeenCalledWith("workboard.cards.move", {
+        id: "dragged",
+        status: "todo",
+        position: 1500,
+      });
+      expect(state.cards.find((card) => card.id === "dragged")?.position).toBe(1500);
+    });
+    expect(state.draggedCardId).toBeNull();
+  });
+
   it.each(["readiness", "permission"] as const)("hides card mutations without %s", (reason) => {
     const { host, state, container, renderView } = createWorkboardView(
       reason === "permission" ? { canWrite: false } : {},

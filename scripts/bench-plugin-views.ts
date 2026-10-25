@@ -88,6 +88,7 @@ type Sample = {
   error?: string;
   errors: string[];
   coverage?: unknown;
+  warmCoverage?: unknown;
 };
 const results: Sample[] = [];
 const roots = [values["plugin-root"], values["compare-plugin-root"]].filter(
@@ -531,6 +532,32 @@ try {
                 ).toBeVisible();
               }
             };
+            const stopCoverage = async (phase: "cold" | "warm") => {
+              const entries = await page.coverage.stopJSCoverage();
+              const pluginEntries = entries.filter(
+                (entry) =>
+                  entry.url.includes(`/plugins/control-ui/${plugin}/`) ||
+                  entry.url.includes(`/assets/plugins/${plugin}/`),
+              );
+              await writeFile(
+                path.join(output, `${prefix}${phase === "warm" ? "-warm" : ""}-coverage.json`),
+                JSON.stringify(pluginEntries),
+              );
+              const scripts = pluginEntries.map((entry) =>
+                Object.assign({ url: new URL(entry.url).pathname }, summarizeScriptCoverage(entry)),
+              );
+              return {
+                scripts,
+                ...scripts.reduce(
+                  (total, row) => ({
+                    loadedBytes: total.loadedBytes + row.loadedBytes,
+                    executedBytes: total.executedBytes + row.executedBytes,
+                    unusedBytes: total.unusedBytes + row.unusedBytes,
+                  }),
+                  { loadedBytes: 0, executedBytes: 0, unusedBytes: 0 },
+                ),
+              };
+            };
             if (values.coverage) {
               await page.coverage.startJSCoverage({ resetOnNavigation: true });
             }
@@ -543,30 +570,7 @@ try {
               true,
             );
             if (values.coverage) {
-              const entries = await page.coverage.stopJSCoverage();
-              const pluginEntries = entries.filter(
-                (entry) =>
-                  entry.url.includes(`/plugins/control-ui/${plugin}/`) ||
-                  entry.url.includes(`/assets/plugins/${plugin}/`),
-              );
-              await writeFile(
-                path.join(output, `${prefix}-coverage.json`),
-                JSON.stringify(pluginEntries),
-              );
-              const scripts = pluginEntries.map((entry) =>
-                Object.assign({ url: new URL(entry.url).pathname }, summarizeScriptCoverage(entry)),
-              );
-              sample.coverage = {
-                scripts,
-                ...scripts.reduce(
-                  (total, row) => ({
-                    loadedBytes: total.loadedBytes + row.loadedBytes,
-                    executedBytes: total.executedBytes + row.executedBytes,
-                    unusedBytes: total.unusedBytes + row.unusedBytes,
-                  }),
-                  { loadedBytes: 0, executedBytes: 0, unusedBytes: 0 },
-                ),
-              };
+              sample.coverage = await stopCoverage("cold");
             }
             const navigate = async (pathname: string) => {
               await page.evaluate((next) => {
@@ -578,10 +582,16 @@ try {
             await expect(
               page.locator(".workboard-board--page, .memory-memories, openclaw-channels-page"),
             ).toHaveCount(0);
+            if (values.coverage) {
+              await page.coverage.startJSCoverage({ resetOnNavigation: false });
+            }
             await step("warm-route-load", async () => {
               await navigate(`/${route}`);
               await ready();
             });
+            if (values.coverage) {
+              sample.warmCoverage = await stopCoverage("warm");
+            }
             if (plugin === "workboard") {
               const menuTrigger = page.locator(".workboard-card__menu-trigger").first();
               await menuTrigger.focus();
@@ -656,13 +666,12 @@ try {
                 const before = (await gateway.getRequests("workboard.cards.move")).length;
                 await source.dragTo(target);
                 await gateway.waitForRequest("workboard.cards.move", { after: before });
+                await expect(
+                  target
+                    .locator(".workboard-card")
+                    .getByRole("heading", { name: sourceTitle, exact: true }),
+                ).toHaveCount(1);
               });
-              expect(
-                await target
-                  .locator(".workboard-card")
-                  .getByRole("heading", { name: sourceTitle, exact: true })
-                  .count(),
-              ).toBe(1);
               await step("live-update", async () => {
                 const card = {
                   ...seed.cards[0]!,

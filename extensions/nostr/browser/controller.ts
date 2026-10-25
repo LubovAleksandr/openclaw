@@ -4,7 +4,7 @@ import type {
 } from "openclaw/plugin-sdk/control-ui";
 import { isRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
 import type { Translator } from "./i18n/index.ts";
-import { createNostrProfileFormState, type NostrProfileFormState } from "./profile-form-state.ts";
+import { createNostrProfileFormState, type NostrProfileFormState } from "./profile-form.tsx";
 import type { NostrProfile } from "./types.ts";
 
 const NOSTR_PROFILE_REQUEST_TIMEOUT_MS = 30_000;
