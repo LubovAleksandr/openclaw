@@ -2,6 +2,7 @@ import { stripVTControlCharacters } from "node:util";
 import { Command } from "commander";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/memory-core-host-engine-foundation";
 import type { MemorySearchResult } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
+import { defaultRuntime } from "openclaw/plugin-sdk/memory-core-host-runtime-cli";
 import {
   createEmptyPluginRegistry,
   resetPluginRuntimeStateForTest,
@@ -13,7 +14,8 @@ import {
   spyRuntimeJson,
   spyRuntimeLogs,
 } from "openclaw/plugin-sdk/test-fixtures";
-import { afterEach, beforeAll, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { registerMemoryCli } from "./cli.js";
 
 const getMemorySearchManager = vi.hoisted(() => vi.fn());
 const getRuntimeConfig = vi.hoisted(() => vi.fn((): OpenClawConfig => ({})));
@@ -29,14 +31,6 @@ vi.mock("openclaw/plugin-sdk/runtime-config-snapshot", async (importOriginal) =>
   captureRuntimeConfigAsyncReader: () => async () => getRuntimeConfig(),
 }));
 
-let registerMemoryCli: typeof import("./cli.js").registerMemoryCli;
-let defaultRuntime: typeof import("openclaw/plugin-sdk/memory-core-host-runtime-cli").defaultRuntime;
-
-beforeAll(async () => {
-  ({ registerMemoryCli } = await import("./cli.js"));
-  ({ defaultRuntime } = await import("openclaw/plugin-sdk/memory-core-host-runtime-cli"));
-});
-
 const knowledgeSlot: OpenClawConfig = { plugins: { slots: { memory: "knowledge" } } };
 const providerConfig = (credential: unknown): OpenClawConfig => ({
   plugins: {
@@ -46,7 +40,6 @@ const providerConfig = (credential: unknown): OpenClawConfig => ({
 });
 
 function registerSelectedProvider() {
-  const health = vi.fn(async () => ({ status: "ready" as const, message: "42 records" }));
   const close = vi.fn(async () => {});
   const open = vi.fn(async () => ({
     provider: {
@@ -58,7 +51,7 @@ function registerSelectedProvider() {
       },
       search: async () => ({ hits: [] }),
       get: async () => ({ status: "not_found" as const }),
-      health,
+      health: async () => ({ status: "ready" as const, message: "42 records" }),
       close,
     },
   }));
@@ -68,7 +61,7 @@ function registerSelectedProvider() {
     capability: { providerRuntime: { open } },
   });
   setActivePluginRegistry(registry);
-  return { open, health, close };
+  return { open, close };
 }
 
 async function runMemoryCli(args: string[]) {
@@ -122,12 +115,11 @@ it.each(["text", "json", "unresolved"] as const)(
       });
     }
     const { open, close } = registerSelectedProvider();
-    const { text, json } = await runMemoryCli([
-      "status",
-      "--agent",
-      "main",
-      ...(mode === "text" ? [] : ["--json"]),
-    ]);
+    const args = ["status", "--agent", "main"];
+    if (mode !== "text") {
+      args.push("--json");
+    }
+    const { text, json } = await runMemoryCli(args);
     expect(getMemorySearchManager).not.toHaveBeenCalled();
     if (available) {
       expect(open).toHaveBeenCalledWith(

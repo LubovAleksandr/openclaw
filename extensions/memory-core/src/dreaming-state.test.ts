@@ -1,5 +1,5 @@
 import path from "node:path";
-import { setImmediate } from "node:timers";
+import { setImmediate } from "node:timers/promises";
 import type { OpenKeyedStoreOptions } from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
   createPluginStateKeyedStoreForTests,
@@ -144,10 +144,11 @@ test("supports existing keyed-store adapters without range reads", async () => {
 test.each(["replacement", "cleanup", "clear"] as const)(
   "workspace %s lets queued event-loop work observe committed progress",
   async (phase) => {
-    let observeMutation: (() => void) | undefined;
+    const firstMutation = Promise.withResolvers<void>();
+    let observing = false;
     const { scope, database } = createFixture((operation) => {
-      if (phase === "replacement" || operation === "delete") {
-        observeMutation?.();
+      if (observing && (phase === "replacement" || operation === "delete")) {
+        firstMutation.resolve();
       }
     });
     const originals = Array.from({ length: 64 }, (_, i) => ({ key: `entry-${i}`, value: "old" }));
@@ -161,24 +162,12 @@ test.each(["replacement", "cleanup", "clear"] as const)(
           ? originals.map(({ key }) => ({ key, value: "new" }))
           : [{ key: "retained", value: "new" }];
     let completed = false;
-    const observation = new Promise<{
-      completed: boolean;
-      transactionOpen: boolean;
-      entries: Array<{ key: string; value: string }>;
-    }>((resolve, reject) => {
-      // Queue after the first durable mutation; initial worker reads can yield before progress.
-      observeMutation = () => {
-        observeMutation = undefined;
-        setImmediate(() => {
-          const completedAtCallback = completed;
-          const transactionOpen = database.db.isTransaction;
-          void readMemoryCoreWorkspaceEntries<string>(scope).then(
-            (current) =>
-              resolve({ completed: completedAtCallback, transactionOpen, entries: current }),
-            reject,
-          );
-        });
-      };
+    observing = true;
+    const observation = firstMutation.promise.then(async () => {
+      // Initial worker reads can yield before progress; wait for a durable mutation first.
+      await setImmediate();
+      const snapshot = { completed, transactionOpen: database.db.isTransaction };
+      return { ...snapshot, entries: await readMemoryCoreWorkspaceEntries<string>(scope) };
     });
     const operation = (
       phase === "clear"
@@ -186,7 +175,7 @@ test.each(["replacement", "cleanup", "clear"] as const)(
         : writeMemoryCoreWorkspaceEntries({ ...scope, entries })
     ).finally(() => {
       completed = true;
-      observeMutation?.();
+      firstMutation.resolve();
     });
     try {
       const [, observed] = await Promise.all([operation, observation]);
