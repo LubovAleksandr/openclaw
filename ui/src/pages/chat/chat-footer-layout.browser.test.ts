@@ -240,6 +240,26 @@ describeBrowserLayout.concurrent("chat footer browser layout", () => {
     });
   });
 
+  it("reserves the mobile activity strip before its metadata arrives", async () => {
+    await withBrowserPage(openBrowserPage(390, 844), async (page) => {
+      await page.setContent(`<style>${readUiCss()}${readStyleSheet("ui/src/styles/chat/composer-mobile.css")}${readStyleSheet("ui/src/pages/chat/components/chat-activity-pills.css")}</style>
+        <div class="agent-chat__composer-shell" data-mobile-composer="true" style="position:relative;margin-top:200px">
+          <div class="agent-chat__composer-float"><div class="chat-footer__context"></div></div>
+          <div class="agent-chat__input">Composer</div>
+        </div>`);
+      const before = await getRect(page, ".agent-chat__composer-float");
+      await page.locator(".agent-chat__composer-float").evaluate((element) => {
+        element.insertAdjacentHTML(
+          "beforeend",
+          '<div class="chat-activity-pills"><div class="chat-activity-pills__row"><button class="activity-pill">18 working</button><button class="activity-pill">Task progress</button></div></div>',
+        );
+      });
+      const after = await getRect(page, ".agent-chat__composer-float");
+      expect(after.height).toBeGreaterThan(0);
+      expect(after).toEqual(before);
+    });
+  });
+
   it("paints message footer focus outlines past virtual row boundaries", async () => {
     await withBrowserPage(openBrowserPage(600, 300), async (page) => {
       await page.setContent(

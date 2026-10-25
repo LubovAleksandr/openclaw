@@ -67,7 +67,7 @@ const controlUiPerformanceBudgets = {
   // Complete local/CI bundles, including 64 B of compression variance.
   // Fixed bundle ceilings, not a repeatable per-PR growth allowance.
   totalCssGzipBytes: 303_521,
-  totalCssRawBytes: 1_597_537,
+  totalCssRawBytes: 1_597_540,
 } satisfies Record<string, number>;
 export const CONTROL_UI_PERFORMANCE_BUDGETS = Object.freeze(controlUiPerformanceBudgets);
 
