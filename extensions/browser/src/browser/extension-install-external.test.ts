@@ -28,16 +28,9 @@ async function setup(platform: NodeJS.Platform = "darwin") {
     : undefined;
   const deps = {
     ...value.deps,
-    ...(windows && manage
-      ? {
-          windowsNative: {
-            platform: windows.ops,
-            context: windows.context,
-            executable: windows.executable,
-            manage,
-          },
-        }
-      : {}),
+    windowsNative: windows
+      ? { platform: windows.ops, context: windows.context, executable: windows.executable, manage }
+      : undefined,
   };
   const chrome = value.productRoot();
   const preferences = await value.preferences({
@@ -48,11 +41,7 @@ async function setup(platform: NodeJS.Platform = "darwin") {
     "External Extensions",
     `${FOUNDATION_STORE_ID}.json`,
   );
-  const install = (requestStoreInstall?: boolean) =>
-    value.install({
-      deps,
-      requestStoreInstall,
-    });
+  const install = (requestStoreInstall?: boolean) => value.install({ deps, requestStoreInstall });
   return { ...value, deps, chrome, preferences, requestPath, install, manage };
 }
 
@@ -61,18 +50,18 @@ describe("Chrome Store installation request", () => {
     const value = await fixture("darwin");
     const chrome = value.productRoot();
     await expect(fs.access(chrome.userDataDir)).rejects.toMatchObject({ code: "ENOENT" });
-    const status = await value.install({
-      deps: withAdvancingInstallClock(value.deps),
-    });
+    const status = await value.install({ deps: withAdvancingInstallClock(value.deps) });
 
     expect(status.registrations.find((entry) => entry.product === "chrome")).toMatchObject({
       state: "owned",
       extensionIds: expect.arrayContaining([FOUNDATION_STORE_ID]),
     });
-    expect(status.storeInstallRequests).toEqual([expect.objectContaining({ state: "requested" })]);
-    expect(status.storeDiscovered).toEqual([]);
-    expect(status.manualSetupRequired).toBe(true);
-    expect(status.issues).toEqual([]);
+    expect(status).toMatchObject({
+      storeInstallRequests: [{ state: "requested" }],
+      storeDiscovered: [],
+      manualSetupRequired: true,
+      issues: [],
+    });
     expect((await fs.readdir(chrome.userDataDir)).toSorted()).toEqual([
       "External Extensions",
       "NativeMessagingHosts",
@@ -92,13 +81,11 @@ describe("Chrome Store installation request", () => {
     expect(JSON.parse(request)).toMatchObject({
       external_update_url: "https://clients2.google.com/service/update2/crx",
     });
-    expect(status.storeInstallRequests).toEqual([
-      expect.objectContaining({ path: value.requestPath, state: "requested" }),
-    ]);
-    expect(status.storeDiscovered).toEqual([
-      expect.objectContaining({ enabled: false, awaitingApproval: true }),
-    ]);
-    expect(status.manualSetupRequired).toBe(true);
+    expect(status).toMatchObject({
+      storeInstallRequests: [{ path: value.requestPath, state: "requested" }],
+      storeDiscovered: [{ enabled: false, awaitingApproval: true }],
+      manualSetupRequired: true,
+    });
     expect(status.registrations.find((entry) => entry.product === "chrome")?.state).toBe("owned");
     const before = await fs.stat(value.requestPath);
     await value.install();
