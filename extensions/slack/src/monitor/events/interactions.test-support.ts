@@ -1,17 +1,12 @@
 import type { SlackShortcutMiddlewareArgs } from "@slack/bolt";
+import type { resolvePluginConversationBindingApproval } from "openclaw/plugin-sdk/conversation-runtime";
 import { vi } from "vitest";
 import { encodeSlackApprovalAction, type SlackApprovalAction } from "../../approval-actions.js";
 import { installSlackTestRuntime } from "../../test-runtime.test-support.js";
 import type { SlackMonitorContext } from "../context.js";
 
 function buttonBlocks(blockId: string, control: { action_id: string; value?: string }) {
-  return [
-    {
-      type: "actions",
-      block_id: blockId,
-      elements: [{ type: "button", ...control }],
-    },
-  ];
+  return [{ type: "actions", block_id: blockId, elements: [{ type: "button", ...control }] }];
 }
 
 export function singleButtonBlocks(blockId: string, actionId: string) {
@@ -41,32 +36,26 @@ export function approvalContextOptions(pluginApprover: string, execApprover: str
 }
 
 export function approvedPluginBindingResult(): Extract<
-  Awaited<
-    ReturnType<
-      typeof import("openclaw/plugin-sdk/conversation-runtime").resolvePluginConversationBindingApproval
-    >
-  >,
+  Awaited<ReturnType<typeof resolvePluginConversationBindingApproval>>,
   { status: "approved" }
 > {
+  const plugin = { pluginId: "codex", pluginRoot: "/plugins/codex" };
+  const conversation = { channel: "slack", accountId: "default", conversationId: "C1" };
   return {
     status: "approved",
     decision: "allow-once",
     binding: {
       bindingId: "binding-123",
-      pluginId: "codex",
-      pluginRoot: "/plugins/codex",
-      channel: "slack",
-      accountId: "default",
-      conversationId: "C1",
+      ...plugin,
+      ...conversation,
       boundAt: 0,
     },
     request: {
       id: "approval-123",
-      pluginId: "codex",
+      ...plugin,
       pluginName: "Codex",
-      pluginRoot: "/plugins/codex",
       summary: "for this thread",
-      conversation: { channel: "slack", accountId: "default", conversationId: "C1" },
+      conversation,
     },
   };
 }
@@ -114,12 +103,7 @@ type RegisteredViewHandler = Handler<
   }>
 >;
 
-type RegisteredShortcutHandler = Handler<
-  Pick<SlackShortcutMiddlewareArgs, "ack" | "body"> & {
-    client?: TestSlackClient;
-    context?: TestBoltContext;
-  }
->;
+type RegisteredShortcutHandler = Handler<ListenerArgs<SlackShortcutMiddlewareArgs["body"]>>;
 
 type TestBoltContext = {
   teamId?: string;
@@ -184,9 +168,7 @@ export function createContext({
     shortcut?: RegisteredShortcutHandler;
   } = {};
   const listenerClient = {
-    chat: {
-      update: vi.fn<TestSlackClient["chat"]["update"]>().mockResolvedValue(undefined),
-    },
+    chat: { update: vi.fn<TestSlackClient["chat"]["update"]>().mockResolvedValue(undefined) },
   };
   const scoped =
     <Args extends { body: unknown; context?: TestBoltContext; client?: TestSlackClient }>(
@@ -238,9 +220,11 @@ export function createContext({
       agentId: "ops",
       sessionKey: "agent:ops:slack:channel:C1",
     });
-  const isChannelAllowed = vi.fn(channelAllowed);
-  const resolveUserName = vi.fn(userName);
-  const resolveChannelName = vi.fn(channelName);
+  const lookups = {
+    isChannelAllowed: vi.fn(channelAllowed),
+    resolveUserName: vi.fn(userName),
+    resolveChannelName: vi.fn(channelName),
+  };
   const ctx = {
     app,
     accountId: "default",
@@ -256,9 +240,7 @@ export function createContext({
     channelsConfigKeys: Object.keys(channelsConfig),
     defaultRequireMention: true,
     shouldDropMismatchedSlackEvent,
-    isChannelAllowed,
-    resolveUserName,
-    resolveChannelName,
+    ...lookups,
     resolveSlackSystemEventRoute: resolveSessionKey,
   };
   Object.assign(ctx, { readRuntimeContext: async () => ctx, isRuntimePolicyCurrent: () => true });
@@ -267,9 +249,7 @@ export function createContext({
     app,
     runtimeLog,
     resolveSessionKey,
-    isChannelAllowed,
-    resolveUserName,
-    resolveChannelName,
+    ...lookups,
     getHandler: () => requireHandler(handlers.action, "action"),
     getViewHandler: () => requireHandler(handlers.view_submission, "view"),
     getViewClosedHandler: () => requireHandler(handlers.view_closed, "view-closed"),
