@@ -36,6 +36,14 @@
   --primary: #d97757;
   --primary-hover: #e68b6b;
   --primary-foreground: #241f1b;
+  /* White action glyphs keep their contrast when hover and press step the fill. */
+  --chat-send-hover-bg: color-mix(in srgb, var(--primary) 86%, var(--primary-foreground));
+  --sidebar-rail-action-hover-bg: var(--chat-send-hover-bg);
+  --sidebar-rail-action-active-bg: color-mix(
+    in srgb,
+    var(--sidebar-rail-action-hover-bg) 90%,
+    var(--primary-foreground)
+  );
   --selection-bg: #5b7694;
 
   /* Deepen only the text-bearing destructive fill; keep danger accents vivid. */

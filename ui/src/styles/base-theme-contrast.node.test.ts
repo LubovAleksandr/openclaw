@@ -374,6 +374,11 @@ describe("Control UI theme contrast", () => {
       ["var(--primary-foreground)", "var(--primary-hover)", AA_NORMAL_TEXT_MIN],
       ["var(--destructive-foreground)", "var(--destructive-hover)", AA_NORMAL_TEXT_MIN],
       ["var(--accent-foreground)", "var(--accent)", 3],
+      [
+        "var(--chat-send-foreground, var(--primary-foreground))",
+        "var(--chat-send-hover-bg, color-mix(in srgb, var(--primary) 86%, var(--text-strong)))",
+        3,
+      ],
     ]),
     "chat confirmation": paletteCases((themeName, tokens, floor) => {
       const paint = confirmation.overrides.get(themeName) ?? confirmation.base;
