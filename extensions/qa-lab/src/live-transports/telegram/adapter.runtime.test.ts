@@ -309,7 +309,8 @@ it("maps, filters, edits, and resets native messages under lease health", async 
   expect(state.getSnapshot().messages[1]).toMatchObject({
     id: reply.id,
     text: preview.text,
-    timestamp: 101_000,
+    timestamp: preview.timestamp,
+    editedAt: 101_000,
   });
   expect(readMessages()).toEqual([edited]);
   await onUpdate({ ...edited, text: "final", entities: [] });

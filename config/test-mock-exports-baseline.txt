@@ -430,8 +430,6 @@
 ["extensions/feishu/src/send.test.ts","openclaw/plugin-sdk/markdown-table-runtime","ba2698d66c9f45f522b4fc4d01f501ba326258b9a4517b5ddcb32e64017faf38",1]
 ["extensions/feishu/src/tool-account-routing.test.ts","./client.js","182ebecc52a68a8bf6cc888c9294e9683ec0d54d03e23a1ba4a215bcff91b40a",1]
 ["extensions/file-transfer/src/node-host/file-stat.test.ts","../shared/audit.js","ed978cbc28dc1f347f4729829593f6e1a94b1eb28ef47d18cd199f06b170e6ee",1]
-["extensions/file-transfer/src/shared/node-invoke-policy.create.test.ts","./audit.js","ed978cbc28dc1f347f4729829593f6e1a94b1eb28ef47d18cd199f06b170e6ee",1]
-["extensions/file-transfer/src/shared/node-invoke-policy.real-dir-fetch.test.ts","./audit.js","ab0a044ef2af6e48d59b1a1162b115e25c5213164c5d8b131cd81207ffb93ca8",1]
 ["extensions/file-transfer/src/shared/node-invoke-policy.test.ts","./audit.js","ab0a044ef2af6e48d59b1a1162b115e25c5213164c5d8b131cd81207ffb93ca8",1]
 ["extensions/file-transfer/src/shared/policy.test.ts","openclaw/plugin-sdk/config-mutation","87599a6310bf474e66caadc9d1e3ce94d03bced008be2e084cbc9053bf0e667b",1]
 ["extensions/file-transfer/src/tools/dir-fetch-tool.test.ts","../shared/audit.js","1cf98f493bf3b6c2c224260c988bf81207ab88798750de94e3921fb1c1a203ff",1]
