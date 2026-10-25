@@ -196,7 +196,7 @@ describe("transcript message reactions", () => {
         userId: "self",
         messageReactions: new Map([["message-1", reactions]]),
         onReact,
-        activeContinuation: active ? { parts: [], options: { showReasoning: false } } : undefined,
+        activeContinuation: active ? { parts: [], options: {} } : undefined,
       });
       const footer = host.querySelector(".chat-group > .chat-group-footer")!;
       expect(host.querySelectorAll(".chat-message-reactions")).toHaveLength(1);

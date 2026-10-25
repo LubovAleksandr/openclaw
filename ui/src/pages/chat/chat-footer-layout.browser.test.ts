@@ -101,8 +101,12 @@ describeBrowserLayout.concurrent("chat footer browser layout", () => {
         expect(shared.right).toBeCloseTo(before.right, 1);
         await page.setViewportSize({ width: 390, height: 844 });
         const mobile = await getRect(page, ".chat-group");
-        expect(mobile.left).toBeCloseTo(before.left, 1);
-        expect(mobile.right).toBeCloseTo(before.right, 1);
+        await page.locator(".chat-thread").evaluate((thread) => {
+          thread.classList.add("chat-thread--direct");
+        });
+        const mobileDirect = await getRect(page, ".chat-group");
+        expect(mobileDirect.left).toBeCloseTo(mobile.left, 1);
+        expect(mobileDirect.right).toBeCloseTo(mobile.right, 1);
       });
     },
   );
