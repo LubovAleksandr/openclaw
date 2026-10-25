@@ -119,8 +119,11 @@ Heavy-content steps use `heavy-<fixture>-<action>` IDs. Fixtures are `code`
 parse-limit fallback), `table` (300 rows × 12 columns), `tool-diff` (5,000 native
 input patch rows, existing 400-line preview cap), `tool-diff-error` (the same
 patch rejected with a complete error message and Raw selected initially),
-`terminal` (5,000 output lines), `json` (5,000 values, above the JSON formatter cap), `json-format` (1,900
-values, within that cap), `images` (40 repeated tiny inline PNGs), and
+`terminal` (5,000 short output lines), `terminal-dense` (5,000 distinct lines,
+220,000 characters), `json` (5,000 values, above the JSON formatter cap),
+`json-format` (1,900 values, within that cap), `json-nested-dense` (800 nested
+records with multiline stdout, 214,083 characters), `images` (40 repeated tiny
+inline PNGs), and
 `large-images` (40 distinct 1,024 × 1,024 native PNG attachments, about 4 MB
 encoded). The large-image arrival waits for all 40 images to load with their
 intrinsic dimensions; this does not force offscreen bitmap decoding. Native cards publish
@@ -130,6 +133,14 @@ updates), `expand`, `collapse`, `scroll`, `copy`, `output-open`, and JSON
 `raw-toggle` where those controls exist. These scenarios use an empty transcript
 to isolate content cost. Copy uses an instrumented clipboard boundary and checks
 the exact copied string; it does not measure operating-system clipboard latency.
+Dense tool expansion checks the existing exact 8,000-character preview; full
+output checks the real `chat.message.get` loader's 2,000,000-character read cap,
+complete display, and original response bytes. `output-scroll` traverses every
+viewport band of the complete dense sidebar output and verifies its bottom.
+`heavy-input-{card,sidebar}-{closed,first-open,reopen}` covers a 5,000-line,
+150,000-character Tool Input and records hidden DOM ownership while preserving
+its full source. `heavy-input-nested-{small,large}` compares 25 and 5,000 nested
+rows with the same exact 400-character argument preview.
 
 ```sh
 NODE_DISABLE_COMPILE_CACHE=1 node --import ./scripts/tsx.mjs scripts/bench-control-ui-interactions.ts \
@@ -158,8 +169,14 @@ termination and live count; no-op completion uses these events rather than an
 assumed delay.
 
 `heavy-table-copy` verifies independent expected TSV; code/diff and tool copy
-steps verify every original text character. Native image clipboard data remains
-outside this text-only clipboard probe. `heavy-code-retirement-gc` is a separate
+steps verify every original text character. Native scrolling uses overlapping
+viewport bands and verifies the actual bottom. Large-image evidence reports
+binary PNG bytes separately from encoded data-URL characters.
+`heavy-managed-image-copy` drives Copy image with distinct thumbnail/original
+assets, then verifies the original PNG bytes and dimensions in a native
+`ClipboardItem` intercepted at the page-local clipboard boundary. Its separate
+`copyReadyMs` is one exploratory action-to-blob interval; the OS clipboard is
+untouched. `heavy-code-retirement-gc` is a separate
 diagnostic: replace and clear one canonical message ten times, require zero live
 workers after each clear, and explicitly collect garbage before each heap
 snapshot. Its first two rounds warm both alternating sources; report the later

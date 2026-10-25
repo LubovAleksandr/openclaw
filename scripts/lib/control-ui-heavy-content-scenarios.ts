@@ -4,7 +4,10 @@ import { projectAgentToolActivity } from "../../src/infra/agent-activity-events.
 import type { MockGatewayControls } from "../../ui/src/test-helpers/control-ui-e2e-contract.ts";
 import { controlUiSessionPath } from "../../ui/src/test-helpers/control-ui-e2e.ts";
 import { createHeavyContentImageSources } from "./control-ui-heavy-content-images.ts";
-import type { InteractionScenario } from "./control-ui-interaction-scenarios.ts";
+import type {
+  InteractionEvidence,
+  InteractionScenario,
+} from "./control-ui-interaction-scenarios.ts";
 
 const sessionKey = "agent:main:interaction-a";
 const pane = ".chat-pane-cache__pane--active";
@@ -21,10 +24,38 @@ declare global {
   interface Window {
     /** Installed before startup in the isolated heavy-content fixture. */
     heavyContentWorkers: WorkerObservation;
+    /** Native ClipboardItems retained only by the synthetic page clipboard. */
+    heavyContentImageClipboard: ClipboardItem[];
+    heavyContentCopiedImage?: Blob;
+    heavyContentExpectedInput?: { card: string; sidebar: string };
+    heavyContentExpectedNestedInput?: string;
   }
 }
 const png =
   "iVBORw0KGgoAAAANSUhEUgAAAEAAAABACAYAAACqaXHeAAAAmElEQVR4nO3QMREAIBDAsHeERQyjAWRkoEP2Xmftc382OkBrgA7QGqADtAboAK0BOkBrgA7QGqADtAboAK0BOkBrgA7QGqADtAboAK0BOkBrgA7QGqADtAboAK0BOkBrgA7QGqADtAboAK0BOkBrgA7QGqADtAboAK0BOkBrgA7QGqADtAboAK0BOkBrgA7QGqADtAboAK0BOkBrgA7QGqADtAboAO0B06OyaOxP7RwAAAAASUVORK5CYII=";
+const largeInputSource = `${Array.from(
+  { length: 5_000 },
+  (_, index) => `text("synthetic input ${String(index).padStart(4, "0")}");`,
+).join("\n")}\n`;
+const denseTerminalSource = Array.from(
+  { length: 5_000 },
+  (_, index) => `${String(index).padStart(4, "0")} synthetic output abcdef0123456789 line\n`,
+).join("");
+const denseJsonSource = JSON.stringify({
+  results: Array.from({ length: 800 }, (_, index) => ({
+    id: index,
+    label: `synthetic result ${String(index).padStart(4, "0")}`,
+    details: {
+      stdout: `first line ${index}: ${"abcdefgh".repeat(8)}\nsecond line ${index}: ${"01234567".repeat(8)}\n`,
+      metadata: { ok: true, exitCode: 0 },
+    },
+  })),
+});
+const nestedInputRows = Array.from({ length: 5_000 }, (_, index) => ({
+  index,
+  label: `synthetic row ${String(index).padStart(4, "0")}`,
+  value: "x".repeat(32),
+}));
 
 /** Sizes intentionally exercise both sides of the existing 40,000-character parse limit. */
 const heavyContentFixtures = [
@@ -63,6 +94,28 @@ const heavyContentFixtures = [
   { id: "tool-diff", text: "@@\n" + "-old\n+new\n".repeat(2_500), kind: "tool" },
   { id: "tool-diff-error", text: "@@\n" + "-old\n+new\n".repeat(2_500), kind: "tool" },
   { id: "terminal", text: "ok\n".repeat(5_000), kind: "tool" },
+  { id: "terminal-dense", text: denseTerminalSource, kind: "tool" },
+  { id: "json-nested-dense", text: denseJsonSource, kind: "tool" },
+  {
+    id: "large-input",
+    text: "ok\n",
+    inputArgs: { input: largeInputSource },
+    kind: "tool",
+  },
+  {
+    id: "nested-input-large",
+    text: "ok\n",
+    inputArgs: { payload: { rows: nestedInputRows } },
+    toolName: "synthetic_nested_args",
+    kind: "tool",
+  },
+  {
+    id: "nested-input-small",
+    text: "ok\n",
+    inputArgs: { payload: { rows: nestedInputRows.slice(0, 25) } },
+    toolName: "synthetic_nested_args",
+    kind: "tool",
+  },
   {
     id: "json",
     text: JSON.stringify(Array.from({ length: 5_000 }, (_, i) => i)),
@@ -93,9 +146,66 @@ function rawToolOutput(fixture: Fixture) {
   if (fixture.id === "tool-diff-error") {
     return "Patch context did not match";
   }
-  return fixture.id === "terminal" || fixture.id.startsWith("json")
+  return fixture.id.startsWith("terminal") ||
+    fixture.id === "large-input" ||
+    fixture.id.startsWith("json")
     ? JSON.stringify([{ type: "input_text", text: fixture.text }])
     : fixture.text;
+}
+
+function isDenseTool(fixture: Fixture) {
+  return fixture.id === "terminal-dense" || fixture.id === "json-nested-dense";
+}
+
+async function denseToolPreview(page: Page, fixture: Fixture): Promise<InteractionEvidence> {
+  if (!isDenseTool(fixture)) {
+    return {};
+  }
+  const preview = await page
+    .locator(`${pane} .chat-tool-card__block-content code`)
+    .first()
+    .textContent();
+  if (preview !== fixture.text.slice(0, 8_000)) {
+    throw new Error("Dense tool preview did not preserve the existing exact 8,000-character cap");
+  }
+  return { sourceChars: fixture.text.length, previewChars: preview.length, previewCap: 8_000 };
+}
+
+async function assertToolOutputLoaded(page: Page) {
+  const output = page.locator('.chat-tool-output[aria-busy="false"]');
+  await output.waitFor();
+  // CopyButton owns a nested hidden status region; only direct notices describe loading failure.
+  if (await output.locator(':scope > p[role="status"], :scope > p[role="alert"]').count()) {
+    throw new Error("Tool output did not load its complete message");
+  }
+}
+
+async function denseToolLoad(
+  page: Page,
+  gateway: MockGatewayControls,
+  fixture: Fixture,
+): Promise<InteractionEvidence> {
+  if (!isDenseTool(fixture)) {
+    return {};
+  }
+  const request = await gateway.waitForRequest("chat.message.get", {
+    match: { sessionKey, messageId: "heavy-result", maxChars: 2_000_000 },
+  });
+  if (!isRecord(request.params) || request.params.maxChars !== 2_000_000) {
+    throw new Error("Dense tool output did not use the existing full-message read cap");
+  }
+  await assertToolOutputLoaded(page);
+  const text = await page.locator(".chat-tool-output__text").textContent();
+  if (text !== fixture.text) {
+    throw new Error("Dense tool full-message read changed the complete displayed output");
+  }
+  return {
+    sourceChars: fixture.text.length,
+    rawSourceChars: rawToolOutput(fixture).length,
+    outputChars: text.length,
+    fullMessageReadCap: request.params.maxChars,
+    fullMessageReads: (await gateway.getRequests("chat.message.get")).length,
+  };
 }
 
 async function frames(page: Page) {
@@ -220,10 +330,13 @@ async function deliver(
   if (fixture.kind === "tool") {
     const isPatch = fixture.id.startsWith("tool-diff");
     const isError = fixture.id === "tool-diff-error";
-    const name = isPatch ? "apply_patch" : "exec";
-    const args = isPatch
-      ? { changes: [{ path: "synthetic.ts", kind: { type: "update" }, diff: fixture.text }] }
-      : { input: "text(await tools.exec_command({cmd: 'synthetic-fixture'}));" };
+    const name = "toolName" in fixture ? fixture.toolName : isPatch ? "apply_patch" : "exec";
+    const args =
+      "inputArgs" in fixture
+        ? fixture.inputArgs
+        : isPatch
+          ? { changes: [{ path: "synthetic.ts", kind: { type: "update" }, diff: fixture.text }] }
+          : { input: "text(await tools.exec_command({cmd: 'synthetic-fixture'}));" };
     await gateway.emitGatewayEvent("agent", {
       sessionKey,
       runId,
@@ -283,6 +396,9 @@ async function deliver(
       timestamp: Date.now(),
       __openclaw: { id: "heavy-result", seq: 2, runId, runTerminal: true },
     };
+    if (isDenseTool(fixture) || fixture.id === "large-input") {
+      await gateway.setMethodResponse("chat.message.get", { ok: true, message });
+    }
     await gateway.emitGatewayEvent("session.message", {
       sessionKey,
       runId,
@@ -407,6 +523,10 @@ async function evidence(page: Page, fixture: Fixture) {
             (total, source) => total + source.length,
             0,
           ),
+          binaryImageBytes: nativeImageSources!.reduce(
+            (total, source) => total + Buffer.byteLength(source.split(",")[1]!, "base64"),
+            0,
+          ),
         }
       : {}),
     ...(await workerObservation(page)),
@@ -424,6 +544,7 @@ async function setupHeavyContentPage(page: Page) {
     };
     // SAFETY: This synthetic fixture owns its page and observation property.
     window.heavyContentWorkers = observation;
+    window.heavyContentImageClipboard = [];
     const NativeWorker = window.Worker;
     const observed = new WeakSet<Worker>();
     window.Worker = class extends NativeWorker {
@@ -449,6 +570,9 @@ async function setupHeavyContentPage(page: Page) {
     Object.defineProperty(navigator, "clipboard", {
       configurable: true,
       value: {
+        write: async (items: ClipboardItem[]) => {
+          window.heavyContentImageClipboard = items;
+        },
         writeText: async (text: string) => {
           // SAFETY: This scenario owns the page-local clipboard observation.
           (window as Window & { heavyContentCopied?: string }).heavyContentCopied = text;
@@ -465,6 +589,14 @@ export const heavyContentScenarios: InteractionScenario[] = heavyContentFixtures
       fixture: { heavyContent: true },
       resourceOnly: true,
       setup: async (page: Page) => {
+        if (
+          isDenseTool(fixture) &&
+          (fixture.text.length < 150_000 ||
+            fixture.text.length > 250_000 ||
+            rawToolOutput(fixture).length > 2_000_000)
+        ) {
+          throw new Error("Dense tool source must stay within its stated workload and loader cap");
+        }
         if (fixture.kind === "native-images") {
           // Generate once outside the measured interval; every arm receives identical bytes.
           nativeImageSources ??= createHeavyContentImageSources();
@@ -518,7 +650,10 @@ export const heavyContentScenarios: InteractionScenario[] = heavyContentFixtures
       scenarios.push({
         ...shared,
         id: `heavy-${fixture.id}-expand`,
-        expected: "The existing disclosure reveals the complete heavy content.",
+        expected:
+          fixture.kind === "tool"
+            ? "The existing disclosure preserves its bounded inline preview and full-output action."
+            : "The existing disclosure reveals the complete heavy content.",
         prepare: async (page, gateway) => {
           await prepare(page, gateway);
           await deliver(page, gateway, fixture, false);
@@ -541,7 +676,7 @@ export const heavyContentScenarios: InteractionScenario[] = heavyContentFixtures
             await page.locator(`${pane} .code-block-wrapper.is-expanded`).last().waitFor();
             await settleCode(page, fixture, true);
           }
-          return evidence(page, fixture);
+          return { ...(await evidence(page, fixture)), ...(await denseToolPreview(page, fixture)) };
         },
       });
     }
@@ -549,7 +684,7 @@ export const heavyContentScenarios: InteractionScenario[] = heavyContentFixtures
       scenarios.push({
         ...shared,
         id: `heavy-${fixture.id}-collapse`,
-        expected: "The existing tool disclosure collapses after rendering the full output.",
+        expected: "The existing tool disclosure collapses after rendering its available output.",
         prepare: async (page, gateway) => {
           await prepare(page, gateway);
           await deliver(page, gateway, fixture, false);
@@ -583,14 +718,15 @@ export const heavyContentScenarios: InteractionScenario[] = heavyContentFixtures
       run: async (page) => {
         const thread = page.locator(`${pane} .chat-thread`);
         await thread.hover();
-        await page.mouse.wheel(0, -100_000);
+        await page.mouse.wheel(0, -1_000_000);
         await frames(page);
         const geometry = await thread.evaluate((element) => ({
+          top: element.scrollTop,
           height: element.clientHeight,
           travel: element.scrollHeight - element.clientHeight,
         }));
-        if (geometry.height <= 0) {
-          throw new Error("The content scroll fixture has no visible scroll viewport");
+        if (geometry.height <= 0 || geometry.top > 2) {
+          throw new Error("The content scroll fixture did not start at its visible top");
         }
         const distance = geometry.height * 0.75;
         const scrollSteps = Math.ceil(geometry.travel / distance);
@@ -599,7 +735,22 @@ export const heavyContentScenarios: InteractionScenario[] = heavyContentFixtures
           await page.mouse.wheel(0, distance);
           await frames(page);
         }
-        return { ...(await evidence(page, fixture)), scrollSteps };
+        const final = await thread.evaluate((element) => ({
+          top: element.scrollTop,
+          max: element.scrollHeight - element.clientHeight,
+        }));
+        if (final.top < final.max - 2) {
+          throw new Error(
+            `Heavy content stopped at ${final.top} before scroll bottom ${final.max}`,
+          );
+        }
+        return {
+          ...(await evidence(page, fixture)),
+          scrollSteps,
+          scrollStart: geometry.top,
+          scrollEnd: final.top,
+          scrollMax: final.max,
+        };
       },
     });
     if (fixture.id === "tool-diff") {
@@ -639,6 +790,7 @@ export const heavyContentScenarios: InteractionScenario[] = heavyContentFixtures
           await openTool(page);
           await page.locator(`${pane} .chat-tool-card__action-btn`).last().click();
           await page.locator(".chat-tool-output__actions").waitFor();
+          await denseToolLoad(page, gateway, fixture);
         },
         run: async (page) => {
           await page
@@ -673,9 +825,10 @@ export const heavyContentScenarios: InteractionScenario[] = heavyContentFixtures
           await deliver(page, gateway, fixture, false);
           await openTool(page);
         },
-        run: async (page) => {
+        run: async (page, gateway) => {
           await page.locator(`${pane} .chat-tool-card__action-btn`).last().click();
           await page.locator(".chat-tool-output__text").waitFor();
+          const load = await denseToolLoad(page, gateway, fixture);
           const shown = (await page.locator(".chat-tool-output__text").textContent()) ?? "";
           const expected =
             fixture.id === "json-format"
@@ -687,9 +840,58 @@ export const heavyContentScenarios: InteractionScenario[] = heavyContentFixtures
           return {
             ...(await evidence(page, fixture)),
             outputChars: shown.length,
+            ...load,
           };
         },
       });
+      if (isDenseTool(fixture)) {
+        scenarios.push({
+          ...shared,
+          id: `heavy-${fixture.id}-output-scroll`,
+          expected:
+            "Native scrolling traverses the complete loaded dense output in the existing sidebar.",
+          prepare: async (page, gateway) => {
+            await prepare(page, gateway);
+            await deliver(page, gateway, fixture, false);
+            await openOutput(page);
+            await denseToolLoad(page, gateway, fixture);
+          },
+          run: async (page) => {
+            const output = page.locator("openclaw-chat-tool-output");
+            await output.hover();
+            await page.mouse.wheel(0, -1_000_000);
+            await frames(page);
+            const geometry = await output.evaluate((element) => ({
+              top: element.scrollTop,
+              height: element.clientHeight,
+              travel: element.scrollHeight - element.clientHeight,
+            }));
+            if (geometry.height <= 0 || geometry.top > 2 || geometry.travel <= 0) {
+              throw new Error("Dense output sidebar did not expose its full scroll range");
+            }
+            const distance = geometry.height * 0.75;
+            const scrollSteps = Math.ceil(geometry.travel / distance);
+            for (let step = 0; step < scrollSteps; step++) {
+              await page.mouse.wheel(0, distance);
+              await frames(page);
+            }
+            const final = await output.evaluate((element) => ({
+              top: element.scrollTop,
+              max: element.scrollHeight - element.clientHeight,
+            }));
+            if (final.top < final.max - 2) {
+              throw new Error("Dense output scrolling did not reach the complete source's bottom");
+            }
+            return {
+              sourceChars: fixture.text.length,
+              scrollSteps,
+              scrollStart: geometry.top,
+              scrollEnd: final.top,
+              scrollMax: final.max,
+            };
+          },
+        });
+      }
       if (fixture.id.startsWith("json")) {
         scenarios.push({
           ...shared,
@@ -700,6 +902,7 @@ export const heavyContentScenarios: InteractionScenario[] = heavyContentFixtures
             await prepare(page, gateway);
             await deliver(page, gateway, fixture, false);
             await openOutput(page);
+            await denseToolLoad(page, gateway, fixture);
           },
           run: async (page) => {
             const toggle = page.locator(".chat-tool-output .chat-tool-card__raw-toggle");
@@ -965,9 +1168,246 @@ export const heavyContentScenarios: InteractionScenario[] = heavyContentFixtures
         },
       });
     }
+    if (fixture.id === "large-input") {
+      for (const surface of ["card", "sidebar"] as const) {
+        const selector =
+          surface === "card" ? `${pane} .chat-tool-card__input` : ".chat-tool-output details";
+        const readInput = async (page: Page, open: boolean) =>
+          page.evaluate(
+            ({ selector: inputSelector, surface: inputSurface, open: expectedOpen }) => {
+              const details = document.querySelector<HTMLDetailsElement>(inputSelector);
+              if (!details || details.open !== expectedOpen) {
+                throw new Error(`Tool Input ${inputSurface} did not reach open=${expectedOpen}`);
+              }
+              const expected = window.heavyContentExpectedInput![inputSurface];
+              const content = details.querySelector(inputSurface === "card" ? "pre code" : "pre");
+              const fullInputMounted = content?.textContent === expected;
+              if (expectedOpen && !fullInputMounted) {
+                throw new Error(`Tool Input ${inputSurface} did not preserve its complete source`);
+              }
+              return {
+                detailsOpen: details.open,
+                expectedChars: expected.length,
+                sourceLines: 5_000,
+                descendantElements: details.querySelectorAll("*").length,
+                descendantTextChars: details.textContent?.length ?? 0,
+                preElements: details.querySelectorAll("pre").length,
+                codeElements: details.querySelectorAll("code").length,
+                fullInputMounted,
+              };
+            },
+            { selector, surface, open },
+          );
+        const openSidebar = async (page: Page, gateway: MockGatewayControls) => {
+          await page.locator(`${pane} .chat-tool-card__action-btn`).last().click();
+          await gateway.waitForRequest("chat.message.get", {
+            match: { sessionKey, messageId: "heavy-result", maxChars: 2_000_000 },
+          });
+          await assertToolOutputLoaded(page);
+          if ((await page.locator(".chat-tool-output__text").textContent()) !== fixture.text) {
+            throw new Error("Large Tool Input changed its tiny output");
+          }
+        };
+        for (const state of ["closed", "first-open", "reopen"] as const) {
+          scenarios.push({
+            ...shared,
+            id: `heavy-input-${surface}-${state}`,
+            expected: `The ${surface} Tool Input disclosure ${state} preserves all 5,000 lines and the independent tiny output.`,
+            prepare: async (page, gateway) => {
+              await prepare(page, gateway);
+              await page.evaluate((input) => {
+                window.heavyContentExpectedInput = {
+                  card: input,
+                  sidebar: JSON.stringify({ input }, null, 2),
+                };
+              }, largeInputSource);
+              await deliver(page, gateway, fixture, false);
+              if (surface === "sidebar" || state !== "closed") {
+                await openTool(page);
+              }
+              if (surface === "sidebar" && state !== "closed") {
+                await openSidebar(page, gateway);
+              }
+              if (state === "reopen") {
+                await page.locator(`${selector} > summary`).click();
+                await frames(page);
+                await readInput(page, true);
+                await page.locator(`${selector} > summary`).click();
+                await frames(page);
+                await readInput(page, false);
+              }
+            },
+            run: async (page, gateway) => {
+              if (state === "closed") {
+                if (surface === "card") {
+                  await openTool(page);
+                } else {
+                  await openSidebar(page, gateway);
+                }
+              } else {
+                await page.locator(`${selector} > summary`).click();
+              }
+              await frames(page);
+              return readInput(page, state !== "closed");
+            },
+          });
+        }
+      }
+    }
+    if (fixture.id === "nested-input-large" || fixture.id === "nested-input-small") {
+      scenarios.push({
+        ...shared,
+        id: `heavy-input-nested-${fixture.id === "nested-input-large" ? "large" : "small"}`,
+        expected:
+          "Generic nested argument expansion retains its existing exact 400-character preview after canonical input serialization completed outside timing.",
+        prepare: async (page, gateway) => {
+          await prepare(page, gateway);
+          const expected = JSON.stringify(fixture.inputArgs.payload).slice(0, 400);
+          if (expected !== JSON.stringify({ rows: nestedInputRows }).slice(0, 400)) {
+            throw new Error("Nested argument control did not retain the same preview prefix");
+          }
+          await page.evaluate((preview) => {
+            window.heavyContentExpectedNestedInput = preview;
+          }, expected);
+          await deliver(page, gateway, fixture, false);
+        },
+        run: async (page) => {
+          await openTool(page);
+          return page.evaluate(
+            ({ selector, rows }) => {
+              const fields = document.querySelectorAll(`${selector} .chat-tool-kv__row`);
+              const field = fields[0];
+              const key = field?.querySelector(".chat-tool-kv__key")?.textContent;
+              const value = field?.querySelector(".chat-tool-kv__value")?.textContent;
+              if (
+                fields.length !== 1 ||
+                key !== "payload:" ||
+                value !== window.heavyContentExpectedNestedInput
+              ) {
+                throw new Error("Generic nested arguments changed their existing preview");
+              }
+              return { nestedRows: rows, previewChars: value!.length, exactPreview: true };
+            },
+            { selector: pane, rows: fixture.inputArgs.payload.rows.length },
+          );
+        },
+      });
+    }
     return scenarios;
   },
 );
+
+const imageCopyEvidence = new WeakMap<Page, InteractionEvidence>();
+const imageCopyRequests = new WeakMap<Page, { thumbnail: number; full: number }>();
+const imageCopySource = `/api/chat/media/outgoing/${encodeURIComponent(sessionKey)}/heavy-copy/full`;
+
+heavyContentScenarios.push({
+  id: "heavy-managed-image-copy",
+  route: controlUiSessionPath(sessionKey),
+  fixture: { heavyContent: true },
+  resourceOnly: true,
+  diagnostic:
+    "Native image copy correctness; copyReadyMs separately records one exploratory automation-to-blob-readiness interval before byte validation.",
+  expected:
+    "The native Copy image action publishes the original 1024×1024 PNG through a native ClipboardItem without touching the OS clipboard.",
+  setup: async (page) => {
+    nativeImageSources ??= createHeavyContentImageSources();
+    await setupHeavyContentPage(page);
+    const bytes = Buffer.from(nativeImageSources[0]!.split(",")[1]!, "base64");
+    const requests = { thumbnail: 0, full: 0 };
+    imageCopyRequests.set(page, requests);
+    await page.route("**/api/chat/media/outgoing/**", async (route) => {
+      const path = new URL(route.request().url()).pathname;
+      if (!path.includes("/heavy-copy/")) {
+        await route.fallback();
+        return;
+      }
+      if (path.endsWith("/thumbnail")) {
+        requests.thumbnail++;
+        await route.fulfill({ contentType: "image/png", body: Buffer.from(png, "base64") });
+      } else if (path.endsWith("/full")) {
+        requests.full++;
+        await route.fulfill({ contentType: "image/png", body: bytes });
+      } else {
+        throw new Error("Image copy requested an unexpected managed image variant");
+      }
+    });
+  },
+  prepare: async (page, gateway) => {
+    await prepare(page, gateway);
+    await gateway.emitGatewayEvent("chat", {
+      sessionKey,
+      runId: runs.get(page)!,
+      state: "final",
+      message: {
+        role: "assistant",
+        content: [
+          { type: "text", text: "A synthetic managed image for native PNG copy proof." },
+          {
+            type: "image",
+            url: imageCopySource,
+            alt: "Synthetic managed PNG",
+            width: 1_024,
+            height: 1_024,
+          },
+        ],
+        timestamp: Date.now(),
+      },
+    });
+    const frame = page.locator(`${pane} .chat-image-frame`).last();
+    await frame.locator("img.chat-message-image").waitFor();
+    await frame.hover();
+    const copy = frame.getByRole("button", { name: "Copy image", exact: true });
+    await copy.waitFor();
+    const fullRequestsBefore = imageCopyRequests.get(page)!.full;
+    const start = performance.now();
+    await copy.click();
+    const copiedBytes = await page.evaluate(async () => {
+      const items = window.heavyContentImageClipboard;
+      if (items.length !== 1 || !(items[0] instanceof ClipboardItem)) {
+        throw new Error("Copy image did not publish one native ClipboardItem");
+      }
+      window.heavyContentCopiedImage = await items[0].getType("image/png");
+      return window.heavyContentCopiedImage.size;
+    });
+    const copyReadyMs = performance.now() - start;
+    const requests = imageCopyRequests.get(page)!;
+    if (requests.thumbnail === 0 || requests.full <= fullRequestsBefore) {
+      throw new Error("Native image copy did not load its original after the distinct thumbnail");
+    }
+    // Deep validation is outside the action-to-readiness interval.
+    const receipt = await page.evaluate(async (source) => {
+      const blob = window.heavyContentCopiedImage!;
+      const actual = new Uint8Array(await blob.arrayBuffer());
+      const expected = Uint8Array.from(atob(source.split(",")[1]!), (char) => char.charCodeAt(0));
+      const signature = [137, 80, 78, 71, 13, 10, 26, 10];
+      if (
+        blob.type !== "image/png" ||
+        actual.length !== expected.length ||
+        !actual.every((byte, index) => byte === expected[index]) ||
+        !signature.every((byte, index) => byte === actual[index]) ||
+        String.fromCharCode(...actual.subarray(12, 16)) !== "IHDR"
+      ) {
+        throw new Error("Native image copy changed the original encoded PNG bytes");
+      }
+      const header = new DataView(actual.buffer, actual.byteOffset, actual.byteLength);
+      const width = header.getUint32(16);
+      const height = header.getUint32(20);
+      if (width !== 1_024 || height !== 1_024) {
+        throw new Error("Copied PNG lost its original dimensions");
+      }
+      return { exactEncodedBytes: true, pngWidth: width, pngHeight: height };
+    }, nativeImageSources![0]!);
+    imageCopyEvidence.set(page, {
+      ...receipt,
+      copiedBytes,
+      copyReadyMs,
+      thumbnailRequests: requests.thumbnail,
+      originalRequests: requests.full,
+    });
+  },
+  run: async (page) => imageCopyEvidence.get(page)!,
+});
 
 // The real attachment reader caps text at 256 KiB; this fenced document is 258,899 B.
 const denseCode = Array.from(
