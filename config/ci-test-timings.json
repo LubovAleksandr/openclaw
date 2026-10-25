@@ -3803,6 +3803,7 @@
       "ui/src/e2e/task-panel-layout.e2e.test.ts": 12,
       "ui/src/e2e/task-pull-requests.real-gateway.e2e.test.ts": 58,
       "ui/src/e2e/task-review-reload.e2e.test.ts": 3,
+      "ui/src/e2e/terminal-docking.e2e.test.ts": 72,
       "ui/src/e2e/terminal-embedded.e2e.test.ts": 8,
       "ui/src/e2e/terminal-page.e2e.test.ts": 3,
       "ui/src/e2e/terminal-panel-layout.e2e.test.ts": 4,

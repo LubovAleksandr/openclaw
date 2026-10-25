@@ -816,7 +816,7 @@ describeStandaloneMockServer("standalone Control UI mock server", () => {
   );
 
   it(
-    "starts with aligned build identity and an upgraded chat pane",
+    "starts with aligned build identity and renders a deterministic reply after generic chat.send",
     withFixturePage(async (page) => {
       await page.goto(new URL("/chat", fixtureServer.url).toString(), {
         waitUntil: "domcontentloaded",
@@ -850,18 +850,6 @@ describeStandaloneMockServer("standalone Control UI mock server", () => {
         upgraded: true,
       });
       expect(await page.getByRole("button", { name: "Stop" }).count()).toBe(0);
-    }),
-  );
-
-  it(
-    "renders a deterministic reply after generic chat.send",
-    withFixturePage(async (page) => {
-      await page.goto(new URL("/chat", fixtureServer.url).toString(), {
-        waitUntil: "domcontentloaded",
-      });
-      await selectAllSidebarSessions(page);
-      await page.getByText("OpenClaw work checkout", { exact: true }).click();
-      await page.getByRole("button", { name: "Write a message to send." }).waitFor();
 
       const prompt = "generic mock send probe";
       const composer = page.locator(
