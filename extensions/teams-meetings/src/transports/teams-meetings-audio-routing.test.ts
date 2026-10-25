@@ -1,28 +1,33 @@
 import { expect, it, vi } from "vitest";
 import {
   abortingMedia,
+  audioEntry,
   audioStatusParams,
+  AUDIO_OUTPUTS,
+  blackholeDevice,
   continueStatusScript,
   control,
   liveMediaStream,
+  MEETING_IDENTITY as identity,
+  meetingOwner,
   pageMedia,
   runAudioStatusScript,
   runStatusScript,
+  toggleOff,
   type PageMedia,
 } from "./teams-meetings-platform-adapter.test-helpers.js";
 
-function unloadedRemoteMedia(stream = liveMediaStream()) {
-  return abortingMedia("The element has no supported source.", {
+const remoteMedia = (params: Partial<PageMedia> = {}) =>
+  pageMedia({ muted: false, sinkId: "built-in-output", ...params });
+const unloadedRemoteMedia = (stream = liveMediaStream()) =>
+  abortingMedia("The element has no supported source.", {
     muted: false,
     sinkId: "built-in-output",
     srcObject: stream,
   });
-}
 
 function pendingSource() {
-  const source = pageMedia({
-    muted: false,
-    sinkId: "built-in-output",
+  const source = remoteMedia({
     async setSinkId(value) {
       if (!source.srcObject) {
         throw new DOMException("The element has no supported source.", "AbortError");
@@ -35,12 +40,7 @@ function pendingSource() {
 
 const playableBridge = () => pageMedia({ isConnected: false, async play() {} });
 const mutedSource = (stream = liveMediaStream()) =>
-  pageMedia({
-    muted: true,
-    sinkId: "built-in-output",
-    srcObject: stream,
-    async setSinkId() {},
-  });
+  remoteMedia({ muted: true, srcObject: stream, async setSinkId() {} });
 function trackedBridge(params: Partial<PageMedia> = {}) {
   return {
     ...pageMedia({ sinkId: "blackhole-output", async setSinkId() {}, ...params }),
@@ -53,16 +53,10 @@ function expectCleanup(bridge: ReturnType<typeof trackedBridge>, count = 1) {
   expect(bridge.remove).toHaveBeenCalledTimes(count);
 }
 function expectOutputs(window: Record<string, unknown>, entry: Record<string, unknown>) {
-  expect(window["__openclawTeamsAudioOutputs"]).toEqual([expect.objectContaining(entry)]);
+  expect(window[AUDIO_OUTPUTS]).toEqual([expect.objectContaining(entry)]);
 }
-const ownedOutput = (source: PageMedia, bridge: PageMedia) => ({
-  bridge,
-  playing: true,
-  sessionId: "session-1",
-  source,
-  sourceMuted: false,
-  stream: source.srcObject,
-});
+const ownedOutput = (source: PageMedia, bridge: PageMedia) =>
+  audioEntry(source, bridge, { playing: true, stream: source.srcObject });
 
 it("retries bridge playback instead of trusting a previously selected sink", async () => {
   const source = unloadedRemoteMedia();
@@ -77,16 +71,15 @@ it("retries bridge playback instead of trusting a previously selected sink", asy
   const params = audioStatusParams({
     bridgeMedia: bridge,
     media: [source],
-    priorMeeting: {
-      audioInputDeviceId: "blackhole-input",
-      identity: "teams-work:19:meeting_test@thread.v2",
-    },
+    priorMeeting: { audioInputDeviceId: "blackhole-input", identity },
   });
   const first = await runStatusScript(params);
   const second = await continueStatusScript(first, params);
 
-  expect(first.result.audioOutputRouted).toBe(false);
-  expect(first.result.audioOutputRouteRetryable).toBe(false);
+  expect(first.result).toMatchObject({
+    audioOutputRouted: false,
+    audioOutputRouteRetryable: false,
+  });
   expect(second.result.audioOutputRouted).toBe(false);
   expect(playAttempts).toBe(2);
   expect(source.muted).toBe(true);
@@ -107,15 +100,11 @@ it.each([false, true])(
     expectOutputs(first.window, { pending: true, source, sourceMuted: false });
     source.srcObject = liveMediaStream();
     expect(source).toMatchObject({ sinkId: "built-in-output", muted: true });
-    expectOutputs(first.window, { pending: true, source, sourceMuted: false });
     const second = await continueStatusScript(first, {
       ...params,
-      ...(changed
-        ? {
-            currentUrl:
-              "https://teams.microsoft.com/l/meetup-join/19%3ameeting_other%40thread.v2/0",
-          }
-        : {}),
+      currentUrl: changed
+        ? "https://teams.microsoft.com/l/meetup-join/19%3ameeting_other%40thread.v2/0"
+        : undefined,
     });
     if (changed) {
       expect(source).toMatchObject({ sinkId: "built-in-output", muted: true });
@@ -124,7 +113,7 @@ it.each([false, true])(
       expect(second.result.audioOutputRouted).toBe(true);
       expect(source.muted).toBe(false);
     }
-    expect(second.window).not.toHaveProperty("__openclawTeamsAudioOutputs");
+    expect(second.window).not.toHaveProperty(AUDIO_OUTPUTS);
   },
 );
 
@@ -146,8 +135,10 @@ it("keeps the source muted when a previously working bridge fails", async () => 
 
   failPlayback = true;
   const second = await continueStatusScript(first, params);
-  expect(second.result.audioOutputRouted).toBe(false);
-  expect(second.result.audioOutputRouteRetryable).toBe(true);
+  expect(second.result).toMatchObject({
+    audioOutputRouted: false,
+    audioOutputRouteRetryable: true,
+  });
   expect(source.muted).toBe(true);
 
   failPlayback = false;
@@ -157,15 +148,10 @@ it("keeps the source muted when a previously working bridge fails", async () => 
 });
 
 it("restores an unclaimed source when another source from its entry is rerouted", async () => {
-  const current = pageMedia({
-    currentSrc: "blob:https://teams.live.com/current",
-    muted: true,
-    sinkId: "built-in-output",
-  });
-  const unclaimed = pageMedia({
+  const current = remoteMedia({ currentSrc: "blob:https://teams.live.com/current", muted: true });
+  const unclaimed = remoteMedia({
     currentSrc: "blob:https://teams.live.com/unclaimed",
     muted: true,
-    sinkId: "built-in-output",
     async setSinkId() {},
   });
 
@@ -183,20 +169,15 @@ it("restores an unclaimed source when another source from its entry is rerouted"
   });
 
   expect(result.audioOutputRouted).toBe(true);
-  expect(current.muted).toBe(false);
-  expect(unclaimed.muted).toBe(false);
-  expect(window).not.toHaveProperty("__openclawTeamsAudioOutputs");
+  expect([current.muted, unclaimed.muted]).toEqual([false, false]);
+  expect(window).not.toHaveProperty(AUDIO_OUTPUTS);
 });
 
 it("reroutes a replacement stream on an element muted by its prior bridge", async () => {
   const firstStream = liveMediaStream();
   const replacementStream = liveMediaStream();
   const source = unloadedRemoteMedia(firstStream);
-  const directSource = pageMedia({
-    muted: false,
-    sinkId: "built-in-output",
-    srcObject: firstStream,
-  });
+  const directSource = remoteMedia({ srcObject: firstStream });
   const bridge = playableBridge();
   const params = audioStatusParams({ bridgeMedia: bridge, media: [source, directSource] });
   const first = await runStatusScript(params);
@@ -215,15 +196,15 @@ it("reroutes a replacement stream on an element muted by its prior bridge", asyn
   const third = await continueStatusScript(second, params);
   expect(third.result.audioOutputRouted).toBe(true);
   expect(source.muted).toBe(true);
-  expect(
-    (third.window["__openclawTeamsAudioOutputs"] as Array<{ stream: unknown }>)[0]?.stream,
-  ).toBe(replacementStream);
+  expect((third.window[AUDIO_OUTPUTS] as Array<{ stream: unknown }>)[0]?.stream).toBe(
+    replacementStream,
+  );
 });
 
 it("keeps a detached source muted after its owned stream is cleared", async () => {
   const stream = liveMediaStream();
   const source = unloadedRemoteMedia(stream);
-  const directSource = pageMedia({ muted: false, sinkId: "built-in-output", srcObject: stream });
+  const directSource = remoteMedia({ srcObject: stream });
   const bridge = playableBridge();
   const params = audioStatusParams({ bridgeMedia: bridge });
   const first = await runStatusScript({ ...params, media: [source] });
@@ -237,7 +218,7 @@ it("keeps a detached source muted after its owned stream is cleared", async () =
   source.srcObject = undefined;
   const third = await continueStatusScript(second, { ...params, media: [directSource] });
   expect(source.muted).toBe(true);
-  expect(third.window).not.toHaveProperty("__openclawTeamsAudioOutputs");
+  expect(third.window).not.toHaveProperty(AUDIO_OUTPUTS);
 });
 
 it("tears down audio bridges and restores sources after the call ends", async () => {
@@ -249,7 +230,7 @@ it("tears down audio bridges and restores sources after the call ends", async ()
   const ended = await continueStatusScript(first, { allowMicrophone: true });
   expect(source.muted).toBe(false);
   expectCleanup(bridge);
-  expect(ended.window).not.toHaveProperty("__openclawTeamsAudioOutputs");
+  expect(ended.window).not.toHaveProperty(AUDIO_OUTPUTS);
 });
 
 it("suspends bridge ownership while an in-call media list is temporarily empty", async () => {
@@ -259,11 +240,11 @@ it("suspends bridge ownership while an in-call media list is temporarily empty",
 
   const { result, window } = await runStatusScript({
     allowMicrophone: true,
-    devices: [{ deviceId: "blackhole-output", kind: "audiooutput", label: "BlackHole 2ch" }],
+    devices: [blackholeDevice("output")],
     leave: control({ label: "Leave" }),
     media: [],
     priorAudioOutputs: [ownedOutput(source, bridge)],
-    priorMeeting: { identity: "teams-work:19:meeting_test@thread.v2" },
+    priorMeeting: { identity },
   });
 
   expect(source.muted).toBe(true);
@@ -278,7 +259,7 @@ it.each([false, true])("handles a missing BlackHole output (readOnly=%s)", async
   const bridge = trackedBridge({ isConnected: true });
   const activeBridge = ownedOutput(source, bridge);
   const { result, window } = await runAudioStatusScript({
-    devices: [{ deviceId: "blackhole-input", kind: "audioinput", label: "BlackHole 2ch" }],
+    devices: [blackholeDevice("input")],
     media: [source],
     priorAudioOutputs: [activeBridge],
     readOnly,
@@ -286,7 +267,7 @@ it.each([false, true])("handles a missing BlackHole output (readOnly=%s)", async
   expect(source.muted).toBe(true);
   expectCleanup(bridge, readOnly ? 0 : 1);
   if (readOnly) {
-    expect(window["__openclawTeamsAudioOutputs"]).toEqual([activeBridge]);
+    expect(window[AUDIO_OUTPUTS]).toEqual([activeBridge]);
   } else {
     expect(result.audioOutputRouteRetryable).toBe(false);
     expectOutputs(window, { source, sourceMuted: false, suspended: true });
@@ -310,20 +291,12 @@ it("reassigns a prior session bridge source after the new session identity is ve
           { element: emptySource, muted: false },
         ],
       },
-      {
-        bridge: { ...bridge },
-        playing: true,
-        sessionId: "old-session",
-        source,
-        sourceMuted: false,
-        stream,
-      },
+      audioEntry(source, { ...bridge }, { playing: true, sessionId: "old-session", stream }),
     ],
-    priorMeeting: { identity: "teams-work:19:meeting_test@thread.v2", sessionId: "old-session" },
+    priorMeeting: meetingOwner({ sessionId: "old-session" }),
   });
 
-  expect(source.muted).toBe(true);
-  expect(emptySource.muted).toBe(true);
+  expect([source.muted, emptySource.muted]).toEqual([true, true]);
   expectCleanup(bridge, 2);
   expectOutputs(window, { sessionId: "session-1", source, sourceMuted: false, suspended: true });
 });
@@ -370,21 +343,12 @@ it("preserves Teams mute state and ignores a muted local media stream", async ()
 });
 
 it("mutes an in-call physical microphone when Teams resets the prejoin selection", async () => {
-  const microphone = control({
-    label: "Turn microphone off",
-    pressed: true,
-    onClick: (node) => node.setPressed(false),
-  });
-  const { result } = await runStatusScript({
-    allowMicrophone: true,
-    devices: [{ deviceId: "blackhole-input", kind: "audioinput", label: "BlackHole 2ch" }],
-    leave: control({ label: "Leave" }),
+  const microphone = toggleOff("microphone");
+  const { result } = await runAudioStatusScript({
+    devices: [blackholeDevice("input")],
     microphone,
     microphoneDevice: control({ label: "MacBook Pro Microphone" }),
-    priorMeeting: {
-      audioInputDeviceId: "blackhole-input",
-      identity: "teams-work:19:meeting_test@thread.v2",
-    },
+    priorMeeting: { audioInputDeviceId: "blackhole-input", identity },
   });
 
   expect(result).toMatchObject({

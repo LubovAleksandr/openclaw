@@ -4,38 +4,32 @@ import { TEAMS_MEETINGS_PLATFORM_ADAPTER } from "./teams-meetings-platform-adapt
 import {
   CONSUMER_URL,
   abortingMedia,
+  audioEntry,
+  audioStatusParams,
+  AUDIO_OUTPUTS,
+  blackholeDevice,
   MEETING_STATE_KEY,
+  MEETING_IDENTITY as identity,
+  meetingOwner,
   consumerLightMeetingUrl,
+  continueStatusScript,
   control,
   liveMediaStream,
   runAudioStatusScript,
   runStatusScript,
   runLeaveScript,
+  toggleOff,
   type PageMedia,
 } from "./teams-meetings-platform-adapter.test-helpers.js";
 
 const { browser, urls } = TEAMS_MEETINGS_PLATFORM_ADAPTER;
-const identity = "teams-work:19:meeting_test@thread.v2";
 const appUrl = "https://teams.microsoft.com/v2/";
-const AUDIO_OUTPUTS = "__openclawTeamsAudioOutputs";
-const meetingOwner = (overrides: Record<string, unknown> = {}) => ({
-  identity,
-  sessionId: "session-1",
-  ...overrides,
-});
 const afterCall = (params: Parameters<typeof runLeaveScript>[0]) =>
   runLeaveScript({
     postCall: control({ label: "Rejoin" }),
     priorMeeting: meetingOwner(),
     ...params,
   });
-const audioEntry = (source: object, bridge: object, extra: Record<string, unknown>) => ({
-  bridge,
-  sessionId: "session-1",
-  source,
-  sourceMuted: false,
-  ...extra,
-});
 
 function prejoin(overrides: Parameters<typeof runStatusScript>[0] = {}) {
   return {
@@ -88,16 +82,8 @@ it("retries transient in-call audio routing while Teams renders its media contro
 });
 
 it("re-reads camera and microphone state after toggling before joining", async () => {
-  const camera = control({
-    label: "Turn camera off",
-    pressed: true,
-    onClick: (node) => node.setPressed(false),
-  });
-  const microphone = control({
-    label: "Turn microphone off",
-    pressed: true,
-    onClick: (node) => node.setPressed(false),
-  });
+  const camera = toggleOff("camera");
+  const microphone = toggleOff("microphone");
   const join = control({ label: "Join now" });
 
   const { result } = await runStatusScript({ camera, join, microphone });
@@ -233,9 +219,7 @@ it("does not trust a stale identity marker or post-call screen from another SPA 
     currentUrl: appUrl,
     leave: currentLeave,
     postCall: control({ label: "Rejoin" }),
-    priorAudioOutputs: [
-      { bridge, sessionId: "session-1", source: { muted: true }, sourceMuted: false },
-    ],
+    priorAudioOutputs: [audioEntry({ muted: true }, bridge)],
     priorMeeting: {
       identity,
       inCallControl: staleLeave,
@@ -408,7 +392,7 @@ it("does not treat the camera-only no-devices warning as a microphone block", as
     allowMicrophone: true,
     camera: control({ checked: false, label: "Camera" }),
     continueWithoutDevices: control({ label: "Continue without audio or video" }),
-    devices: [{ deviceId: "blackhole-input", kind: "audioinput", label: "BlackHole 2ch" }],
+    devices: [blackholeDevice("input")],
     join,
     microphone: control({ checked: true, label: "Microphone" }),
     microphoneDevice: control({ label: "BlackHole 2ch (Virtual)" }),
@@ -456,20 +440,20 @@ it.each(["display", "listbox"] as const)("reverifies microphone via %s", async (
   const menu = control({ label: "Microphone devices" });
   menu.querySelector = (selector) =>
     selector?.includes('aria-selected="true"') ? selected : undefined;
-  const { result } = await runStatusScript({
-    allowMicrophone: true,
-    devices: [{ deviceId: "blackhole-input", kind: "audioinput", label: "BlackHole 2ch" }],
-    deviceSettings,
-    leave: control({ label: "Leave" }),
-    microphone: control({ label: "Turn microphone off", pressed: true }),
-    ...(kind === "display"
-      ? { microphoneDeviceAfterSettings: selected }
-      : { microphoneDeviceMenuAfterSettings: menu }),
-    priorMeeting: {
-      identity,
-      ...(kind === "display" ? { audioInputDeviceId: "blackhole-input" } : {}),
-    },
-  });
+  const { result } = await runStatusScript(
+    audioStatusParams({
+      devices: [blackholeDevice("input")],
+      deviceSettings,
+      microphoneDevice: undefined,
+      ...(kind === "display"
+        ? { microphoneDeviceAfterSettings: selected }
+        : { microphoneDeviceMenuAfterSettings: menu }),
+      priorMeeting: {
+        identity,
+        ...(kind === "display" ? { audioInputDeviceId: "blackhole-input" } : {}),
+      },
+    }),
+  );
   expect(result).toMatchObject({ audioInputRouted: true, inCall: true, micMuted: false });
   expect(deviceSettings.clicks).toBe(1);
 });
@@ -509,11 +493,12 @@ it("bridges a live Teams MediaStream when its unloaded audio element rejects set
       bridge.sinkId = value;
     },
   };
-  const { result, window } = await runAudioStatusScript({
+  const first = await runAudioStatusScript({
     bridgeMedia: bridge,
     media: [source],
     priorMeeting: { audioInputDeviceId: "blackhole-input", identity },
   });
+  const { result, window } = first;
 
   expect(routingOrder).toEqual(["sink", "play"]);
   expect(result).toMatchObject({ audioInputRouted: true, audioOutputRouted: true });
@@ -523,12 +508,13 @@ it("bridges a live Teams MediaStream when its unloaded audio element rejects set
   expect(window).toHaveProperty(AUDIO_OUTPUTS);
   expect((window[AUDIO_OUTPUTS] as Array<{ bridge: PageMedia }>)[0]?.bridge).toBe(bridge);
 
-  const repeated = await runAudioStatusScript({
-    bridgeMedia: bridge,
-    media: [source, bridge],
-    priorAudioOutputs: window[AUDIO_OUTPUTS] as unknown[],
-    priorMeeting: window[MEETING_STATE_KEY] as Record<string, unknown>,
-  });
+  const repeated = await continueStatusScript(
+    first,
+    audioStatusParams({
+      bridgeMedia: bridge,
+      media: [source, bridge],
+    }),
+  );
   expect(repeated.result.audioOutputRouted).toBe(true);
   expect((repeated.window[AUDIO_OUTPUTS] as Array<{ bridge: PageMedia }>)[0]?.bridge).toBe(bridge);
 });
