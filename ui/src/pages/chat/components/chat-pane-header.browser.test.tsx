@@ -46,6 +46,8 @@ describe.skipIf(typeof HTMLElement.prototype.checkVisibility !== "function")(
           onToggleSidePanel: vi.fn(),
         });
         const trailing = container.querySelector<HTMLElement>(".chat-pane__header-trailing")!;
+        const actions = container.querySelector<HTMLElement>(".chat-pane__actions")!;
+        const actionsBefore = actions.getBoundingClientRect();
         const panels = container.querySelector<HTMLElement>(".chat-pane__panels-toggle")!;
         const before = trailing.getBoundingClientRect();
         const panelsBefore = panels.getBoundingClientRect();
@@ -56,6 +58,8 @@ describe.skipIf(typeof HTMLElement.prototype.checkVisibility !== "function")(
         const after = trailing.getBoundingClientRect();
         expect(after.left).toBeCloseTo(before.left, 1);
         expect(after.width).toBeCloseTo(before.width, 1);
+        expect(actions.getBoundingClientRect().left).toBeCloseTo(actionsBefore.left, 1);
+        expect(actions.getBoundingClientRect().width).toBeCloseTo(actionsBefore.width, 1);
         expect(panels.getBoundingClientRect().right).toBeCloseTo(panelsBefore.right, 1);
       },
     );

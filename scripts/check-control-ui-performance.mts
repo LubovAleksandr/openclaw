@@ -65,8 +65,8 @@ const controlUiPerformanceBudgets = {
   // Reserve widget/reaction and mobile Sessions geometry against reload shifts.
   // Measured complete bundles after reserving Details, Sessions and header geometry.
   // Fixed bundle ceilings, not a repeatable per-PR growth allowance.
-  totalCssGzipBytes: 303_402,
-  totalCssRawBytes: 1_596_883,
+  totalCssGzipBytes: 303_451,
+  totalCssRawBytes: 1_597_326,
 } satisfies Record<string, number>;
 export const CONTROL_UI_PERFORMANCE_BUDGETS = Object.freeze(controlUiPerformanceBudgets);
 

@@ -82,6 +82,31 @@ describeBrowserLayout.concurrent("chat footer browser layout", () => {
   beforeAll(() => layoutBrowser.start());
   afterAll(() => layoutBrowser.close());
 
+  it.each(["user", "assistant", "tool"])(
+    "keeps %s group bounds stable when shared identity arrives",
+    async (role) => {
+      await withBrowserPage(openBrowserPage(1200, 800), async (page) => {
+        await page.setContent(`<style>${readUiCss()}</style>
+          <div class="chat-thread chat-thread--direct" style="width:760px;height:300px">
+            <div class="chat-group ${role}">
+              <div class="chat-group-messages"><div class="chat-bubble">Saved answer</div></div>
+            </div>
+          </div>`);
+        const before = await getRect(page, ".chat-group");
+        await page.locator(".chat-thread").evaluate((thread) => {
+          thread.classList.remove("chat-thread--direct");
+        });
+        const shared = await getRect(page, ".chat-group");
+        expect(shared.left).toBeCloseTo(before.left, 1);
+        expect(shared.right).toBeCloseTo(before.right, 1);
+        await page.setViewportSize({ width: 390, height: 844 });
+        const mobile = await getRect(page, ".chat-group");
+        expect(mobile.left).toBeCloseTo(before.left, 1);
+        expect(mobile.right).toBeCloseTo(before.right, 1);
+      });
+    },
+  );
+
   it("does not rebuild the footer layout tree while autosizing the editor", async () => {
     await withBrowserPage(openBrowserPage(1200, 800), async (page) => {
       // Keep the grid/flex chain: a directly sized conversation cannot reproduce
