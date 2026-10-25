@@ -110,7 +110,6 @@ export function controlUiStableChunkName(id: string): string | undefined {
     case "ui/src/pages/chat/chat-send-queue-runtime.ts":
     case "ui/src/pages/chat/chat-model-recovery.runtime.ts":
     case "ui/src/pages/chat/chat-command-dispatch.runtime.ts":
-    case "ui/src/pages/chat/chat-pane-session-metadata-patch.ts":
     case "ui/src/pages/chat/chat-pane-session-operations.ts":
     case "ui/src/pages/chat/chat-pane-session-operations.runtime.ts":
       return "chat-interaction-runtime";
@@ -314,6 +313,9 @@ export function createControlUiCodeSplitting(options: { includeBootGroups?: bool
             ...(["shared", "new", "chat"] as const).map((route, index) => {
               const modules = new Set(controlUiBootModules[route]);
               if (route === "shared") {
+                // Plugin activation validates versions on every route without
+                // evaluating Chat or adding a separate contract request.
+                modules.add("src/shared/plugin-inline-view.ts");
                 // Plugin contributions can initialize after the New Session boot capture.
                 modules.add("ui/src/plugins/control-ui-actions.ts");
                 // Both routes read deferred resources; share their existing boot partition.

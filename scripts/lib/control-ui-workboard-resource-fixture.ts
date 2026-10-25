@@ -570,6 +570,11 @@ export async function exerciseWorkboardResourceFixture(
   if (!mounted.instrumented) {
     throw new Error("Workboard native resource proof requires --resource-counts");
   }
+  const inputCapabilities = await page.evaluate(() => ({
+    nativeMaxTouchPoints: navigator.maxTouchPoints,
+    nativePrimaryPointerCoarse: matchMedia("(pointer: coarse)").matches,
+    nativePrimaryHoverNone: matchMedia("(hover: none)").matches,
+  }));
   const nativeTransitions = await exerciseNativeToggleCancellation(page, settle);
   const pendingHoverScroll = await exerciseNativePendingHover(page, "scroll");
   const pendingHoverPointer = await exerciseNativePendingHover(page, "pointerdown");
@@ -686,6 +691,7 @@ export async function exerciseWorkboardResourceFixture(
     const evidence: InteractionEvidence = {
       nativePopoverBehavior: true,
       nativeMenuPositioned: menuPositioned,
+      ...inputCapabilities,
       ...nativeTransitions,
       ...pendingHoverScroll,
       ...pendingHoverPointer,

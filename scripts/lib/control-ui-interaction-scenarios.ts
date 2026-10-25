@@ -15,9 +15,11 @@ import {
   waitForControlUiRoute,
 } from "../../ui/src/test-helpers/control-ui-e2e.ts";
 import { navigationDrawerToggle } from "../../ui/src/test-helpers/control-ui-navigation.ts";
+import type { ProjectionFamily } from "../../ui/src/test-helpers/control-ui-projection-fixture-contract.ts";
 import { mcpResourceHtml } from "../../ui/src/test-helpers/control-ui-team-scale-widget-html.ts";
 import { cronListResponseFixture } from "../../ui/src/test-helpers/cron.ts";
 import { meetingStatus } from "../../ui/src/test-helpers/transcripts.test-support.ts";
+import { runProjectionFixture } from "./control-ui-projection-fixtures.ts";
 import type { ControlUiResourceCounts } from "./control-ui-resource-counts.ts";
 import {
   exerciseWorkboardResourceFixture,
@@ -93,6 +95,8 @@ export type InteractionScenario = {
   /** Own one browser per observation; launch and retirement stay outside measurement. */
   observationBrowser?: boolean;
   visibility?: "hidden";
+  projectionFamily?: ProjectionFamily;
+  projectionIdle?: boolean;
   /** Count newly inserted rows across the action, including transient replacements. */
   rowSelector?: string;
   setup?: (page: Page) => Promise<void>;
@@ -1328,7 +1332,7 @@ async function settleSidebarCapture(page: Page) {
   );
 }
 
-async function settleSidebarBackgroundWork(page: Page) {
+export async function settleSidebarBackgroundWork(page: Page) {
   // The prefetch owner automatically warms New Session; other groups require navigation intent.
   const prefetchAssets = await page.evaluate(async () => {
     const descriptor = document
@@ -1501,7 +1505,7 @@ async function settingsSection(
 ) {
   const sidebar = page.locator(".settings-sidebar");
   await sidebar.waitFor({ state: "attached" });
-  if (!(await inViewport(sidebar))) {
+  if (await page.locator(".shell--mobile-nav:not(.shell--nav-drawer-open)").count()) {
     await openNavigationDrawer(page);
   }
   await sidebar.locator(`a[href="${path}"]`).click();
@@ -1530,6 +1534,54 @@ async function searchModels(page: Page) {
 }
 
 export const interactionScenarios: readonly InteractionScenario[] = [
+  ...(["sdk-avatars", "sdk-avatar-identities"] as const).map((family): InteractionScenario => ({
+    id: `projection-${family}`,
+    route: controlUiSessionPath(sessionKeys[0]),
+    expected:
+      "120 SDK avatars in A and 40 in B, two real factories per application; twenty native publications update A only, then independent factory/application retirement.",
+    projectionFamily: family,
+    prepare: prepareChat,
+    run: async (page) => {
+      await runProjectionFixture(page);
+    },
+  })),
+  ...(["visible", "hidden"] as const).map((visibility): InteractionScenario => ({
+    id: `projection-outbox-idle-${visibility}`,
+    route: controlUiSessionPath(sessionKeys[0]),
+    expected: `480 actual outbox rows remain mounted for three ${visibility} native-clock idle seconds, then retire independently.`,
+    projectionFamily: "outbox",
+    projectionIdle: true,
+    visibility: visibility === "hidden" ? visibility : undefined,
+    prepare: prepareChat,
+    run: async (page) => {
+      const state = () => page.evaluate(() => document.visibilityState);
+      if ((await state()) !== visibility) {
+        throw new Error(`Expected ${visibility} projection page`);
+      }
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 3_000);
+      });
+      if (
+        (await state()) !== visibility ||
+        (await page
+          .locator('[data-projection-application="A"] [data-attention-kind="outbox"]')
+          .count()) !== 400
+      ) {
+        throw new Error("Projection idle visibility or mounted family changed");
+      }
+    },
+  })),
+  ...(["agent-rows", "outbox", "board-pins"] as const).map((family): InteractionScenario => ({
+    id: `projection-${family}`,
+    route: controlUiSessionPath(sessionKeys[0]),
+    expected:
+      "400 rows in application A and 80 in B; twenty actual native-owner publications update A alone, then both groups retire independently.",
+    projectionFamily: family,
+    prepare: prepareChat,
+    run: async (page) => {
+      await runProjectionFixture(page);
+    },
+  })),
   {
     id: "workboard-native-resources",
     route: workboardResourceRoute,
@@ -2002,6 +2054,24 @@ export const interactionScenarios: readonly InteractionScenario[] = [
     run: refreshSessions,
   },
   {
+    id: "chat-typing",
+    route: controlUiSessionPath(sessionKeys[0]),
+    expected: "Typing preserves the composer draft without sending a chat request.",
+    prepare: prepareChat,
+    run: async (page, gateway) => {
+      const input = page.locator(`${activePane} .agent-chat__composer-combobox textarea`);
+      const sends = (await gateway.getRequests("chat.send")).length;
+      await input.pressSequentially("Synthetic typing 0123456789");
+      await frames(page);
+      if ((await input.inputValue()) !== "Synthetic typing 0123456789") {
+        throw new Error("Typing lost the composer draft");
+      }
+      if ((await gateway.getRequests("chat.send")).length !== sends) {
+        throw new Error("Typing must not send a chat request");
+      }
+    },
+  },
+  {
     id: "session-switch",
     route: controlUiSessionPath(sessionKeys[0]),
     expected: "Both retained 400-message transcripts become visible in turn.",
@@ -2035,15 +2105,22 @@ export const interactionScenarios: readonly InteractionScenario[] = [
     expected: "The 1,000-session sidebar closes and reopens.",
     prepare: prepareSidebarInventory,
     run: async (page) => {
-      if (await page.locator(".shell--mobile-nav").count()) {
+      const mobile = (await page.locator(".shell--mobile-nav").count()) > 0;
+      if (mobile) {
         await page.keyboard.press("Escape");
         await page.locator(".shell--nav-drawer-open").waitFor({ state: "detached" });
+        await page.locator(".shell-nav").evaluate(async (drawer) => {
+          await Promise.all(drawer.getAnimations().map((animation) => animation.finished));
+        });
       } else {
         await page.locator(".sidebar-session-toolbar__collapse").first().click();
       }
       await navigation(page, "sessions");
       await page.locator(`.sidebar-recent-session[data-session-key="${sessionKeys[0]}"]`).waitFor();
       await frames(page);
+      if (mobile && !(await page.locator(".shell-nav :focus").first().isVisible())) {
+        throw new Error("Opening the mobile drawer must focus a control inside it");
+      }
     },
   },
   {
