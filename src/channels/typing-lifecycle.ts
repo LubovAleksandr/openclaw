@@ -30,7 +30,8 @@ export function createTypingKeepaliveLoop(params: { intervalMs: number; onTick: 
         const reason = err instanceof Error ? err.message : String(err);
         console.warn(`[typing] keepalive tick failed: ${reason}`);
       });
-    }, params.intervalMs).unref();
+    }, params.intervalMs);
+    timer.unref?.();
   };
 
   const stop = () => {
