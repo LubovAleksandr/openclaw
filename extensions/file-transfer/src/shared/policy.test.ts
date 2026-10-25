@@ -60,6 +60,10 @@ function grant(nodeId: string, requestedPath: string, canonicalPath = requestedP
   return { nodeId, command: "file.fetch" as const, requestedPath, canonicalPath };
 }
 
+function expectDenied(requestedPath: string, askable = false) {
+  expect(read(requestedPath)).toMatchObject({ ok: false, code: "POLICY_DENIED", askable });
+}
+
 it("delegates only the selected node read policy and ignores the Node process policy", () => {
   const gatewayHome = os.homedir();
   withConfig({
@@ -109,11 +113,7 @@ describe("evaluateFilePolicy — default deny", () => {
       command: "file.fetch",
     });
 
-    expect(result).toMatchObject({
-      ok: false,
-      code: "POLICY_MIGRATION_REQUIRED",
-      askable: false,
-    });
+    expect(result).toMatchObject({ ok: false, code: "POLICY_MIGRATION_REQUIRED", askable: false });
     expect(result.ok ? "" : result.reason).toContain("openclaw file-transfer approvals migrate");
   });
 });
@@ -125,37 +125,16 @@ it("rejects /allowed/../etc/passwd even when /allowed/** is allowed", () => {
   expect(r.ok ? "" : r.reason).toMatch(/\.\./);
 });
 it("denies the bare directory matched by a descendant deny glob", () => {
-  withConfig({
-    n1: {
-      allowReadPaths: ["/**"],
-      denyPaths: ["**/.ssh/**"],
-    },
-  });
-  expect(read(path.join(os.homedir(), ".ssh"))).toMatchObject({
-    ok: false,
-    code: "POLICY_DENIED",
-    askable: false,
-  });
+  withConfig({ n1: { allowReadPaths: ["/**"], denyPaths: ["**/.ssh/**"] } });
+  expectDenied(path.join(os.homedir(), ".ssh"));
 });
 
 it("denies even with ask=always (denyPaths is hard)", () => {
-  withConfig({
-    n1: {
-      ask: "always",
-      denyPaths: ["**/secrets/**"],
-    },
-  });
-  const r = evaluateFilePolicy({
-    nodeId: "n1",
-    kind: "read",
-    path: "/var/secrets/api.key",
-  });
-  expect(r).toMatchObject({ ok: false, code: "POLICY_DENIED", askable: false });
+  withConfig({ n1: { ask: "always", denyPaths: ["**/secrets/**"] } });
+  expectDenied("/var/secrets/api.key");
 });
 it("uses kind=write to consult allowWritePaths, not allowReadPaths", () => {
-  withConfig({
-    n1: { allowReadPaths: ["/tmp/**"], allowWritePaths: ["/srv/**"] },
-  });
+  withConfig({ n1: { allowReadPaths: ["/tmp/**"], allowWritePaths: ["/srv/**"] } });
   expect(read("/srv/out.txt", { kind: "write" })).toMatchObject({ ok: true });
   expect(read("/tmp/out.txt", { kind: "write" })).toMatchObject({
     ok: false,
@@ -164,21 +143,10 @@ it("uses kind=write to consult allowWritePaths, not allowReadPaths", () => {
 });
 
 it("propagates followSymlinks=false by default and =true when configured", () => {
-  withConfig({
-    n1: { allowReadPaths: ["/tmp/**"] },
-  });
-  expect(evaluateFilePolicy({ nodeId: "n1", kind: "read", path: "/tmp/x" })).toMatchObject({
-    ok: true,
-    followSymlinks: false,
-  });
-
-  withConfig({
-    n2: { allowReadPaths: ["/tmp/**"], followSymlinks: true },
-  });
-  expect(evaluateFilePolicy({ nodeId: "n2", kind: "read", path: "/tmp/x" })).toMatchObject({
-    ok: true,
-    followSymlinks: true,
-  });
+  withConfig({ n1: { allowReadPaths: ["/tmp/**"] } });
+  expect(read("/tmp/x")).toMatchObject({ ok: true, followSymlinks: false });
+  withConfig({ n2: { allowReadPaths: ["/tmp/**"], followSymlinks: true } });
+  expect(read("/tmp/x", { nodeId: "n2" })).toMatchObject({ ok: true, followSymlinks: true });
 });
 it("falls back to '*' wildcard when neither id nor displayName matches", () => {
   withConfig({ "*": { allowReadPaths: ["/tmp/**"] } });
@@ -196,16 +164,9 @@ describe("literal standing grants", () => {
       nodeDisplayName: "Shared",
       command: "file.fetch" as const,
     };
-    expect(read("/tmp/report-*.txt", identity)).toMatchObject({
-      ok: false,
-      code: "POLICY_DENIED",
-      askable: true,
-    });
-    expect(read("/tmp/unrelated.txt", identity)).toMatchObject({
-      ok: false,
-      code: "POLICY_DENIED",
-      askable: false,
-    });
+    const denied = { ok: false, code: "POLICY_DENIED" };
+    expect(read("/tmp/report-*.txt", identity)).toMatchObject({ ...denied, askable: true });
+    expect(read("/tmp/unrelated.txt", identity)).toMatchObject({ ...denied, askable: false });
   });
 
   it("keeps an approved Windows path literal", async () => {
@@ -231,15 +192,9 @@ describe("literal standing grants", () => {
 
     await persistLiteralGrant(grant("node-a", "/tmp/report.txt"));
     const identity = { nodeDisplayName: "Shared", command: "file.fetch" as const };
-    expect(read("/tmp/report.txt", { ...identity, nodeId: "node-a" })).toMatchObject({
-      ok: true,
-      reason: "matched-literal",
-    });
-    expect(read("/tmp/report.txt", { ...identity, nodeId: "node-b" })).toMatchObject({
-      ok: false,
-      code: "POLICY_DENIED",
-      askable: true,
-    });
+    const result = (nodeId: string) => read("/tmp/report.txt", { ...identity, nodeId });
+    expect(result("node-a")).toMatchObject({ ok: true, reason: "matched-literal" });
+    expect(result("node-b")).toMatchObject({ ok: false, code: "POLICY_DENIED", askable: true });
   });
 
   it("dedupes the exact tuple without changing authored policy", async () => {

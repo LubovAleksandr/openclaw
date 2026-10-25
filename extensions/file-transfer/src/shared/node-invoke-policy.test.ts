@@ -29,6 +29,10 @@ function nodeConfig(node: Record<string, unknown>) {
   return { nodes: { "node-1": node } };
 }
 
+function literalGrant(requestedPath: string, canonicalPath = requestedPath) {
+  return { nodeId: "node-1", command: "file.fetch", requestedPath, canonicalPath };
+}
+
 vi.mock("./audit.js", () => ({
   appendFileTransferAudit: vi.fn(async () => undefined),
 }));
@@ -127,14 +131,7 @@ describe("file-transfer node invoke policy", () => {
       pluginConfig: {
         policyVersion: 2,
         nodes: { "node-1": { ask: "on-miss" } },
-        literalGrants: [
-          {
-            nodeId: "node-1",
-            command: "file.fetch",
-            requestedPath: "/tmp/report-*.txt",
-            canonicalPath: "/tmp/report-*.txt",
-          },
-        ],
+        literalGrants: [literalGrant("/tmp/report-*.txt")],
       },
       approvals,
     });
@@ -143,42 +140,20 @@ describe("file-transfer node invoke policy", () => {
     expect(approvals.request).not.toHaveBeenCalled();
 
     invokeNode.mockReset();
-    invokeNode.mockResolvedValue({
-      ok: true,
-      payload: { ok: true, binding: EXISTING_BINDING, path: "/tmp/other.txt" },
-    });
+    invokeNode.mockResolvedValue(nodePayload("/tmp/other.txt", {}));
     expect((await policy.handle(ctx)).ok).toBe(true);
     expect(approvals.request).toHaveBeenCalledTimes(1);
     expect(persistLiteralGrant).toHaveBeenCalledWith({
-      nodeId: "node-1",
-      command: "file.fetch",
-      requestedPath: "/tmp/report-*.txt",
-      canonicalPath: "/tmp/other.txt",
+      ...literalGrant("/tmp/report-*.txt", "/tmp/other.txt"),
       pendingReapprovalSelector: undefined,
     });
   });
 
   it.each([
-    {
-      label: "explicit deny",
-      decision: "deny",
-      code: "APPROVAL_DENIED",
-      message: "file.fetch APPROVAL_DENIED: operator denied the prompt",
-    },
-    {
-      label: "undefined decision",
-      decision: undefined,
-      code: "APPROVAL_UNAVAILABLE",
-      message:
-        "file.fetch APPROVAL_UNAVAILABLE: no operator client connected to approve the request",
-    },
-    {
-      label: "arbitrary truthy string",
-      decision: "accept",
-      code: "APPROVAL_DENIED",
-      message: "file.fetch APPROVAL_DENIED: invalid approval decision",
-    },
-  ])("fails closed for $label", async ({ decision, code, message }) => {
+    ["deny", "APPROVAL_DENIED", "operator denied the prompt"],
+    [undefined, "APPROVAL_UNAVAILABLE", "no operator client connected to approve the request"],
+    ["accept", "APPROVAL_DENIED", "invalid approval decision"],
+  ])("fails closed for decision %s", async (decision, code, reason) => {
     const approvals = {
       request: vi.fn(async () => ({ id: "approval-1", decision })),
     } as unknown as NonNullable<OpenClawPluginNodeInvokePolicyContext["approvals"]>;
@@ -188,15 +163,17 @@ describe("file-transfer node invoke policy", () => {
       approvals,
     });
 
-    expectResultFields(await policy.handle(ctx), { ok: false, code, message });
+    expectResultFields(await policy.handle(ctx), {
+      ok: false,
+      code,
+      message: `file.fetch ${code}: ${reason}`,
+    });
     expect(approvals.request).toHaveBeenCalledTimes(1);
     expect(invokeNode).not.toHaveBeenCalled();
   });
 
   it("marks node transport failures as unavailable", async () => {
-    const { ctx, invokeNode } = createCtx({
-      params: { path: "/tmp/file.txt" },
-    });
+    const { ctx, invokeNode } = createCtx({ params: { path: "/tmp/file.txt" } });
     invokeNode.mockResolvedValueOnce({
       ok: false,
       code: "TIMEOUT",
@@ -243,17 +220,14 @@ describe("file-transfer node invoke policy", () => {
       },
       pluginConfig: nodeConfig({ allowWritePaths: ["/tmp/**"], followSymlinks: true }),
     });
-    invokeNode.mockResolvedValueOnce({
-      ok: true,
-      payload: {
-        ok: true,
+    invokeNode.mockResolvedValueOnce(
+      nodePayload("/etc/out.txt", {
         binding: WRITE_BINDING,
-        path: "/etc/out.txt",
         size: 7,
         sha256: "b".repeat(64),
         overwritten: false,
-      },
-    });
+      }),
+    );
 
     expectResultFields(await policy.handle(ctx), { ok: false, code: "SYMLINK_TARGET_DENIED" });
     expect(invokeNode).toHaveBeenCalledTimes(1);
@@ -288,12 +262,18 @@ function nodePayload(root: string, fields: Record<string, unknown>) {
 }
 
 async function expectPreflightRejection(fields: Record<string, unknown>, code: string) {
-  const { ctx, invokeNode } = directoryContext("/home/me", {
-    allowReadPaths: ["/home/me", "/home/me/**"],
-  });
+  const { ctx, invokeNode } = cappedDirectoryContext();
   invokeNode.mockResolvedValueOnce(nodePayload("/home/me", { preflightOnly: true, ...fields }));
   expectResultFields(await policy.handle(ctx), { ok: false, code });
   expect(invokeNode).toHaveBeenCalledTimes(1);
+}
+
+function cappedDirectoryContext() {
+  return directoryContext("/home/me", { allowReadPaths: ["/home/me", "/home/me/**"] });
+}
+
+function files(count: number, name = (index: number) => `file-${index}.txt`, contents = "") {
+  return Object.fromEntries(Array.from({ length: count }, (_, index) => [name(index), contents]));
 }
 
 function mockFinalArchive(
@@ -308,24 +288,11 @@ function mockFinalArchive(
 }
 
 describe("file-transfer dir.fetch archive policy", () => {
-  it("rejects dir.fetch preflight responses without an entry list", async () => {
-    await expectPreflightRejection({ fileCount: 2 }, "PREFLIGHT_ENTRIES_MISSING");
-  });
-
-  it("rejects invalid dir.fetch preflight entries before requesting the archive", async () => {
-    await expectPreflightRejection(
-      { entries: ["ok.txt", "/etc/passwd"], fileCount: 2 },
-      "PREFLIGHT_ENTRY_INVALID",
-    );
-  });
-
-  it("rejects oversized dir.fetch preflight entry lists before requesting the archive", async () => {
-    const entries = Array.from({ length: 5001 }, (_, index) => `file-${index}.txt`);
-    await expectPreflightRejection(
-      { entries, fileCount: entries.length },
-      "PREFLIGHT_ENTRIES_TOO_MANY",
-    );
-  });
+  it.each([
+    [{ fileCount: 2 }, "PREFLIGHT_ENTRIES_MISSING"],
+    [{ entries: ["ok.txt", "/etc/passwd"], fileCount: 2 }, "PREFLIGHT_ENTRY_INVALID"],
+    [{ entries: Object.keys(files(5001)), fileCount: 5001 }, "PREFLIGHT_ENTRIES_TOO_MANY"],
+  ] as const)("rejects preflight %j with %s before fetching", expectPreflightRejection);
 
   testUnlessWindows("rejects mismatched dir.fetch archive integrity metadata", async () => {
     const tarBase64 = tarEntries({ "a.txt": "a" });
@@ -342,77 +309,42 @@ describe("file-transfer dir.fetch archive policy", () => {
     );
   });
 
-  it.each([{ root: "C:\\transfer", deniedPath: "C:\\transfer\\private" }])(
-    "rejects final dir.fetch archives with a denied implicit parent directory ($root)",
-    async ({ root, deniedPath }) => {
-      const approvals = approval("allow-always");
-      const { ctx, invokeNode } = directoryContext(
-        root,
-        { ask: "always", denyPaths: [deniedPath] },
-        { approvals },
-      );
-      // The untrusted final response has no directory headers; preflight remains enabled.
-      mockDirFetchArchive(invokeNode, root, { "private/nested/value.txt": "value" });
-      vi.mocked(appendFileTransferAudit).mockClear();
-
-      const result = await policy.handle(ctx);
-
-      expect(invokeNode).toHaveBeenCalledTimes(2);
-      expect(requireInvokeParams(invokeNode, 0).preflightOnly).toBe(true);
-      expect(approvals.request).toHaveBeenCalledTimes(1);
-      expect(result).toMatchObject({
-        ok: false,
-        code: "PATH_POLICY_DENIED",
-        details: { path: deniedPath },
-      });
-      expect(appendFileTransferAudit).not.toHaveBeenCalledWith(
-        expect.objectContaining({ decision: "allowed" }),
-      );
-      expect(persistLiteralGrant).not.toHaveBeenCalled();
-    },
-  );
-
-  it("accepts the producer root header at the exact descendant cap", async () => {
-    const entries = Object.fromEntries(
-      Array.from({ length: 5000 }, (_, index) => [`file-${index}.txt`, ""]),
+  it("rejects final dir.fetch archives with a denied implicit parent directory", async () => {
+    const root = "C:\\transfer";
+    const deniedPath = "C:\\transfer\\private";
+    const approvals = approval("allow-always");
+    const { ctx, invokeNode } = directoryContext(
+      root,
+      { ask: "always", denyPaths: [deniedPath] },
+      { approvals },
     );
-    const { ctx, invokeNode } = directoryContext("/home/me", {
-      allowReadPaths: ["/home/me", "/home/me/**"],
-    });
-    // The real producer archives "."; its root directory header is one member.
-    mockDirFetchArchive(invokeNode, "/home/me", entries, { producerRoot: true });
+    // The untrusted final response has no directory headers; preflight remains enabled.
+    mockDirFetchArchive(invokeNode, root, { "private/nested/value.txt": "value" });
+    vi.mocked(appendFileTransferAudit).mockClear();
 
     const result = await policy.handle(ctx);
 
     expect(invokeNode).toHaveBeenCalledTimes(2);
-    expect(result).toMatchObject({ ok: true });
+    expect(requireInvokeParams(invokeNode, 0).preflightOnly).toBe(true);
+    expect(approvals.request).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      ok: false,
+      code: "PATH_POLICY_DENIED",
+      details: { path: deniedPath },
+    });
+    expect(appendFileTransferAudit).not.toHaveBeenCalledWith(
+      expect.objectContaining({ decision: "allowed" }),
+    );
+    expect(persistLiteralGrant).not.toHaveBeenCalled();
   });
 
   it.each([
-    {
-      name: "counts implicit parents toward the descendant cap",
-      leaves: 2501,
-      sharedParents: false,
-      allowed: false,
-    },
-    {
-      name: "counts shared parents once at the descendant cap",
-      leaves: 4998,
-      sharedParents: true,
-      allowed: true,
-    },
-  ])("$name", async ({ leaves, sharedParents, allowed }) => {
-    const entries = Object.fromEntries(
-      Array.from({ length: leaves }, (_, index) => [
-        sharedParents ? `parent/nested/file-${index}` : `dir-${index}/file`,
-        "",
-      ]),
-    );
-    const { ctx, invokeNode } = directoryContext("/home/me", {
-      allowReadPaths: ["/home/me", "/home/me/**"],
-    });
-    mockDirFetchArchive(invokeNode, "/home/me", entries);
-
+    ["counts implicit parents", files(2501, (i) => `dir-${i}/file`), false, false],
+    ["counts shared parents once", files(4998, (i) => `parent/nested/file-${i}`), false, true],
+    ["accepts the producer root header", files(5000), true, true],
+  ] as const)("%s at the descendant cap", async (_name, entries, producerRoot, allowed) => {
+    const { ctx, invokeNode } = cappedDirectoryContext();
+    mockDirFetchArchive(invokeNode, "/home/me", entries, { producerRoot });
     const result = await policy.handle(ctx);
 
     expect(invokeNode).toHaveBeenCalledTimes(2);
@@ -424,9 +356,7 @@ describe("file-transfer dir.fetch archive policy", () => {
   });
 
   testUnlessWindows("rejects oversized final dir.fetch archive entry lists", async () => {
-    const tarBase64 = tarEntries(
-      Object.fromEntries(Array.from({ length: 5001 }, (_, index) => [`file-${index}.txt`, "x"])),
-    );
+    const tarBase64 = tarEntries(files(5001, undefined, "x"));
     const { ctx, invokeNode } = directoryContext("/tmp/project", {
       allowReadPaths: ["/tmp/project", "/tmp/project/**"],
     });
