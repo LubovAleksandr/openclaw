@@ -313,9 +313,11 @@ describe("handleDiscordMessageAction", () => {
           },
           {
             type: "table",
-            headers: ["Account"],
+            caption: "Large pipeline",
+            headers: ["Account", "Stage"],
             rows: Array.from({ length: 900 }, (_entry, index) => [
               `account-${index}-${"x".repeat(80)}`,
+              "Review",
             ]),
           },
         ],

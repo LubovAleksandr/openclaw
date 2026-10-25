@@ -9,6 +9,7 @@ import {
   trackSqliteStatementExecutions,
 } from "../../../test/helpers/sqlite-statement-execution-counter.js";
 import { declareAgentWorkspaceAccess } from "../../agents/workspace-access.js";
+import type { GatewayOperatorRoleDefinition } from "../../config/types.gateway.js";
 import { enableNodeSqliteKyselyStatementCache } from "../../infra/kysely-sync.js";
 import { openNodeSqliteDatabase, requireNodeSqlite } from "../../infra/node-sqlite.js";
 import { admitSqliteSchema } from "../../infra/sqlite-schema-facts.js";
@@ -79,7 +80,11 @@ function withSql<T>(run: (sql: ReturnType<typeof observeHostDataSql>) => T): T {
 }
 const readLibrary = skillLibraryReadOperations["skillLibrary.read"];
 
-function role(scopes: string[], others: "none" | "view" = "none", agents: "*" | string[] = "*") {
+function role(
+  scopes: GatewayOperatorRoleDefinition["scopes"],
+  others: "none" | "view" = "none",
+  agents: "*" | string[] = "*",
+) {
   return { scopes, sessions: { others }, agents };
 }
 

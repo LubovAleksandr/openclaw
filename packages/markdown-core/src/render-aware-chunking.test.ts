@@ -134,6 +134,7 @@ it("keeps Unicode boundaries through initial, retry, and whitespace splits", () 
   const cases: [string, number, string[], boolean?, ((ir: MarkdownIR) => string)?, string[]?][] = [
     ["A😀B", 1, ["A", "😀", "B"]],
     ["A😀", 3, ["A", "😀"], false, ({ text }) => (text === "A😀" ? "too long" : text)],
+    ["aaaaaaaaaa👨‍👩‍👧‍👦Z", 12, ["aaaaaaaaaa", "👨‍👩‍👧‍👦Z"]],
     [
       "aaaaaaaaaaaa👨‍👩‍👧‍👦Z",
       26,
@@ -142,6 +143,9 @@ it("keeps Unicode boundaries through initial, retry, and whitespace splits", () 
       ({ text }) => text.replaceAll("a", "aa"),
       ["a".repeat(24), "👨‍👩‍👧‍👦Z"],
     ],
+    ["👨‍👩‍👧‍👦", 4, ["👨‍", "👩‍", "👧‍", "👦"]],
+    ["ab \u0301cd", 4, ["ab", " \u0301cd"]],
+    ["\u0600 \u0301abcd", 4, ["\u0600 \u0301a", "bcd"]],
     ["ab\r\n😀", 3, ["ab", "😀"]],
     ["ab\r\n😀", 3, ["ab", "\r\n", "😀"], true],
     ["abc\r\n\r\nx", 4, ["abc", "x"]],

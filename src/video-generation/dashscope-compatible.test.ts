@@ -234,6 +234,32 @@ describe("DashScope operation deadlines", () => {
     },
     2_000,
   );
+  it.each([false, true])(
+    "times out a valid streaming video body (capture tee=%s)",
+    async (capture) => {
+      const fixture = streamFixture(
+        {
+          start(controller) {
+            if (capture) {
+              controller.enqueue(new TextEncoder().encode("streaming"));
+            }
+          },
+        },
+        capture,
+      );
+      try {
+        await timesOut(
+          downloadVideo(fixture.fetchFn, 80),
+          80,
+          /Alibaba Wan generated video download timed out/,
+        );
+        expect(fixture.requests[0]?.signal?.aborted).toBe(true);
+        expect(fixture.fetchFn).toHaveBeenCalledOnce();
+      } finally {
+        fixture.release();
+      }
+    },
+  );
   it("fails closed before fetch when a function-valued remaining budget is exhausted", async () => {
     const fetchFn = vi.fn<typeof fetch>();
     await expect(downloadVideo(fetchFn, () => 0)).rejects.toThrow("remaining budget exhausted");

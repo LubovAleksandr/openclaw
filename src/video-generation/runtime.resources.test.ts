@@ -219,4 +219,7 @@ async function exercise([, mode, owner, selection]: Scenario) {
   }
 }
 
-it.each<Scenario>(scenarios)("keeps resources alive for %s", (...scenario) => exercise(scenario));
+it.each(scenarios.map((scenario) => ({ name: scenario[0], scenario })))(
+  "keeps resources alive for $name",
+  ({ scenario }) => exercise(scenario),
+);

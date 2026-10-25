@@ -731,7 +731,7 @@ it("recovers independently verified imports of the same alias across two stores"
     for (const [agent, key] of [
       ["main", "shared-account"],
       ["worker", "local-account"],
-    ]) {
+    ] as const) {
       await fixture.writeJson(
         `agents/${agent}/agent/auth-profiles.json`,
         authStore({ "claude-cli:work": apiKey("claude-cli", key) }),

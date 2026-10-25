@@ -157,9 +157,11 @@ describe("diffs tool", () => {
     expect(result.text).toContain("Diff viewer ready.");
     expect(result.text).toContain("File rendering failed");
     expect(result.details.viewerUrl).toEqual(expect.any(String));
-    expect(result.details.fileError).toBe(rendererError);
     if (stage === "render") {
+      expect(result.details.fileError).toBe(rendererError);
       await expect(fs.readdir(fixture.rootDir)).resolves.toEqual([]);
+    } else {
+      expect(result.details.fileError).toContain(rendererError);
     }
     expect((await fixture.blobStore.entries()).map(({ metadata }) => metadata.kind)).toEqual([
       "viewer",
