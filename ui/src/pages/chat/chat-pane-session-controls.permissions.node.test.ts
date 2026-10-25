@@ -52,7 +52,7 @@ async function createControlsFixture(
     ...(globalTarget
       ? {
           assistantAgentId: "work",
-          agentsList: { defaultId: "main", mainKey: "main", scope: "global" },
+          agentsList: { defaultId: "main", mainKey: "main", scope: "global", agents: [] },
           sessionsResultAgentId: globalTarget.rowAgentId,
         }
       : {}),

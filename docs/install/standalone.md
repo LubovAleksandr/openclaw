@@ -44,6 +44,11 @@ The manifest reads the OpenClaw version and commit from `dist/build-info.json`.
 Rerun `pnpm build` after source changes; changing the checkout alone does not update
 the identity of an existing runtime build.
 
+Bundling runs from the temporary staging root so generated chunk names and module
+paths do not depend on the checkout or output directory. Reproducibility checks
+must still pin the source, dependency tree, compiler, target, and build timestamp,
+and compare unsigned outputs before signing.
+
 On macOS, the builder uses `scripts/build-mac-sqlite.sh` and the pin in
 `scripts/lib/sqlite-macos.json` to include `runtime/lib/libsqlite3.dylib` for the
 target architecture. It respects `OPENCLAW_MACOS_DEPLOYMENT_TARGET` (default
@@ -94,6 +99,14 @@ through the normal loader against the compiled SDK. Missing runtime modules and
 builds with `--disallow-code-generation-from-strings=strict` still report actionable
 guidance. Guest runtimes keep their own qualification requirements; OpenClaw
 does not silently switch executors.
+
+The sidecar retains the canonical worker deployment archive for transfer to paired
+nodes. It does not retain loose host worker modules. A standalone node uses the
+same executable's generic Bun runner to prewarm and execute a transferred worker
+bundle, preserving its normal bundle and protocol checks. In a run-only AOT build,
+that portable worker graph runs interpreted; embedded host worker threads still
+execute their compiled entries. Qualify this child path on the exact signed
+artifact without adding JIT entitlements or substituting a host runtime.
 
 ### Original TypeScript and compiler options
 
@@ -196,7 +209,8 @@ of identical prepared inputs share that identity; changing compiled code or nati
 resources invalidates it.
 For reproducible preparation, set the same `OPENCLAW_BUILD_TIMESTAMP` when running
 `pnpm build` in each checkout. Local cache freshness stamps are omitted from the
-standalone runtime. Compare executable hashes before timestamped signing;
+standalone runtime, and retained plugin-loader bytes omit staging directory names.
+Compare executable hashes before timestamped signing;
 a matching build identity alone does not prove byte-identical executables.
 
 For breakpoints, the companion also retains the selected input runtime, its

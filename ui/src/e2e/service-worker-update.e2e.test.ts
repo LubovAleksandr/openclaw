@@ -338,7 +338,7 @@ describe("Control UI service-worker production update E2E", () => {
     browser = useWebKit
       ? await webkit.launch()
       : await chromium.launch({ executablePath: chromiumExecutablePath });
-  }, 120_000);
+  }, 180_000);
 
   afterAll(async () => {
     try {
