@@ -444,7 +444,11 @@ export function createControlUiE2eSuite(options: ControlUiE2eSuiteOptions): Cont
     }
     const acquisition = Promise.resolve()
       .then(async () => {
-        const context = await currentBrowser.newContext(contextOptions);
+        // Route-backed fixtures own asset delivery; service-worker proofs opt in.
+        const context = await currentBrowser.newContext({
+          ...contextOptions,
+          serviceWorkers: contextOptions?.serviceWorkers ?? "block",
+        });
         openBrowserContexts.set(context, owner);
         contextDiagnostics.set(context, { test });
         await context.addInitScript({ content: createControlUiPaneRuntimeTestAdapterScript() });
@@ -703,17 +707,14 @@ export function createControlUiE2eSuite(options: ControlUiE2eSuiteOptions): Cont
         return await runQaGatewayFixture(
           async () => {
             const page = await context.newPage();
-            fixture = { context, page };
+            const pageFixture = { context, page };
+            fixture = pageFixture;
             // A CDP session attached after a test's own session clears that session's
             // emulation overrides (such as safe-area insets) on the next navigation.
             await installControlUiE2eRendererStallProbe(page);
             try {
               const finishCallback = beginUiE2ePhase("test-callback");
-              try {
-                return await run(fixture);
-              } finally {
-                finishCallback();
-              }
+              return await runQaGatewayFixture(() => run(pageFixture), finishCallback);
             } catch (error) {
               await captureContextFailure(context, error, page);
               throw error;
