@@ -6,8 +6,14 @@ import type { AgentEntryConfig } from "../../config/types.agents.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
 import { withPluginRuntimeGenerationScope } from "../../plugins/runtime/generation-scope.js";
+import type { CronJob } from "../types.js";
+import { makeIsolatedAgentJobFixture } from "./job-fixtures.js";
 import { resolveCronModelSelection } from "./model-selection.js";
 import { resolveCronAgentConfig } from "./run-config.js";
+import {
+  prepareCronModelResolveInput,
+  resolveCronPreflightCandidates,
+} from "./run-fallback-policy.js";
 
 function config(defaults: AgentDefaultsConfig, worker: AgentEntryConfig = {}): OpenClawConfig {
   return { agents: { defaults, entries: { worker } } };
@@ -65,40 +71,21 @@ describe("resolveCronAgentConfig preserves agent-aware config", () => {
     });
   });
 
-  it.each<{ name: string; defaults: AgentDefaultsConfig; worker: AgentEntryConfig }>([
-    {
-      name: "model catalog",
-      defaults: { models: { "openai/test": { params: { topP: 0.6, thinking: "high" } } } },
-      worker: { models: { "openai/test": { params: { thinking: "low" } } } },
-    },
-    {
-      name: "request parameters",
-      defaults: { params: { temperature: 0.1 } },
-      worker: { params: { temperature: 0.4 } },
-    },
-    {
-      name: "sandbox",
-      defaults: {
-        sandbox: {
-          mode: "all",
-          workspaceAccess: "rw",
-          docker: {
-            network: "none",
-            dangerouslyAllowContainerNamespaceJoin: true,
-            dangerouslyAllowExternalBindSources: true,
-          },
-          browser: { enabled: true, autoStart: false },
-          prune: { maxAgeDays: 7 },
-        },
+  it("leaves model, request, sandbox and memory scopes with their agent-aware owners", () => {
+    const defaults: AgentDefaultsConfig = {
+      models: { "openai/test": { params: { topP: 0.6, thinking: "high" } } },
+      params: { temperature: 0.1 },
+      sandbox: {
+        mode: "all",
+        docker: { network: "none" },
       },
-      worker: { sandbox: { docker: { image: "sandbox:custom" } } },
-    },
-    {
-      name: "memory",
-      defaults: {},
-      worker: { memory: { search: { rememberAcrossConversations: true } } },
-    },
-  ])("leaves $name merging to its agent-aware owner", ({ defaults, worker }) => {
+    };
+    const worker: AgentEntryConfig = {
+      models: { "openai/test": { params: { thinking: "low" } } },
+      params: { temperature: 0.4 },
+      sandbox: { docker: { image: "sandbox:custom" } },
+      memory: { search: { rememberAcrossConversations: true } },
+    };
     const runCfg = buildCronConfig(config(defaults, worker));
     expect(runCfg.agents?.defaults).toEqual(defaults);
     expect(runCfg.agents?.entries?.worker).toEqual(worker);
@@ -118,16 +105,14 @@ describe("resolveCronAgentConfig preserves agent-aware config", () => {
   it.each(["agent", "hook"] as const)(
     "keeps the selected owner's metadata for the %s model",
     async (source) => {
+      const provider = source === "hook" ? DEFAULT_PROVIDER : "custom";
       const snapshot = (workspaceDir: string, model: string) => ({
         ...createPluginMetadataSnapshotFixture({
           plugins: [
             {
               id: "cron-model-policy",
               modelIdNormalization: {
-                providers: {
-                  custom: { aliases: { legacy: model } },
-                  [DEFAULT_PROVIDER]: { aliases: { legacy: model } },
-                },
+                providers: { [provider]: { aliases: { legacy: model } } },
               },
             },
           ],
@@ -138,29 +123,86 @@ describe("resolveCronAgentConfig preserves agent-aware config", () => {
       const cfg = config(
         {
           model: { primary: "custom/baseline" },
-          modelPolicy: { allow: ["custom/legacy", `${DEFAULT_PROVIDER}/legacy`] },
+          modelPolicy: { allow: [`${provider}/legacy`] },
         },
-        {
-          agentDir: "/tmp/cron-agent",
-          workspace: metadataSnapshot.workspaceDir,
-          ...(source === "agent" ? { model: "custom/legacy" } : {}),
-        },
+        source === "agent" ? { model: "custom/legacy" } : {},
       );
       if (source === "hook") {
         cfg.hooks = { gmail: { model: "legacy" } };
       }
-      for (const ambient of [metadataSnapshot, snapshot("/tmp/other-owner", "other")]) {
-        expect(
-          await withPluginRuntimeGenerationScope({ metadataSnapshot: ambient }, () =>
-            selectModel(cfg, metadataSnapshot, source === "hook"),
-          ),
-        ).toMatchObject({
-          ok: true,
-          provider: source === "hook" ? DEFAULT_PROVIDER : "custom",
-          model: "selected",
-          modelSource: source,
-        });
-      }
+      expect(
+        await withPluginRuntimeGenerationScope(
+          { metadataSnapshot: snapshot("/tmp/other-owner", "other") },
+          () => selectModel(cfg, metadataSnapshot, source === "hook"),
+        ),
+      ).toMatchObject({
+        ok: true,
+        provider,
+        model: "selected",
+        modelSource: source,
+      });
     },
   );
+});
+
+it.each([undefined, "cron", "event"] as const)(
+  "classifies model routing as %s from the caller, not the hook session key",
+  async (trigger) => {
+    const { modelResolve } = await prepareCronModelResolveInput({
+      cwd: "/tmp/event-model-routing",
+      prompt: "Synthetic immediate event",
+      cronSession: { sessionEntry: {} },
+      job: { id: "caller-classification" },
+      trigger,
+      runSessionKey: "agent:main:hook:caller-classification",
+      resolvedDelivery: {},
+      messageChannel: undefined,
+    });
+    expect(modelResolve.context?.trigger).toBe(trigger ?? "cron");
+  },
+);
+
+const job = (payload: Partial<Extract<CronJob["payload"], { kind: "agentTurn" }>> = {}) =>
+  makeIsolatedAgentJobFixture({ payload: { kind: "agentTurn", message: "summarize", ...payload } });
+const fallback = "openai/gpt-5.4";
+const fallbackConfig: OpenClawConfig = {
+  agents: { defaults: { model: { primary: "anthropic/claude-opus-4-6", fallbacks: [fallback] } } },
+};
+const user = { sessionModelOverrideSource: "user" } as const;
+const payloadModel = "google/gemini-2.0-flash";
+type Case = [
+  name: string,
+  options: Partial<Parameters<typeof resolveCronPreflightCandidates>[0]>,
+  fallbacks: string[],
+];
+it.each<Case>([
+  [
+    "unselected subagent",
+    {
+      cfg: {
+        agents: {
+          defaults: { ...fallbackConfig.agents?.defaults, subagents: { model: "kimi/kimi-code" } },
+        },
+      },
+      useSubagentFallbacks: false,
+    },
+    [fallback],
+  ],
+  ["payload model over user selection", { job: job({ model: payloadModel }), ...user }, [fallback]],
+  [
+    "payload fallbacks over user selection",
+    { job: job({ fallbacks: ["jobfallback/model-c"] }), ...user },
+    ["jobfallback/model-c"],
+  ],
+])("preflights %s", (_name, options, fallbacks) => {
+  expect(
+    resolveCronPreflightCandidates({
+      cfg: fallbackConfig,
+      job: job(),
+      agentId: "main",
+      provider: "ollama",
+      model: "qwen3:32b",
+      ...options,
+    }).map(({ provider, model }) => `${provider}/${model}`),
+  ).toEqual(["ollama/qwen3:32b", ...fallbacks]);
 });

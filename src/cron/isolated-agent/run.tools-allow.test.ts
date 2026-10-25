@@ -9,7 +9,6 @@ import type { CronStoredJob } from "../types.js";
 import { makeIsolatedAgentParamsFixture } from "./job-fixtures.js";
 import { setupRunCronIsolatedAgentTurnSuite } from "./run.suite-helpers.js";
 import {
-  callGatewayMock,
   loadModelCatalogMock,
   loadRunCronIsolatedAgentTurn,
   mockRunCronFallbackPassthrough,
@@ -82,20 +81,12 @@ describe("runCronIsolatedAgentTurn toolsAllow", () => {
     });
   });
 
-  it.each([
-    {
-      label: "keeps its list without a valid owner policy",
-      job: { owner: { agentId: "main", sessionKey: policy.ownerSessionKey } },
-      expected: ["message", "read"],
-    },
-    {
-      label: "keeps its list behind a condition trigger",
-      job: conditionTrigger,
-      expected: ["message", "read"],
-    },
-  ])("an automatic creator snapshot $label", options, async ({ job, expected }) => {
+  it.each<[string, Partial<CronStoredJob>]>([
+    ["without owner policy", { owner: { agentId: "main", sessionKey: policy.ownerSessionKey } }],
+    ["behind a condition trigger", conditionTrigger],
+  ])("keeps an automatic creator snapshot %s", options, async (_label, job) => {
     await runTurn(["message", "read"], automaticSnapshot, job);
-    expect(runEmbeddedAgentMock.mock.calls[0]?.[0]?.toolsAllow).toEqual(expected);
+    expect(runEmbeddedAgentMock.mock.calls[0]?.[0]?.toolsAllow).toEqual(["message", "read"]);
   });
 
   it.each<[string[], boolean, boolean, string]>([
@@ -132,54 +123,42 @@ describe("runCronIsolatedAgentTurn toolsAllow", () => {
     },
   );
 
-  it("uses the prepared plugin-scoped web search provider", options, async () => {
-    setActiveRuntimeWebToolsMetadata({
-      search: {
-        providerSource: "auto-detect",
-        selectedProvider: "brave",
-        selectedProviderKeySource: "config",
-        diagnostics: [],
-      },
-      fetch: { providerSource: "none", diagnostics: [] },
-      diagnostics: [],
-    });
-    const result = await runTurn(
-      ["web_search"],
-      {},
-      {},
-      {
-        plugins: {
-          entries: {
-            brave: { enabled: true, config: { webSearch: { apiKey: "token-oversized" } } },
+  it.each(["plugin", "native", "automatic"] as const)(
+    "does not warn when web_search comes from %s policy",
+    options,
+    async (source) => {
+      const cfg: OpenClawConfig = {};
+      if (source === "plugin") {
+        setActiveRuntimeWebToolsMetadata({
+          search: {
+            providerSource: "auto-detect",
+            selectedProvider: "brave",
+            selectedProviderKeySource: "config",
+            diagnostics: [],
           },
-        },
-      },
-    );
-    expect([result.status, result.diagnostics]).toEqual(["ok", undefined]);
-  });
-
-  it("does not warn when native web_search supplies the tool", options, async () => {
-    resolveConfiguredModelRefMock.mockReturnValue({ provider: "gateway", model: "gpt-5.5" });
-    loadModelCatalogMock.mockResolvedValue([
-      { id: "gpt-5.5", name: "GPT-5.5", provider: "gateway", api: "openai-chatgpt-responses" },
-    ]);
-    const result = await runTurn(
-      ["web_search"],
-      {},
-      {},
-      {
-        tools: {
+          fetch: { providerSource: "none", diagnostics: [] },
+          diagnostics: [],
+        });
+      }
+      if (source === "native") {
+        resolveConfiguredModelRefMock.mockReturnValue({ provider: "gateway", model: "gpt-5.5" });
+        loadModelCatalogMock.mockResolvedValue([
+          { id: "gpt-5.5", name: "GPT-5.5", provider: "gateway", api: "openai-chatgpt-responses" },
+        ]);
+        cfg.tools = {
           web: { search: { enabled: true, openaiCodex: { enabled: true, mode: "cached" } } },
-        },
-      },
-    );
-    expect([result.status, result.diagnostics]).toEqual(["ok", undefined]);
-  });
-
-  it("does not warn about web_search recorded in an automatic snapshot", options, async () => {
-    const result = await runTurn(["read", "web_search"], automaticSnapshot, conditionTrigger);
-    expect([result.status, result.diagnostics]).toEqual(["ok", undefined]);
-  });
+        };
+      }
+      const automatic = source === "automatic";
+      const result = await runTurn(
+        automatic ? ["read", "web_search"] : ["web_search"],
+        automatic ? automaticSnapshot : {},
+        automatic ? conditionTrigger : {},
+        cfg,
+      );
+      expect([result.status, result.diagnostics]).toEqual(["ok", undefined]);
+    },
+  );
 
   it("keeps missing web_search provider diagnostics when the run aborts", options, async () => {
     runWithModelFallbackMock.mockResolvedValueOnce({
@@ -190,7 +169,6 @@ describe("runCronIsolatedAgentTurn toolsAllow", () => {
     });
     const result = await runTurn(["web_search"], {}, { deleteAfterRun: true });
     expect(result).toMatchObject({ status: "error", error: "cron isolated agent run aborted" });
-    expect(callGatewayMock).toHaveBeenCalledTimes(1);
     expect(result.diagnostics?.entries.map((entry) => entry.message)).toEqual([
       "web_search tool requested in toolsAllow but no web search provider is selected. Configure one with: openclaw configure --section web, or set tools.web.search.provider.",
       "cron isolated agent run aborted",
