@@ -18,8 +18,17 @@ import {
   type ReefAuditStateRecord,
   verifyReefAuditWindow,
 } from "../../extensions/reef/src/audit-state-format.js";
+import {
+  REEF_DELIVERY_STORE_OPTIONS,
+  ReefOutboundDeliverySchema,
+} from "../../extensions/reef/src/trust-store-format.js";
 import { stopChild, delay } from "../lib/gateway-bench-child.ts";
 import { getFreePort } from "../lib/gateway-bench-probes.ts";
+import {
+  measureGatewayCpuUsage,
+  readGatewayCpuUsage,
+  readGatewayResources,
+} from "../lib/gateway-bench-profile.ts";
 import {
   BASE_GATEWAY_BENCH_CONFIG,
   buildGatewayBenchChildArgs,
@@ -38,6 +47,7 @@ const { values } = parseArgs({
     seconds: { type: "string", default: "90" },
     messages: { type: "string", default: "18" },
     receipts: { type: "string", default: "0" },
+    "pending-delivery": { type: "boolean", default: false },
     "audit-prefill": { type: "boolean", default: false },
     "expired-peer": { type: "boolean", default: false },
     "expired-audit-orphan": { type: "boolean", default: false },
@@ -261,6 +271,23 @@ try {
         },
       },
     );
+    if (values["pending-delivery"]) {
+      const deliveries = createPluginStateKeyedStoreV2("reef", REEF_DELIVERY_STORE_OPTIONS, {
+        assertCurrent() {},
+      });
+      await deliveries.register(
+        `${sha256Hex(new TextEncoder().encode(`${relayUrl}\nreceiver`))}:sender:01J00000000000000000000000`,
+        ReefOutboundDeliverySchema.parse({
+          bodyHash: "0".repeat(64),
+          recipient: {
+            ed25519PublicKey: sender.signing.publicKey,
+            x25519PublicKey: sender.encryption.publicKey,
+            keyEpoch: 1,
+          },
+          sentAt: Date.now(),
+        }),
+      );
+    }
     const reviews = seed("reviews", 2000);
     for (const { review } of envelopes) {
       await reviews.register(review.approvalDigest, { review });
@@ -332,6 +359,14 @@ try {
       "--import",
       networkGuard,
       ...gatewayBenchCpuProfileArgs(values.profile ? path.join(output, "profiles") : undefined),
+      ...(values.profile
+        ? [
+            "--import",
+            "./scripts/tsx.mjs",
+            "--import",
+            "./scripts/lib/gateway-bench-profile-preload.ts",
+          ]
+        : []),
     ]),
     {
       env: {
@@ -339,7 +374,7 @@ try {
         NODE_OPTIONS: `--require=${path.resolve(values.observer)} --enable-source-maps`,
         SQLMEASURE_OUT: sql,
       },
-      stdio: ["ignore", log, log],
+      stdio: values.profile ? ["ignore", log, log, "ipc"] : ["ignore", log, log],
       detached: true,
     },
   );
@@ -381,18 +416,31 @@ try {
     }
     // Keep startup reconciliation out of the warm polling phase.
     await delay(40_000);
+    const beforeResources = values.profile
+      ? await readGatewayResources(child, { includeWorkers: true })
+      : undefined;
+    const beforeCpu = values.profile
+      ? await readGatewayCpuUsage(child, { includeWorkers: true })
+      : undefined;
     const initialPolls = polls;
     writeFileSync(path.join(sql, "phase"), "steady");
     const started = performance.now();
     await delay(seconds * 1000);
     const durationMs = performance.now() - started;
+    const afterCpu = values.profile
+      ? await readGatewayCpuUsage(child, { includeWorkers: true })
+      : undefined;
     writeFileSync(path.join(sql, "phase"), "shutdown");
+    const afterResources = values.profile
+      ? await readGatewayResources(child, { includeWorkers: true })
+      : undefined;
     if (child.exitCode !== null || child.signalCode !== null) {
       throw new Error("Gateway exited during measurement");
     }
     const result = {
       messageCount,
       receiptCount,
+      pendingDelivery: values["pending-delivery"],
       auditPrefill: values["audit-prefill"],
       expiredPeer: values["expired-peer"],
       expiredAuditOrphan: values["expired-audit-orphan"],
@@ -401,12 +449,23 @@ try {
       steadyPolls: polls - initialPolls,
       acknowledgments,
       unexpectedRequests,
+      ...(beforeCpu && afterCpu ? { cpu: measureGatewayCpuUsage(beforeCpu, afterCpu) } : {}),
+      ...(beforeResources && afterResources
+        ? { resources: { before: beforeResources, after: afterResources } }
+        : {}),
     };
     writeFileSync(path.join(output, "result.json"), JSON.stringify(result, null, 2));
     console.log(JSON.stringify(result));
   } finally {
-    await stopChild(child, { teardownGraceMs: 15_000 });
-    closeSync(log);
+    try {
+      const shutdown = await stopChild(child, { teardownGraceMs: 15_000 });
+      writeFileSync(path.join(output, "shutdown.json"), JSON.stringify(shutdown, null, 2));
+      if (shutdown.exitCode !== 0 || shutdown.signal !== null) {
+        throw new Error("Gateway shutdown failed; inspect shutdown.json");
+      }
+    } finally {
+      closeSync(log);
+    }
   }
   if (receiptCount > 0 || values["audit-prefill"]) {
     try {
