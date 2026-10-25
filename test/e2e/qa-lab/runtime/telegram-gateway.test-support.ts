@@ -139,7 +139,6 @@ export function createTelegramApi(options: {
   token: string;
   bot: Record<string, unknown>;
   chat: Record<string, unknown>;
-  chatDetails?: Record<string, unknown>;
   messageId?: (callCount: number) => number;
   now?: () => number;
 }) {
@@ -161,7 +160,7 @@ export function createTelegramApi(options: {
       } else if (method === "getUpdates") {
         updates.poll(res);
       } else if (method === "getChat") {
-        succeedTelegram(res, { ...options.chat, ...options.chatDetails });
+        succeedTelegram(res, { ...options.chat });
       } else if (method === "sendMessage") {
         succeedTelegram(res, {
           message_id: options.messageId?.(calls.length) ?? 9001,

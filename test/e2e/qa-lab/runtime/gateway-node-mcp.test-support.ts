@@ -68,16 +68,7 @@ export async function createMcpPlacement(root: string, placement: "node" | "sess
     workspaceDir,
     env,
     servers: (fixture: HttpFixture, extra?: Record<string, string>) =>
-      createMcpServers({
-        placement,
-        fixture,
-        stdioEnv: env(extra),
-        repoRoot: process.cwd(),
-        fixturePath: path.join(
-          process.cwd(),
-          "test/e2e/qa-lab/runtime/gateway-node-mcp.fixture.mjs",
-        ),
-      }),
+      createMcpServers(placement, fixture, env(extra)),
     hostEnv: (token: string) =>
       env({
         OPENCLAW_HOME: home,
@@ -491,13 +482,13 @@ export async function invokeNodeMcp(
   return parseProbeResult(await invokeNodeMcpPayload(params));
 }
 
-function createMcpServers(params: {
-  placement: "session" | "node";
-  fixture: HttpFixture;
-  stdioEnv: Record<string, string>;
-  fixturePath: string;
-  repoRoot: string;
-}): Record<string, McpServerConfig> {
+function createMcpServers(
+  placement: "session" | "node",
+  fixture: HttpFixture,
+  stdioEnv: Record<string, string>,
+): Record<string, McpServerConfig> {
+  const repoRoot = process.cwd();
+  const fixturePath = path.join(repoRoot, "test/e2e/qa-lab/runtime/gateway-node-mcp.fixture.mjs");
   const common = {
     connectionTimeoutMs: WAIT_TIMEOUT_MS,
     requestTimeoutMs: WAIT_TIMEOUT_MS,
@@ -508,19 +499,19 @@ function createMcpServers(params: {
       ...common,
       transport: "stdio",
       command: process.execPath,
-      args: [params.fixturePath, "stdio", "--label", `${params.placement}-stdio`],
-      cwd: params.repoRoot,
-      env: params.stdioEnv,
+      args: [fixturePath, "stdio", "--label", `${placement}-stdio`],
+      cwd: repoRoot,
+      env: stdioEnv,
     },
     streamableHttp: {
       ...common,
       transport: "streamable-http",
-      url: params.fixture.urls.streamableHttp,
+      url: fixture.urls.streamableHttp,
     },
     sse: {
       ...common,
       transport: "sse",
-      url: params.fixture.urls.sse,
+      url: fixture.urls.sse,
     },
   };
 }
