@@ -156,6 +156,7 @@ function CardMenuContent(props: { workboard: WorkboardProps; card: WorkboardCard
         <button
           class="btn"
           type="button"
+          autofocus
           aria-label={t("workboard.viewDetails")}
           aria-haspopup="dialog"
           aria-expanded={detailOpen() ? "true" : "false"}
