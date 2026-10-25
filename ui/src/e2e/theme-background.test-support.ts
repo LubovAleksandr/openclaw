@@ -182,6 +182,8 @@ export async function readArtwork(shell: Locator, detail?: "fingerprint" | "colo
       }
       const rgba = pixels.getImageData(x, y, width, height).data;
       const alpha = foreground[3]! / 255;
+      const opaqueLuminance =
+        alpha === 1 ? luminance(foreground[0]!, foreground[1]!, foreground[2]!) : null;
       let minimum = Infinity;
       for (let offset = 0; offset < rgba.length; offset += 4) {
         const red = rgba[offset]!;
@@ -191,11 +193,13 @@ export async function readArtwork(shell: Locator, detail?: "fingerprint" | "colo
           visiblePaintedPixels += 1;
         }
         const bg = luminance(red, green, blue);
-        const fg = luminance(
-          foreground[0]! * alpha + red * (1 - alpha),
-          foreground[1]! * alpha + green * (1 - alpha),
-          foreground[2]! * alpha + blue * (1 - alpha),
-        );
+        const fg =
+          opaqueLuminance ??
+          luminance(
+            foreground[0]! * alpha + red * (1 - alpha),
+            foreground[1]! * alpha + green * (1 - alpha),
+            foreground[2]! * alpha + blue * (1 - alpha),
+          );
         minimum = Math.min(minimum, (Math.max(fg, bg) + 0.05) / (Math.min(fg, bg) + 0.05));
       }
       return minimum;
