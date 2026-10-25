@@ -5,6 +5,11 @@ export class TranscriptInitialRange {
   pending = true;
   private tailRows: number;
   private viewportOnly = false;
+  private preparingOverscan = false;
+
+  get measuring(): boolean {
+    return this.pending || this.preparingOverscan;
+  }
 
   constructor(
     initialOffset: number | null,
@@ -57,6 +62,7 @@ export class TranscriptInitialRange {
     if (!this.tailRows && !this.viewportOnly) {
       return;
     }
+    this.preparingOverscan = this.viewportOnly && !viewportOnly;
     // The measured viewport stays adaptive; offscreen rows wait for reader navigation.
     this.tailRows = 0;
     this.viewportOnly = viewportOnly;
@@ -64,7 +70,16 @@ export class TranscriptInitialRange {
     this.invalidate();
   }
 
+  complete(): void {
+    if (this.pending) {
+      this.finish(true);
+    } else {
+      this.preparingOverscan = false;
+    }
+  }
+
   disconnect(): void {
+    this.preparingOverscan = false;
     if (!this.pending && (this.tailRows || this.viewportOnly)) {
       this.tailRows = 0;
       this.viewportOnly = false;

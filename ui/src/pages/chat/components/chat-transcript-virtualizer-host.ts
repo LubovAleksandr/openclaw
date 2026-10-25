@@ -534,7 +534,7 @@ export class ChatSessionVirtualizerHost implements ChatTranscriptSession {
           measureRowRefFor: (key) => this.rowRefs.forKey(key),
           measureRows:
             // The first correction reveals new rows; their real sizes must land before retiring the anchor.
-            this.initialRange.pending ||
+            this.initialRange.measuring ||
             this.prependAnchor.messageKey !== null ||
             this.offsetState.scrollCommand?.target === "message" ||
             this.offsetState.scrollCommand?.target === "index",
@@ -725,7 +725,7 @@ export class ChatSessionVirtualizerHost implements ChatTranscriptSession {
 
   private queueLayout(): void {
     if (
-      (this.initialRange.pending && this.rowKeys.length) ||
+      (this.initialRange.measuring && this.rowKeys.length) ||
       this.offsetState.scrollCommand?.target === "message"
     ) {
       this.renderer.queueAfterCommit(this.completeLayout);
@@ -743,12 +743,12 @@ export class ChatSessionVirtualizerHost implements ChatTranscriptSession {
       this.messageRowKeysById,
       this.rowIndexesByKey,
     );
-    if (!this.initialRange.pending || !this.rowKeys.length || !this.scrollElement?.clientHeight) {
+    if (!this.initialRange.measuring || !this.rowKeys.length || !this.scrollElement?.clientHeight) {
       return;
     }
     this.syncViewportGeometry();
     const measured = this.presentation.measureRows();
-    if (this.initialRange.extend(this.scrollElement) || measured) {
+    if ((this.initialRange.pending && this.initialRange.extend(this.scrollElement)) || measured) {
       this.invalidate();
       return;
     }
@@ -765,7 +765,7 @@ export class ChatSessionVirtualizerHost implements ChatTranscriptSession {
       this.offsetState.syncNativeOffset?.();
     }
     if (isTranscriptRangeCommitted(this.threadInnerElement, this.virtualizer)) {
-      this.initialRange.finish(true);
+      this.initialRange.complete();
       this.renderer.syncInitialPosition();
     }
     this.invalidate();
