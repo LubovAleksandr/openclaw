@@ -4741,7 +4741,6 @@ const PR_EXEMPT_RUNTIME_TEST_FILES = [
   "src/proxy-capture/runtime.guarded-fetch.test.ts",
   "src/sessions/session-state-events.test.ts",
   "src/skills/library/persistence.test.ts",
-  "src/skills/library/resource-read.test.ts",
   "src/skills/lifecycle/upload-store-lifecycle.test.ts",
   "src/skills/runtime/refresh.symbolic-source.integration.test.ts",
   "src/state/agent-database-admission.test.ts",
