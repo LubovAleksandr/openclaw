@@ -66,6 +66,9 @@ const { values } = parseArgs({
     "invalidation-tracking": { type: "boolean", default: false },
     "resource-counts": { type: "boolean", default: false },
     "process-wakeups": { type: "boolean", default: false },
+    "renderer-process-metrics": { type: "boolean", default: false },
+    counterbalance: { type: "boolean", default: false },
+    "asset-latency-ms": { type: "string", default: "0" },
     "projection-fixtures": { type: "boolean", default: false },
     "projection-counts": { type: "boolean", default: false },
     headed: { type: "boolean", default: false },
@@ -87,6 +90,10 @@ if (values.theme !== "light" && values.theme !== "dark") {
 const theme = values.theme;
 const pairs = Number(values.pairs);
 const cpuThrottle = Number(values["cpu-throttle"]);
+const assetLatencyMs = Number(values["asset-latency-ms"]);
+if (!Number.isFinite(assetLatencyMs) || assetLatencyMs < 0) {
+  throw new Error("asset-latency-ms must be nonnegative");
+}
 if (!Number.isFinite(cpuThrottle) || cpuThrottle < 1) {
   throw new Error("cpu-throttle must be at least 1");
 }
@@ -126,10 +133,52 @@ async function settle(page: Page) {
   );
 }
 
-async function metrics(cdp: CDPSession) {
+async function metrics(
+  cdp: CDPSession,
+): Promise<Record<string, number> & { JSHeapUsedSize: number }> {
   const result: { metrics: Array<{ name: string; value: number }> } =
     await cdp.send("Performance.getMetrics");
-  return Object.fromEntries(result.metrics.map(({ name, value }) => [name, value]));
+  const measured = Object.fromEntries(result.metrics.map(({ name, value }) => [name, value]));
+  const heapUsed = measured.JSHeapUsedSize;
+  if (heapUsed === undefined) {
+    throw new Error("Chromium did not report the required JS heap metric");
+  }
+  return { ...measured, JSHeapUsedSize: heapUsed };
+}
+
+type RendererProcessSnapshot = Array<{ id: number; cpuSeconds: number; rssBytes: number }>;
+
+async function rendererProcesses(cdp: CDPSession): Promise<RendererProcessSnapshot> {
+  const { processInfo }: { processInfo: Array<{ id: number; type: string; cpuTime: number }> } =
+    await cdp.send("SystemInfo.getProcessInfo");
+  const renderers = processInfo.filter(({ type }) => type === "renderer");
+  if (
+    !renderers.length ||
+    renderers.some(
+      ({ id, cpuTime }) => !Number.isSafeInteger(id) || id <= 0 || !Number.isFinite(cpuTime),
+    )
+  ) {
+    throw new Error("The owned browser did not provide valid renderer processes");
+  }
+  // Only CDP-reported PIDs from this benchmark-owned browser reach ps.
+  const rows = execFileSync(
+    "/bin/ps",
+    ["-o", "pid=,rss=", "-p", renderers.map(({ id }) => id).join(",")],
+    {
+      encoding: "utf8",
+      timeout: 10_000,
+    },
+  )
+    .trim()
+    .split("\n")
+    .map((line) => line.trim().split(/\s+/).map(Number));
+  return renderers.map(({ id, cpuTime }) => {
+    const rss = rows.find(([pid]) => pid === id)?.[1];
+    if (rss === undefined || !Number.isFinite(rss) || rss < 0) {
+      throw new Error(`Renderer ${id} did not supply a valid RSS snapshot`);
+    }
+    return { id, cpuSeconds: cpuTime, rssBytes: rss * 1024 };
+  });
 }
 
 function distribution(numbers: number[]) {
@@ -273,6 +322,15 @@ type Result = {
   heapBeforeBytes?: number;
   heapAfterBytes?: number;
   heapDeltaBytes?: number;
+  rendererCpuMs?: number;
+  rendererRssBeforeBytes?: number;
+  rendererRssAfterBytes?: number;
+  rendererProcessMetrics?: {
+    before?: RendererProcessSnapshot;
+    after?: RendererProcessSnapshot;
+    complete: boolean;
+    error?: string;
+  };
   durationBreakdownMs?: Record<string, number>;
   longTasks?: { count: number; totalMs: number; maxMs: number };
   requests?: Record<string, number>;
@@ -286,7 +344,11 @@ type Result = {
   projectionFixture?: ProjectionFixtureFacts;
   projectionCoverageArtifact?: string;
   projectionScreenshotArtifact?: string;
-  measurementClass?: "production-interaction" | "projection-counter" | "projection-cpu";
+  measurementClass?:
+    | "production-interaction"
+    | "projection-counter"
+    | "projection-cpu"
+    | "diagnostic";
   skipReason?: string;
   trace?: ReturnType<typeof summarizeInteractionTrace>;
   longTaskDetails?: ReturnType<typeof summarizeLongTaskCpuProfiles>;
@@ -483,7 +545,7 @@ try {
       build,
       indexSha256: createHash("sha256").update(html).digest("hex"),
       projectionBuild,
-      server: await startControlUiBenchGatewayServer(resolved),
+      server: await startControlUiBenchGatewayServer(resolved, 0, assetLatencyMs),
     });
   }
   await writeFile(
@@ -504,6 +566,18 @@ try {
           : "untraced CDP metrics",
         metricTimeDomain: values["thread-cpu-time"] ? "threadTicks" : "timeTicks",
         cpuThrottle,
+        pairOrder: values.counterbalance ? "AB/BA alternating by pair" : "AB",
+        assetLatency: {
+          milliseconds: assetLatencyMs,
+          scope:
+            "Simulated asset RTT: response delay for every owned HTTP-server request, including worker modules; no bandwidth shaping or Gateway/provider delay.",
+        },
+        rendererProcessMetrics: values["renderer-process-metrics"]
+          ? "CDP whole-renderer-process CPU (including dedicated workers), plus ps RSS endpoint snapshots; not retained heap or GPU memory."
+          : false,
+        heavyContentWorkerObservation: scenarios.some(({ id }) => id.startsWith("heavy-"))
+          ? "Benchmark init script observes only markdown-code-highlight Worker starts, replies, errors, termination and live count."
+          : false,
         mobileTouchEmulation: true,
         screenshots: values["first-pair-screenshots"] ? "first pair per cell" : "all",
         resourceCounts: values["resource-counts"]
@@ -551,13 +625,14 @@ try {
         exclusions: [
           "No live Gateway/provider",
           "No sidebar text input exists; measure command palette search separately",
-          "No fake clocks, Lit probes or simulated transport delay",
+          "No fake clocks or Lit probes; optional simulated asset delay is recorded above",
         ],
-        scenarios: scenarios.map(({ id, route, expected, fixture }) => ({
+        scenarios: scenarios.map(({ id, route, expected, fixture, diagnostic }) => ({
           id,
           route,
           expected,
           fixture,
+          diagnostic,
         })),
         viewports,
         bundles: servers.map(({ directory, build, indexSha256, projectionBuild }) => ({
@@ -576,7 +651,11 @@ try {
       for (let pair = 0; pair < pairs; pair++) {
         const startedAt = new Date().toISOString();
         const startLoad = os.loadavg();
-        for (const [bundle, slot] of servers.entries()) {
+        const slots = [...servers.entries()];
+        if (values.counterbalance && pair % 2 === 1) {
+          slots.reverse();
+        }
+        for (const [bundle, slot] of slots) {
           const nativeVisibility =
             scenario.visibility === "hidden" && values.headed
               ? await launchNativeVisibilityContext()
@@ -713,11 +792,13 @@ try {
               await cdp.send("Network.setBypassServiceWorker", { bypass: false });
               await cdp.send("Network.disable");
             }
-            result.measurementClass = scenario.projectionFamily
-              ? values["projection-counts"]
-                ? "projection-counter"
-                : "projection-cpu"
-              : "production-interaction";
+            result.measurementClass = scenario.diagnostic
+              ? "diagnostic"
+              : scenario.projectionFamily
+                ? values["projection-counts"]
+                  ? "projection-counter"
+                  : "projection-cpu"
+                : "production-interaction";
             if (scenario.projectionFamily) {
               result.projectionFixture = await prepareProjectionFixture(
                 page,
@@ -869,6 +950,22 @@ try {
                 }
               }
             }
+            if (values["renderer-process-metrics"]) {
+              const observation: NonNullable<Result["rendererProcessMetrics"]> = {
+                complete: false,
+              };
+              result.rendererProcessMetrics = observation;
+              try {
+                const ownedBrowser = context.browser();
+                if (!ownedBrowser) {
+                  throw new Error("Active context has no owned Chromium browser");
+                }
+                processSession ??= await ownedBrowser.newBrowserCDPSession();
+                observation.before = await rendererProcesses(processSession);
+              } catch (error) {
+                observation.error = String(error);
+              }
+            }
             const taskProbe = await page.evaluateHandle(() => {
               const durations: number[] = [];
               const observer = new PerformanceObserver((list) => {
@@ -900,6 +997,40 @@ try {
               result.projectionCoverageArtifact = artifact;
             }
             const after = await metrics(cdp);
+            if (processSession && result.rendererProcessMetrics?.before) {
+              const observation = result.rendererProcessMetrics;
+              try {
+                observation.after = await rendererProcesses(processSession);
+                const beforeRows = observation.before!;
+                const afterRows = observation.after;
+                if (
+                  beforeRows.length !== afterRows.length ||
+                  beforeRows.some(({ id }) => !afterRows.some((row) => row.id === id))
+                ) {
+                  throw new Error("Owned renderer process set changed during the interval");
+                }
+                const cpuSeconds = afterRows.reduce(
+                  (sum, row) =>
+                    sum + row.cpuSeconds - beforeRows.find(({ id }) => id === row.id)!.cpuSeconds,
+                  0,
+                );
+                if (cpuSeconds < 0) {
+                  throw new Error("Owned renderer CPU counters moved backwards");
+                }
+                result.rendererCpuMs = cpuSeconds * 1000;
+                result.rendererRssBeforeBytes = beforeRows.reduce(
+                  (sum, row) => sum + row.rssBytes,
+                  0,
+                );
+                result.rendererRssAfterBytes = afterRows.reduce(
+                  (sum, row) => sum + row.rssBytes,
+                  0,
+                );
+                observation.complete = true;
+              } catch (error) {
+                observation.error = String(error);
+              }
+            }
             result.heapBeforeBytes = before.JSHeapUsedSize;
             result.heapAfterBytes = after.JSHeapUsedSize;
             result.heapDeltaBytes = after.JSHeapUsedSize - before.JSHeapUsedSize;
@@ -1128,6 +1259,11 @@ try {
                     delete result.processWakeups.delta;
                     result.processWakeups.reason = `Process session cleanup failed: ${String(error)}`;
                   }
+                  if (result.rendererProcessMetrics) {
+                    result.rendererProcessMetrics.complete = false;
+                    delete result.rendererCpuMs;
+                    result.rendererProcessMetrics.error = `Process session cleanup failed: ${String(error)}`;
+                  }
                 }
               }
               if (scenario.projectionFamily) {
@@ -1179,7 +1315,7 @@ try {
 }
 const summary = viewports
   .flatMap(({ name }) =>
-    scenarios.flatMap(({ id }) =>
+    scenarios.flatMap(({ id, diagnostic }) =>
       servers.map((_, bundle) => {
         const samples = results.filter(
           (row) =>
@@ -1227,9 +1363,21 @@ const summary = viewports
                 )
               : undefined,
           metrics: Object.fromEntries(
-            (["wallMs", "scriptMs", "taskMs", "layoutMs", "styleMs"] as const).map((metric) => [
+            (
+              [
+                "wallMs",
+                "scriptMs",
+                "taskMs",
+                "layoutMs",
+                "styleMs",
+                ...(values["renderer-process-metrics"] ? ["rendererCpuMs" as const] : []),
+              ] as const
+            ).map((metric) => [
               metric,
-              samples.length && !values["projection-counts"]
+              !diagnostic &&
+              samples.length &&
+              !values["projection-counts"] &&
+              samples.every((row) => row[metric] !== undefined)
                 ? distribution(samples.map((row) => row[metric]!))
                 : null,
             ]),
@@ -1276,6 +1424,9 @@ await writeFile(
       skipped: results.filter((row) => row.status === "skipped").length,
       processWakeupsIncomplete: values["process-wakeups"]
         ? results.filter((row) => row.processWakeups?.complete !== true).length
+        : undefined,
+      rendererProcessMetricsIncomplete: values["renderer-process-metrics"]
+        ? results.filter((row) => row.rendererProcessMetrics?.complete !== true).length
         : undefined,
       summary,
     },
