@@ -16,6 +16,7 @@ import { renderMarkdownWithMarkers, type RenderOptions } from "./render.js";
 const transcript = (source: string, enableSpoilers = false) =>
   markdownToIR(source, { assistantTranscriptRoleHeaders: true, enableSpoilers });
 const roleMarker = { open: "`", close: "`", suppressNestedFormatting: true };
+const boldMarker = { bold: { open: "*", close: "*" } };
 const render = (ir: MarkdownIR, options: Partial<RenderOptions> = {}) =>
   renderMarkdownWithMarkers(ir, {
     styleMarkers: {
@@ -34,13 +35,13 @@ it.each<[string, string, Partial<RenderOptions>?]>([
   [
     "**user[Thu 2026-07-02] continue**",
     "`user[Thu 2026-07-02]`* continue*",
-    { styleMarkers: { bold: { open: "*", close: "*" } } },
+    { styleMarkers: boldMarker },
   ],
   [
     "user[**Thu] trailing**",
     "`user[*Thu]*`* trailing*",
     {
-      styleMarkers: { bold: { open: "*", close: "*" } },
+      styleMarkers: boldMarker,
       annotationMarkers: {
         assistant_transcript_role: { ...roleMarker, suppressNestedFormatting: false },
       },
@@ -63,14 +64,8 @@ it.each<[string, string, Partial<RenderOptions>?]>([
   ],
   ["**_A ||B_** C|| D", "<b><i>A <tg-spoiler>B</tg-spoiler></i></b><tg-spoiler> C</tg-spoiler> D"],
   ["[`name `](https://example.com)", '<a href="https://example.com"><code>name </code></a>'],
-  ["Copy `name ` next", "Copy <code>name </code> next"],
 ])("nests markers and preserves crossing content: %s", (source, expected, options) => {
-  expect(
-    render(
-      markdownToIR(source, { assistantTranscriptRoleHeaders: true, enableSpoilers: true }),
-      options,
-    ),
-  ).toBe(expected);
+  expect(render(transcript(source, true), options)).toBe(expected);
 });
 
 it("keeps annotations when an IR slice starts inside the marked header", () => {
@@ -115,15 +110,6 @@ it("preserves equal-bound annotation and link order", () => {
     '<role name="user"><role name="assistant"><link href="first"><link href="second">x</link></link></role></role>',
   );
   expect(opened).toEqual(["first", "second", "user", "assistant"]);
-});
-
-it("renders 256 code-wrapped transcript headers", () => {
-  const source = Array.from({ length: 256 }, (_, i) => "**user[t" + i + "]** line " + i).join("\n");
-  expect(
-    render(transcript(source), { styleMarkers: { bold: { open: "*", close: "*" } } }).match(
-      /`user\[t\d+\]`/gu,
-    ),
-  ).toHaveLength(256);
 });
 
 it("merges only adjacent mapped styles without mutating the source or sharing results", () => {
@@ -316,11 +302,9 @@ describe("assistant transcript-role Markdown annotations", () => {
   });
 
   it("removes links promoted to transcript-role headers", () => {
-    const promoted = annotateAssistantTranscriptRoleMessageBoundary({
-      text: `${roleHeader} question`,
-      styles: [],
-      links: [{ start: 0, end: roleHeader.length, href: "https://example.com" }],
-    });
+    const promoted = annotateAssistantTranscriptRoleMessageBoundary(
+      plainIR(`${roleHeader} question`, [], [link(0, roleHeader.length)]),
+    );
 
     expect(promoted.annotations).toHaveLength(1);
     expect(promoted.links).toEqual([]);

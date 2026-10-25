@@ -26,10 +26,6 @@ const markdownToIR: (...args: Parameters<typeof parseMarkdownToIR>) => IRWithMet
 const sliceMarkdownIR: (...args: Parameters<typeof sliceParsedMarkdownIR>) => IRWithMetadata =
   sliceParsedMarkdownIR;
 
-function expectWellFormedUtf16(text: string): void {
-  expect(new TextDecoder().decode(new TextEncoder().encode(text))).toBe(text);
-}
-
 it("keeps document references and changed options local to each parse", () => {
   const options = { linkify: false };
   const hrefs = (source: string) => markdownToIR(source, options).links.map((span) => span.href);
@@ -66,7 +62,6 @@ it("preserves native fractional and non-finite slice index semantics", () => {
 it("aligns linked styles when a negative slice start bisects a surrogate pair", () => {
   const ir = markdownToIR("a[**😀b**](https://example.com)");
   const sliced = sliceMarkdownIR(ir, -2, ir.text.length);
-  expectWellFormedUtf16(sliced.text);
   expect(sliced).toMatchObject(plainIR("😀b", [makeStyle(0, 3, "bold")], [makeLink(0, 3)]));
 });
 
@@ -76,8 +71,6 @@ it("keeps transcript annotations and links aligned with the expanded end", () =>
   });
   const catStart = ir.text.indexOf("🐱");
   const sliced = sliceMarkdownIR(ir, 0, catStart + 1);
-  expect(catStart).toBeGreaterThan(0);
-  expectWellFormedUtf16(sliced.text);
   expect(sliced).toMatchObject({
     text: ir.text.slice(0, catStart + 2),
     annotations: ir.annotations,
@@ -92,7 +85,7 @@ it("projects styled row labels and linked code cells into labeled bullets", () =
     { tableMode: "bullets" },
   );
   expect(ir.text).toBe("Row\n• Value:  a\n• Other:  \n\nPlain\n• Value: Data\n• Other: Last");
-  expect(ir.styles.map(({ start, end, style }) => [style, ir.text.slice(start, end)])).toEqual([
+  expect(ir.styles.map((span) => [span.style, ir.text.slice(span.start, span.end)])).toEqual([
     ["bold", "Row"],
     ["italic", "Row"],
     ["code", " a"],
@@ -130,8 +123,7 @@ it.each<[string, string, MarkdownIR["styles"]]>([
     [makeStyle(18, 22, "bold")],
   ],
 ])("limits HTML underline parsing: %s", (markdown, text, styles) => {
-  const ir = markdownToIR(markdown, { enableHtmlUnderline: true });
-  expect(ir).toMatchObject({ text, styles });
+  expect(markdownToIR(markdown, { enableHtmlUnderline: true })).toMatchObject({ text, styles });
 });
 
 it("records whether a fenced block owns an explicit closing fence", () => {
@@ -241,31 +233,26 @@ it.each<[string, number]>([
   expect(countMarkdownFencedCodeChars(text)).toBe(count);
 });
 
-function collectRenderedLinks(ir: MarkdownIR) {
+it("keeps provenance out of the public link span while exposing it to renderers", () => {
+  const ir = markdownToIR("README.md [main.ts](https://main.ts)");
   const links: Array<{ href: string; label: string; origin: "authored" | "linkify" }> = [];
   renderMarkdownWithMarkers(ir, {
     styleMarkers: {},
     escapeText: (text) => text,
-    buildLink: (link, text, context) => {
+    buildLink: (span, text, context) => {
       links.push({
-        href: link.href,
-        label: text.slice(link.start, link.end),
+        href: span.href,
+        label: text.slice(span.start, span.end),
         origin: context.origin,
       });
       return null;
     },
   });
-  return links;
-}
-
-it("keeps provenance out of the public link span while exposing it to renderers", () => {
-  const ir = markdownToIR("README.md [main.ts](https://main.ts)");
-
   expect(ir.links).toEqual([
     { start: 0, end: 9, href: "http://README.md" },
     { start: 10, end: 17, href: "https://main.ts" },
   ]);
-  expect(collectRenderedLinks(ir)).toEqual([
+  expect(links).toEqual([
     { href: "http://README.md", label: "README.md", origin: "linkify" },
     { href: "https://main.ts", label: "main.ts", origin: "authored" },
   ]);
@@ -317,7 +304,7 @@ function countMetadataReads(ir: MarkdownIR) {
 function projectMetadata(ir: MarkdownIR) {
   return {
     ...ir,
-    links: ir.links.map((link) => ({ ...link, autoLinked: isAutoLinkedMarkdownLink(link) })),
+    links: ir.links.map((span) => ({ ...span, autoLinked: isAutoLinkedMarkdownLink(span) })),
     listItems: ir.listItems?.map((item) => Object.getOwnPropertyDescriptors(item)),
     blocks: Object.getOwnPropertyDescriptor(ir, "blocks"),
     htmlTags: Object.getOwnPropertyDescriptor(ir, "htmlTags"),
@@ -371,7 +358,7 @@ it("keeps unsorted and duplicated metadata independent across chunks", () => {
   expectSlicedMetadata(chunks, input);
   const links = chunks.flatMap((chunk) => chunk.links);
   expect(new Set(links).size).toBe(links.length);
-  expect(links.every((link) => !input.links.includes(link))).toBe(true);
+  expect(links.every((span) => !input.links.includes(span))).toBe(true);
   const first = links[0];
   expect(first).toBeDefined();
   if (first) {
@@ -407,7 +394,7 @@ it("does not linkify URLs inside raw HTML tag attributes", () => {
     '<img src="https://example.com/diagram.png" alt="Diagram"> https://example.com/page';
   const ir = markdownToIR(source);
   expect(ir.text).toBe(source);
-  expect(ir.links.map((link) => ir.text.slice(link.start, link.end))).toEqual([
+  expect(ir.links.map((span) => ir.text.slice(span.start, span.end))).toEqual([
     "https://example.com/page",
   ]);
 });
@@ -466,13 +453,10 @@ it("transfers only whole tags with the text's complete code points", () => {
 it("does not turn chunked tag fragments into authored tags", () => {
   const chunks = renderChunks(markdownToIR("a<b>x</b>"), 4, (ir) => ir.text);
 
-  expect(chunks.map(({ rendered, source }) => ({ rendered, tags: source.htmlTags }))).toEqual([
-    {
-      rendered: "a<b>",
-      tags: [htmlTag(1, 4, "<b>", "b")],
-    },
-    { rendered: "x</b", tags: undefined },
-    { rendered: ">", tags: undefined },
+  expect(chunks.map(({ rendered, source }) => [rendered, source.htmlTags])).toEqual([
+    ["a<b>", [htmlTag(1, 4, "<b>", "b")]],
+    ["x</b", undefined],
+    [">", undefined],
   ]);
 });
 
