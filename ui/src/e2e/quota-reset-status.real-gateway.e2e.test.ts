@@ -120,10 +120,11 @@ async function captureFinalStatus(
   expect(dashboard.code, reason ?? dashboard.stderr).toBe(0);
   const url = new URL("settings/model-providers", browserUrl);
   url.hash = new URL(browserUrl).hash;
-  const browser = await chromium.launch({
-    headless: true,
-    executablePath: inject("controlUiE2eChromium").executablePath,
-  });
+  const { wsEndpoint } = inject("controlUiE2eChromium");
+  if (!wsEndpoint) {
+    throw new Error("Control UI E2E requires its shared Chromium server");
+  }
+  const browser = await chromium.connect(wsEndpoint);
   try {
     const context = await browser.newContext({
       locale: "en-US",

@@ -246,43 +246,55 @@ export function defineGitHubPublicationAccountTests({
     },
   );
 
-  it.each([
-    { name: "reclaimed", state: "reclaimed", running: false, conflict: false, ready: true },
-    { name: "remote", state: "active", running: false, conflict: false, ready: false },
-    { name: "running", state: "reclaimed", running: true, conflict: false, ready: false },
-    { name: "conflicted", state: "reclaimed", running: false, conflict: true, ready: false },
-  ])(
-    "gates personal publication for a $name workspace",
-    async ({ state, running, conflict, ready }) => {
-      const now = Date.now();
-      const { page } = await openPublication({
-        sessions: [
-          createControlUiSessionRow("agent:main:main", "Publication workspace", now, {
-            hasActiveRun: running,
-            status: running ? "running" : "done",
-            placement: {
-              state,
-              generation: 1,
-              createdAtMs: now,
-              updatedAtMs: now,
-              stateChangedAtMs: now,
-              workspaceResultConflict: conflict
-                ? {
-                    paths: ["src/example.ts"],
-                    stagedResultRef: "refs/openclaw/worker-results/test",
-                    totalCount: 1,
-                  }
-                : undefined,
-            },
-          }),
-        ],
-      });
+  it("gates personal publication for each session's workspace", async () => {
+    const workspaces = [
+      { name: "reclaimed", state: "reclaimed", running: false, conflict: false, ready: true },
+      { name: "remote", state: "active", running: false, conflict: false, ready: false },
+      { name: "running", state: "reclaimed", running: true, conflict: false, ready: false },
+      { name: "conflicted", state: "reclaimed", running: false, conflict: true, ready: false },
+    ];
+    const now = Date.now();
+    const rows = workspaces.map(({ name, state, running, conflict }, index) =>
+      createControlUiSessionRow(
+        index === 0 ? "agent:main:main" : `agent:main:publication-${name}`,
+        `${name} publication workspace`,
+        now,
+        {
+          hasActiveRun: running,
+          status: running ? "running" : "done",
+          placement: {
+            state,
+            generation: 1,
+            createdAtMs: now,
+            updatedAtMs: now,
+            stateChangedAtMs: now,
+            workspaceResultConflict: conflict
+              ? {
+                  paths: ["src/example.ts"],
+                  stagedResultRef: "refs/openclaw/worker-results/test",
+                  totalCount: 1,
+                }
+              : undefined,
+          },
+        },
+      ),
+    );
+    const { page, gateway } = await openPublication({ sessions: rows });
+    for (const [index, { name, conflict, ready }] of workspaces.entries()) {
+      const sessionKey = rows[index]!.key;
+      if (index !== 0) {
+        await page
+          .locator(
+            `.sidebar-recent-session[data-session-key="${sessionKey}"] a.sidebar-recent-session__link`,
+          )
+          .click();
+        await showPublicationBranch(gateway, undefined, sessionKey);
+      }
       await openChatPublication(page);
       await selectPublicationAccount(page, "personal");
       const publish = page.getByRole("button", { name: "Create PR" });
       await publish.waitFor();
-
-      await expect.poll(() => publish.isEnabled()).toBe(ready);
+      await expect.poll(() => publish.isEnabled(), { message: `${name} workspace` }).toBe(ready);
       if (conflict) {
         const notice = page.locator(".chat-workspace-conflict-notice");
         await notice.getByRole("button", { name: "Dismiss workspace conflict notice" }).click();
@@ -290,6 +302,11 @@ export function defineGitHubPublicationAccountTests({
         await openChatPublication(page);
         await page.getByRole("menuitemradio", { name: "@alice-tools", exact: true }).waitFor();
       }
-    },
-  );
+      await page.keyboard.press("Escape");
+      await page
+        .locator(".chat-pane-cache__pane--active .chat-pr-branch-menu")
+        .waitFor({ state: "hidden" });
+    }
+    expect(await gateway.getRequests("sessions.github.publish")).toHaveLength(0);
+  });
 }

@@ -3792,7 +3792,7 @@
       "ui/src/e2e/skills-library.e2e.test.ts": 19,
       "ui/src/e2e/skills-owner-selection.e2e.test.ts": 1,
       "ui/src/e2e/solo-widget-chrome.e2e.test.ts": 8,
-      "ui/src/e2e/stale-build-recovery.e2e.test.ts": 2,
+      "ui/src/e2e/stale-build-recovery.e2e.test.ts": 68,
       "ui/src/e2e/subagent-inspector.e2e.test.ts": 1,
       "ui/src/e2e/subagent-task-notice.e2e.test.ts": 3,
       "ui/src/e2e/systems-workspace.e2e.test.ts": 9,
