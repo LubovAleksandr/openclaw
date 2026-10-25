@@ -31,3 +31,40 @@ it("anchors a popover whose preceding trigger is inserted after its Solid ref ru
   expect(trigger.getAttribute("aria-expanded")).toBe("true");
   dispose();
 });
+
+it("anchors and returns focus to the pooled menu's current trigger", () => {
+  vi.stubGlobal(
+    "requestAnimationFrame",
+    vi.fn(() => 1),
+  );
+  vi.stubGlobal("cancelAnimationFrame", vi.fn());
+  const first = document.createElement("button");
+  const second = document.createElement("button");
+  const panel = document.createElement("div");
+  let active = first;
+  vi.spyOn(first, "getBoundingClientRect").mockReturnValue(new DOMRect(300, 100, 40, 20));
+  vi.spyOn(second, "getBoundingClientRect").mockReturnValue(new DOMRect(700, 200, 40, 20));
+  vi.spyOn(panel, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 200, 100));
+  vi.spyOn(panel, "matches").mockImplementation((selector) => selector === ":popover-open");
+  const hide = vi.fn();
+  panel.hidePopover = hide;
+  let dispose!: () => void;
+  createRoot((cleanup) => {
+    dispose = cleanup;
+    workboardPopoverRef("end", false, () => active)(panel);
+    document.body.append(first, second, panel);
+  });
+  flush();
+  panel.dispatchEvent(new Event("toggle"));
+  expect(panel.style.left).toBe("140px");
+  active = second;
+  panel.dispatchEvent(new Event("toggle"));
+  expect(panel.style.left).toBe("540px");
+  expect(second.getAttribute("aria-expanded")).toBe("true");
+  const escape = new KeyboardEvent("keydown", { key: "Escape", cancelable: true });
+  panel.dispatchEvent(escape);
+  expect(hide).toHaveBeenCalledOnce();
+  expect(escape.defaultPrevented).toBe(true);
+  expect(document.activeElement).toBe(second);
+  dispose();
+});

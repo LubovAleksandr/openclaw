@@ -28,7 +28,12 @@ dragging to another column, and a live update. Memory covers search, expansion a
 scrolling. Every meaningful state change has a visible assertion; drag waits for
 the move RPC and the card rendered in its destination within the timed interval.
 Cold load starts with a new browser context; warm load remounts
-the route in the same document with resident modules. Playwright routing disables
+the route in the same document with resident modules, after New Session's
+committed composer and admitted lazy pet renderer finish loading. After the warm
+interval, interaction measurements wait for the host's naturally admitted New
+Session prefetch assets: observed link completion, or a completed resource when
+the owner already loaded it. Descriptor responses are observed without refetching.
+Playwright routing disables
 HTTP cache, so warm load is not described as an HTTP-cache hit.
 
 The remote profile adds 100 ms per HTTP request and per synthetic WebSocket
@@ -38,6 +43,9 @@ including failures and host load. `summary.json` includes distributions, plugin
 asset hashes/bytes, fixture counts, and instrumentation. Screenshots cover the
 first pair and failures. Trace runs retain renderer traces, CPU profiles and
 source-mapping coverage (unmapped production assets are reported explicitly).
+The untimed final Workboard check reopens the updated card's menu and verifies
+Escape returns focus to its current trigger. Timed first activation uses the
+second visible card, including shared-panel rebinding without preopening it.
 Coverage runs record cold navigation and warm route remount separately; warm
 coverage counts resident scripts observed by V8, not new network bytes.
 

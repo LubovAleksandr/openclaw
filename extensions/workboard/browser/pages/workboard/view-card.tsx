@@ -1,20 +1,13 @@
 /** @jsxImportSource @solidjs/web */
 import { asDateTimestampMs } from "openclaw/plugin-sdk/string-coerce-runtime";
-import { createMemo, createSignal, For, Show } from "solid-js";
-import { icons } from "../../components/icons.tsx";
+import { createMemo, For, Show } from "solid-js";
 import { t } from "../../i18n/index.ts";
 import type { createElementRefs } from "../../lib/element-refs.ts";
 import { getCardAlerts, visibleCardAlerts } from "../../lib/workboard/card-alerts.ts";
 import { getWorkboardDependencyState } from "../../lib/workboard/card-state.ts";
 import { getWorkboardLifecycle } from "../../lib/workboard/lifecycle.ts";
 import type { WorkboardCard } from "../../lib/workboard/types.ts";
-import {
-  getCardActionState,
-  CardAction,
-  CardMoveControl,
-  OpenSessionCardAction,
-  StartExecutionButton,
-} from "./view-card-actions.tsx";
+import { getCardActionState, CardMoveControl } from "./view-card-actions.tsx";
 import {
   CardAlertView,
   CardUpdatedTime,
@@ -24,8 +17,8 @@ import {
   CardSession,
 } from "./view-card-content.tsx";
 import { openCardDetails, workboardCardDetailDrawerId } from "./view-card-details.tsx";
+import { equalCardActions, WorkboardCardMenuTrigger } from "./view-card-menu.tsx";
 import { workboardViewState, type WorkboardProps } from "./view-helpers.tsx";
-import { closeWorkboardPopoverOnAction, workboardPopoverRef } from "./view-popover.ts";
 import { getSessionStatus } from "./view-session-status.tsx";
 function isCardActionTarget(event: Event): boolean {
   return event.target instanceof Element
@@ -46,15 +39,7 @@ export function WorkboardCardView(input: {
       return getCardActionState(input.workboard, input.card);
     },
     {
-      equals: (previous, next) =>
-        previous.busy === next.busy &&
-        previous.live === next.live &&
-        previous.linkedSessionKey === next.linkedSessionKey &&
-        previous.writable === next.writable &&
-        previous.showStartControls === next.showStartControls &&
-        previous.archived === next.archived &&
-        previous.sessionTarget?.sessionKey === next.sessionTarget?.sessionKey &&
-        previous.sessionTarget?.agentId === next.sessionTarget?.agentId,
+      equals: equalCardActions,
     },
   );
   const widget = createMemo(() => input.surface === "widget");
@@ -118,106 +103,13 @@ export function WorkboardCardView(input: {
     }
     input.workboard.onRequestUpdate?.();
   };
-  const ActionsMenu = () => {
-    const [open, setOpen] = createSignal(false);
-    return (
-      <>
-        {!widget() && (action().writable || action().linkedSessionKey) ? (
-          <div class="workboard-card__action-menu">
-            <button
-              type="button"
-              class="workboard-card__menu-trigger"
-              aria-label={t("workboard.cardActions")}
-              aria-haspopup="dialog"
-              aria-expanded="false"
-              popovertarget={`workboard-card-menu-${input.card.id}`}
-            >
-              {icons.moreHorizontal}
-            </button>
-            <div
-              id={`workboard-card-menu-${input.card.id}`}
-              popover="auto"
-              role="dialog"
-              aria-label={t("workboard.cardActions")}
-              class="workboard-card__action-menu-panel"
-              ref={workboardPopoverRef("end")}
-              onClick={closeWorkboardPopoverOnAction}
-              onBeforeToggle={(event) => setOpen(event.newState === "open")}
-            >
-              <Show when={open()}>
-                <div class="workboard-card__menu-group">
-                  <button
-                    class="btn"
-                    type="button"
-                    aria-label={t("workboard.viewDetails")}
-                    aria-haspopup="dialog"
-                    aria-expanded={detailOpen() ? "true" : "false"}
-                    aria-controls={workboardCardDetailDrawerId}
-                    onClick={showDetails}
-                  >
-                    {icons.eye}
-                    <span>{t("workboard.viewDetails")}</span>
-                  </button>{" "}
-                  {action().writable && !action().archived ? (
-                    <CardAction kind="edit" workboard={input.workboard} card={input.card} />
-                  ) : null}
-                </div>
-                {action().showStartControls ||
-                action().sessionTarget ||
-                (action().writable && action().linkedSessionKey && action().live) ? (
-                  <div class="workboard-card__menu-group">
-                    {action().showStartControls ? (
-                      <StartExecutionButton
-                        workboard={input.workboard}
-                        card={input.card}
-                        engine={null}
-                        mode="autonomous"
-                      />
-                    ) : null}{" "}
-                    <OpenSessionCardAction
-                      workboard={input.workboard}
-                      session={action().sessionTarget}
-                    />{" "}
-                    {action().writable && action().linkedSessionKey && action().live ? (
-                      <CardAction
-                        kind="stop"
-                        workboard={input.workboard}
-                        card={input.card}
-                        busy={action().busy}
-                      />
-                    ) : null}
-                  </div>
-                ) : null}
-                {!(!action().archived && (action().writable || widget())) ? null : (
-                  <div class="workboard-card__menu-status">
-                    <span>{t("workboard.moveTo")}</span>
-                    <MoveAction />
-                  </div>
-                )}
-                {action().writable ? (
-                  <div class="workboard-card__menu-group">
-                    <CardAction
-                      kind="archive"
-                      workboard={input.workboard}
-                      card={input.card}
-                      busy={action().busy}
-                      archived={action().archived}
-                    />{" "}
-                    <CardAction
-                      kind="delete"
-                      workboard={input.workboard}
-                      card={input.card}
-                      busy={action().busy}
-                    />
-                  </div>
-                ) : null}
-              </Show>
-            </div>
-          </div>
-        ) : null}
-      </>
-    );
-  };
+  const ActionsMenu = () => (
+    <Show when={!widget() && (action().writable || action().linkedSessionKey)}>
+      <div class="workboard-card__action-menu">
+        <WorkboardCardMenuTrigger cardId={input.card.id} />
+      </div>
+    </Show>
+  );
   const ListContents = () => (
     <>
       {input.surface === "list" ? (

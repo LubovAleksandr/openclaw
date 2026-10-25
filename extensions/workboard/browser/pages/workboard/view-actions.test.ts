@@ -524,21 +524,20 @@ describe("WorkboardView", () => {
     renderView();
     expect(state.selectedCardIds).toEqual(new Set(["first", "second"]));
     expect(second.getAttribute("aria-pressed")).toBe("true");
-    const panel = expectDefined(
-      second.querySelector<HTMLElement>(".workboard-card__action-menu-panel"),
-      "card menu panel",
-    );
-    expect(panel.childElementCount).toBe(0);
-    openCardMenu(second);
-    expect(panel.querySelector(".workboard-card__menu-group")).not.toBeNull();
+    expect(second.querySelector(".workboard-card__action-menu-panel")).toBeNull();
+    const panel = openCardMenu(second);
+    const firstAction = requireButton(panel, "Edit card");
     expect(state.selectedCardIds).toEqual(new Set(["first", "second"]));
     expect(state.detailCardId).toBeNull();
     panel.dispatchEvent(
       Object.assign(new Event("beforetoggle"), { oldState: "open", newState: "closed" }),
     );
     flush();
-    expect(panel.childElementCount).toBe(0);
-    requireButton(openCardMenu(second), "Edit card").click();
+    expect(requireButton(panel, "Edit card")).toBe(firstAction);
+    expect(openCardMenu(first)).toBe(panel);
+    expect(openCardMenu(second)).toBe(panel);
+    expect(requireButton(panel, "Edit card")).toBe(firstAction);
+    firstAction.click();
     renderView();
     expect(state.draftOpen).toBe(true);
     expect(state.editingCardId).toBe("second");

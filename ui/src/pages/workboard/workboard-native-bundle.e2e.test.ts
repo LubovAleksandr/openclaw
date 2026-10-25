@@ -114,6 +114,21 @@ suite.define(() => {
             ).toBe(true);
             expect(await focused(tile)).toBe(true);
 
+            const rowActions = button(tile, "Card actions");
+            await rowActions.click();
+            const rowMenu = tile.getByRole("dialog", { name: "Card actions", exact: true });
+            await rowMenu.waitFor({ state: "visible" });
+            await rowActions.click();
+            await rowMenu.waitFor({ state: "hidden" });
+            await expectFocus(rowActions);
+            await rowActions.press("Enter");
+            await rowMenu.waitFor({ state: "visible" });
+            await button(rowMenu, "Edit card").focus();
+            await page.keyboard.press("Escape");
+            await rowMenu.waitFor({ state: "hidden" });
+            await expectFocus(rowActions);
+
+            await tile.focus();
             await page.keyboard.press("Enter");
             const details = page.getByRole("dialog", { name: card.title, exact: true });
             const detailContent = page.locator(".workboard-detail");

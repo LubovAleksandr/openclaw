@@ -89,6 +89,8 @@ type Sample = {
   errors: string[];
   coverage?: unknown;
   warmCoverage?: unknown;
+  menuReturnFocusAfterRowsChange?: boolean;
+  hostPrefetch?: unknown;
 };
 const results: Sample[] = [];
 const roots = [values["plugin-root"], values["compare-plugin-root"]].filter(
@@ -337,9 +339,25 @@ try {
             errors: [],
           };
           page.on("pageerror", (error) => sample.errors.push(error.message));
+          let navigationManifest:
+            | Promise<{ url: string; entries: Record<string, string[]>; error?: string }>
+            | undefined;
           const assets: string[] = [];
           page.on("response", (response) => {
             const pathname = new URL(response.url()).pathname;
+            if (/\/navigation-preloads-[^/]+\.json$/u.test(pathname)) {
+              navigationManifest = response
+                .json()
+                .then((entries) => ({
+                  url: response.url(),
+                  entries: entries as Record<string, string[]>,
+                }))
+                .catch((error: unknown) => ({
+                  url: response.url(),
+                  entries: {},
+                  error: String(error),
+                }));
+            }
             if (/\.(?:js|css)$/u.test(pathname)) {
               assets.push(pathname);
             }
@@ -352,6 +370,21 @@ try {
           const marks: Array<{ id: string; start: string; end: string }> = [];
           try {
             await page.addInitScript("globalThis.__name = (fn) => fn");
+            await page.addInitScript(() => {
+              const settled = new WeakMap<HTMLLinkElement, string>();
+              Object.assign(window, { pluginBenchmarkPreloadState: settled });
+              for (const type of ["load", "error"] as const) {
+                document.addEventListener(
+                  type,
+                  (event) => {
+                    if (event.target instanceof HTMLLinkElement) {
+                      settled.set(event.target, type);
+                    }
+                  },
+                  true,
+                );
+              }
+            });
             await page.addInitScript(() => {
               const state = { longTasks: [] as Array<{ start: number; duration: number }> };
               Object.assign(window, { pluginBenchmark: state });
@@ -582,6 +615,20 @@ try {
             await expect(
               page.locator(".workboard-board--page, .memory-memories, openclaw-channels-page"),
             ).toHaveCount(0);
+            await expect(page.locator(".new-session-page__message")).toBeVisible();
+            await expect(page.locator(".new-session-page__message")).toBeEditable();
+            await page.waitForFunction(() => {
+              const readiness = window.openclawControlUi?.snapshot();
+              return (
+                readiness?.ready &&
+                readiness.route?.matches.some((match) => match.routeId === "new-session")
+              );
+            });
+            // Finish the warm-up route's admitted lazy renderer before measuring the remount.
+            await expect(
+              page.locator("openclaw-new-session-page openclaw-lobster-pet"),
+            ).toHaveCount(1);
+            await frames(page);
             if (values.coverage) {
               await page.coverage.startJSCoverage({ resetOnNavigation: false });
             }
@@ -592,8 +639,66 @@ try {
             if (values.coverage) {
               sample.warmCoverage = await stopCoverage("warm");
             }
+            await expect.poll(() => navigationManifest !== undefined).toBe(true);
+            const manifest = await navigationManifest!;
+            if (manifest.error) {
+              throw new Error(`Navigation prefetch descriptor failed: ${manifest.error}`);
+            }
+            const routePreloads = manifest.entries["new-session"];
+            if (!routePreloads?.length) {
+              throw new Error("Navigation prefetch descriptor has no New Session assets");
+            }
+            const preloadHrefs = routePreloads.map(
+              (file) => new URL(file, new URL("../", manifest.url)).href,
+            );
+            await frames(page);
+            await page.waitForFunction((hrefs) => {
+              const settled = (
+                window as Window & {
+                  pluginBenchmarkPreloadState?: WeakMap<HTMLLinkElement, string>;
+                }
+              ).pluginBenchmarkPreloadState;
+              const links = Array.from(
+                document.querySelectorAll<HTMLLinkElement>(
+                  'link[rel="preload"], link[rel="modulepreload"]',
+                ),
+              ).filter((link) => hrefs.includes(link.href));
+              if (links.some((link) => settled?.get(link) === "error")) {
+                throw new Error("An admitted navigation preload failed");
+              }
+              return hrefs.every((href) => {
+                const matching = links.filter((link) => link.href === href);
+                if (matching.length) {
+                  return matching.every((link) => settled?.get(link) === "load");
+                }
+                return performance
+                  .getEntriesByName(href, "resource")
+                  .some((entry) => (entry as PerformanceResourceTiming).responseEnd > 0);
+              });
+            }, preloadHrefs);
+            await frames(page);
+            sample.hostPrefetch = await page.evaluate(
+              ({ hrefs, descriptor }) => ({
+                descriptor,
+                expectedAssets: hrefs.length,
+                admittedLinks: Array.from(
+                  document.querySelectorAll<HTMLLinkElement>(
+                    'link[rel="preload"], link[rel="modulepreload"]',
+                  ),
+                )
+                  .filter((link) => hrefs.includes(link.href))
+                  .map((link) => link.href),
+                completedResources: hrefs.filter((href) =>
+                  performance
+                    .getEntriesByName(href, "resource")
+                    .some((entry) => (entry as PerformanceResourceTiming).responseEnd > 0),
+                ),
+                settledAtMs: performance.now(),
+              }),
+              { hrefs: preloadHrefs, descriptor: manifest.url },
+            );
             if (plugin === "workboard") {
-              const menuTrigger = page.locator(".workboard-card__menu-trigger").first();
+              const menuTrigger = page.locator(".workboard-card__menu-trigger").nth(1);
               await menuTrigger.focus();
               await step("open-menu", async () => {
                 await menuTrigger.press("Enter");
@@ -732,6 +837,22 @@ try {
                 await page.locator("#nostr-profile-name").fill("Benchmark Updated");
                 await expect(page.locator("#nostr-profile-name")).toHaveValue("Benchmark Updated");
               });
+            }
+            if (plugin === "workboard") {
+              const updatedTrigger = page
+                .locator(".workboard-card")
+                .filter({
+                  has: page.getByRole("heading", { name: "Live benchmark update", exact: true }),
+                })
+                .locator(".workboard-card__menu-trigger");
+              await updatedTrigger.focus();
+              await updatedTrigger.press("Enter");
+              await expect(
+                page.locator(".workboard-card__action-menu-panel:popover-open"),
+              ).toBeVisible();
+              await page.keyboard.press("Escape");
+              await expect(updatedTrigger).toBeFocused();
+              sample.menuReturnFocusAfterRowsChange = true;
             }
             if (sample.errors.length) {
               throw new Error(sample.errors.join("\n"));
