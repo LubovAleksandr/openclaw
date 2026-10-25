@@ -187,25 +187,6 @@ it.each(["lost-response", "503", "html-503", "unreadable-body"])(
     expect(network).toHaveBeenCalledTimes(2);
   },
 );
-it("does not publish an old grant after the configured account changes", async () => {
-  const { entered, release, network } = heldRefresh();
-  const old = token();
-  const outcome = old.then(
-    () => "published",
-    () => "changed",
-  );
-  await entered;
-  current.plugins.entries["google-meet"].config.oauth = {
-    ...initial,
-    accessToken: "synthetic-new-login",
-    refreshToken: "synthetic-new-login-refresh",
-    expiresAt: Date.now() + 3600000,
-  };
-  release();
-  expect(await outcome).toBe("changed");
-  await expectToken("synthetic-new-login");
-  expect(network).toHaveBeenCalledOnce();
-});
 it("makes one-shot rotation without a durable owner explicitly actionable", async () => {
   stubFetch();
   await expect(resolveGoogleMeetTokenFromParams(config(), {})).rejects.toThrow(/rotation.*owner/i);
@@ -270,24 +251,33 @@ it("cannot publish a rotated token when durable settlement fails", async () => {
   expect(network).toHaveBeenCalledTimes(2);
 });
 
-it.each(["plugin", "config"] as const)(
-  "does not publish a held refresh after %s is disabled",
+it.each(["account", "plugin", "config"] as const)(
+  "does not publish a held refresh after %s authority changes",
   async (mode) => {
     const { entered, release, network } = heldRefresh();
     const outcome = token().then(
       () => "published",
-      () => "disabled",
+      () => "revoked",
     );
     await entered;
-    Object.assign(
-      mode === "plugin"
-        ? current.plugins.entries["google-meet"]
-        : current.plugins.entries["google-meet"].config,
-      { enabled: false },
-    );
+    const entry = current.plugins.entries["google-meet"];
+    if (mode === "account") {
+      entry.config.oauth = {
+        ...initial,
+        accessToken: "synthetic-new-login",
+        refreshToken: "synthetic-new-login-refresh",
+        expiresAt: Date.now() + 3600000,
+      };
+    } else {
+      Object.assign(mode === "plugin" ? entry : entry.config, { enabled: false });
+    }
     release();
-    expect(await outcome).toBe("disabled");
-    await expect(token()).rejects.toThrow();
+    expect(await outcome).toBe("revoked");
+    if (mode === "account") {
+      await expectToken("synthetic-new-login");
+    } else {
+      await expect(token()).rejects.toThrow();
+    }
     expect(network).toHaveBeenCalledOnce();
   },
 );
