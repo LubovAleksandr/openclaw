@@ -6,11 +6,10 @@ import type {
   ControlUiChannelSettingsSnapshot,
 } from "openclaw/plugin-sdk/control-ui";
 import { asNullableRecord, readStringField } from "openclaw/plugin-sdk/string-coerce-runtime";
-import { createMemo, For, Show, onSettled } from "solid-js";
+import { createMemo, Errored, For, lazy, Loading, Show, onSettled } from "solid-js";
 import { SettingsRow, SettingsSection, SettingsStatus } from "./components.tsx";
 import type { createProfileController } from "./controller.ts";
 import { createTranslator } from "./i18n/index.ts";
-import { createNostrProfileForm } from "./profile-form.tsx";
 import type { NostrProfile, NostrStatus } from "./types.ts";
 
 type ChannelAccountSnapshot = ControlUiChannelSettingsSnapshot["accounts"][number];
@@ -24,7 +23,7 @@ export function createProfileCard(
 ) {
   const t = createTranslator(() => state().snapshot.locale);
   const formatRelativeTimestamp = context.formatRelativeTimestamp;
-  const NostrProfileForm = createNostrProfileForm(t);
+  const NostrProfileForm = lazy(() => import("./profile-form.tsx"), { export: "NostrProfileForm" });
   const boolStatusKind = (value: boolean | null | undefined) =>
     value === true ? ("ok" as const) : ("muted" as const);
   function BooleanChannelFact(props: {
@@ -246,18 +245,53 @@ export function createProfileCard(
         {lastError() ? <ChannelError message={lastError()} /> : undefined}
         <Show when={form()} fallback={<ProfileSection />}>
           {(formState) => (
-            <NostrProfileForm
-              state={formState()}
-              connected={state().snapshot.connected}
-              accountId={accountId()}
-              callbacks={{
-                onFieldChange: (field, value) => controller.field(field, value),
-                onSave: () => void controller.save(),
-                onImport: () => void controller.import(),
-                onCancel: () => controller.cancel(),
-                onToggleAdvanced: () => controller.toggleAdvanced(),
-              }}
-            />
+            <Loading
+              fallback={
+                <SettingsRow
+                  role="status"
+                  title={<span aria-busy="true">{t("channels.nostr.editProfile")}…</span>}
+                  control={
+                    <button class="btn" onClick={() => controller.cancel()}>
+                      {t("common.cancel")}
+                    </button>
+                  }
+                />
+              }
+            >
+              <Errored
+                fallback={(error, reset) => (
+                  <SettingsRow
+                    role="alert"
+                    title={t("channels.lastError")}
+                    description={context.formatError(error())}
+                    control={
+                      <>
+                        <button class="btn" onClick={() => controller.cancel()}>
+                          {t("common.cancel")}
+                        </button>
+                        <button class="btn" onClick={reset}>
+                          {t("common.refresh")}
+                        </button>
+                      </>
+                    }
+                  />
+                )}
+              >
+                <NostrProfileForm
+                  t={t}
+                  state={formState()}
+                  connected={state().snapshot.connected}
+                  accountId={accountId()}
+                  callbacks={{
+                    onFieldChange: (field, value) => controller.field(field, value),
+                    onSave: () => void controller.save(),
+                    onImport: () => void controller.import(),
+                    onCancel: () => controller.cancel(),
+                    onToggleAdvanced: () => controller.toggleAdvanced(),
+                  }}
+                />
+              </Errored>
+            </Loading>
           )}
         </Show>
         <ConfigSlot />

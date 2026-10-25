@@ -129,6 +129,24 @@ export function buttonByText(container: Element, text: string): HTMLButtonElemen
   );
 }
 
+export function openCardMenu(card: Element): HTMLElement {
+  const trigger = expectDefined(
+    card.querySelector<HTMLButtonElement>(".workboard-card__menu-trigger"),
+    "card menu trigger",
+  );
+  const panel = expectDefined(
+    card.querySelector<HTMLElement>(".workboard-card__action-menu-panel"),
+    "card menu panel",
+  );
+  trigger.click();
+  // The unit DOM stubs native popover default actions; deliver its public event.
+  panel.dispatchEvent(
+    Object.assign(new Event("beforetoggle"), { oldState: "closed", newState: "open" }),
+  );
+  flush();
+  return panel;
+}
+
 export function requireButton(root: Element, label: string) {
   return expectDefined(buttonByLabel(root, label), label);
 }

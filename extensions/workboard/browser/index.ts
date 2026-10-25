@@ -19,7 +19,7 @@ type NavigationBoard = Pick<WorkboardBoardSummary, "id" | "name" | "kind" | "ico
 export default defineControlUiPlugin({
   id: "workboard",
   activate(host) {
-    const unbind = bindWorkboardHost(host);
+    const unbind = bindWorkboardHost(host, () => syncBoardNavigation(workboard.state.boards));
     const workboard = createWorkboardCapability();
     const client = host;
     let pendingDeletion: Promise<void> | undefined;

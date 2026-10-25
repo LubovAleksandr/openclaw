@@ -1,10 +1,8 @@
 /** @jsxImportSource @solidjs/web */
-import { render } from "@solidjs/web";
 import type {
   AgentsWorkspaceGetResult,
   ControlUiSettingsContext,
   ControlUiSettingsSnapshot,
-  ControlUiSettingsView,
   MemorySearchResponse,
 } from "openclaw/plugin-sdk/control-ui";
 import {
@@ -61,7 +59,7 @@ function FileContent(props: { content: string; result: SearchResult }) {
   );
 }
 
-function MemoryMemories(props: MemoryMemoriesProps) {
+export function MemoryMemories(props: MemoryMemoriesProps) {
   const t = createTranslator(() => props.snapshot.locale);
   const methodAdvertised = () =>
     props.snapshot.advertisedMethods?.includes("memory.search") === true;
@@ -372,16 +370,3 @@ function MemoryMemories(props: MemoryMemoriesProps) {
     </openclaw-memory-memories>
   );
 }
-
-export const memoriesView: ControlUiSettingsView = {
-  placement: { section: "memory", panel: "memories" },
-  mount(container, context) {
-    // Only the host's imperative lifetime writes this presentation projection.
-    const [snapshot, setSnapshot] = createSignal(context.props, { ownedWrite: true });
-    const dispose = render(
-      () => <MemoryMemories context={context} snapshot={snapshot()} />,
-      container,
-    );
-    return { update: setSnapshot, dispose };
-  },
-};

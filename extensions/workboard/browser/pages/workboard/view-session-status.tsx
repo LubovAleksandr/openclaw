@@ -1,5 +1,5 @@
 /** @jsxImportSource @solidjs/web */
-import { createEffect, onSettled } from "solid-js";
+import { createEffect, createMemo, onSettled } from "solid-js";
 import { t } from "../../i18n/index.ts";
 import { formatDurationCompact } from "../../lib/format.ts";
 import { listen } from "../../lib/listener.ts";
@@ -87,17 +87,24 @@ export function SessionStatus(props: {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let pointerInside = false;
   let open = false;
+  let stopWatching: (() => void) | undefined;
   const clearTimer = () => {
-    clearTimeout(timer);
-    timer = undefined;
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
   };
   const dismiss = () => {
     clearTimer();
+    stopWatching?.();
+    stopWatching = undefined;
     if (open && panel?.isConnected) {
       panel.hidePopover();
     }
-    open = false;
-    trigger?.setAttribute("aria-expanded", "false");
+    if (open) {
+      open = false;
+      trigger?.setAttribute("aria-expanded", "false");
+    }
   };
   const show = () => {
     clearTimer();
@@ -106,6 +113,44 @@ export function SessionStatus(props: {
     }
     panel.showPopover();
     open = true;
+    const doc = host.ownerDocument;
+    const stopScroll = listen(
+      doc,
+      "scroll",
+      (event) => {
+        if (!(event.target instanceof Node && panel?.contains(event.target))) {
+          dismiss();
+        }
+      },
+      true,
+    );
+    const stopPointer = listen(
+      doc,
+      "pointerdown",
+      (event) => {
+        if (!event.composedPath().includes(host)) {
+          dismiss();
+        }
+      },
+      true,
+    );
+    const stopKey = listen(
+      doc,
+      "keydown",
+      (event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          event.stopPropagation();
+          dismiss();
+        }
+      },
+      true,
+    );
+    stopWatching = () => {
+      stopScroll();
+      stopPointer();
+      stopKey();
+    };
     trigger.setAttribute("aria-expanded", "true");
     const anchor = trigger.getBoundingClientRect();
     const bounds = panel.getBoundingClientRect();
@@ -129,36 +174,9 @@ export function SessionStatus(props: {
       }
     }, 150);
   };
-  createEffect(() => `${props.context.id}:${props.presentation.visible}`, dismiss);
-  onSettled(() => {
-    const doc = host.ownerDocument;
-    const outside = (event: Event) => {
-      if (!event.composedPath().includes(host)) {
-        dismiss();
-      }
-    };
-    const scroll = (event: Event) => {
-      if (!(event.target instanceof Node && panel?.contains(event.target))) {
-        dismiss();
-      }
-    };
-    const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && open) {
-        event.preventDefault();
-        event.stopPropagation();
-        dismiss();
-      }
-    };
-    const stopScroll = listen(doc, "scroll", scroll, true);
-    const stopPointer = listen(doc, "pointerdown", outside, true);
-    const stopKey = listen(doc, "keydown", escape, true);
-    return () => {
-      dismiss();
-      stopScroll();
-      stopPointer();
-      stopKey();
-    };
-  });
+  const identity = createMemo(() => `${props.context.id}:${props.presentation.visible}`);
+  createEffect(identity, dismiss);
+  onSettled(() => dismiss);
   return (
     <openclaw-workboard-session-status
       ref={(element) => {

@@ -37,7 +37,22 @@ export function workboardPopoverRef(align: "start" | "end" = "start", hover = fa
       element.style.left = `${Math.max(12, Math.min(left, innerWidth - bounds.width - 12))}px`;
       element.style.top = `${opensBelow ? anchor.bottom + 6 : Math.max(12, anchor.top - bounds.height - 6)}px`;
     };
+    let tracking = false;
+    const trackPosition = (open: boolean) => {
+      if (tracking === open) {
+        return;
+      }
+      tracking = open;
+      if (open) {
+        window.addEventListener("resize", position);
+        window.addEventListener("scroll", position, true);
+      } else {
+        window.removeEventListener("resize", position);
+        window.removeEventListener("scroll", position, true);
+      }
+    };
     const toggle = () => {
+      trackPosition(element.matches(":popover-open"));
       element.previousElementSibling?.setAttribute(
         "aria-expanded",
         String(element.matches(":popover-open")),
@@ -99,10 +114,9 @@ export function workboardPopoverRef(align: "start" | "end" = "start", hover = fa
     }
     element.addEventListener("toggle", toggle);
     element.addEventListener("keydown", keydown);
-    window.addEventListener("resize", position);
-    window.addEventListener("scroll", position, true);
-    let frame = requestAnimationFrame(position);
-    const beforeToggle = () => {
+    let frame = 0;
+    const beforeToggle = (event: ToggleEvent) => {
+      trackPosition(event.newState === "open");
       // Position before the first paint; the toggle event can arrive after it.
       cancelAnimationFrame(frame);
       frame = requestAnimationFrame(position);
@@ -123,8 +137,7 @@ export function workboardPopoverRef(align: "start" | "end" = "start", hover = fa
       element.removeEventListener("beforetoggle", beforeToggle);
       element.removeEventListener("toggle", toggle);
       element.removeEventListener("keydown", keydown);
-      window.removeEventListener("resize", position);
-      window.removeEventListener("scroll", position, true);
+      trackPosition(false);
     };
   });
   return (element: HTMLElement) => {

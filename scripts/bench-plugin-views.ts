@@ -1,0 +1,885 @@
+// Production plugin renderers with synthetic Gateway data. Build/snapshot assets separately.
+// Example: node --import ./scripts/tsx.mjs scripts/bench-plugin-views.ts --plugin-root .artifacts/plugin-views/base --compare-plugin-root .artifacts/plugin-views/head --pairs 10
+import { createHash } from "node:crypto";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { parseArgs } from "node:util";
+import { chromium, expect, type CDPSession, type Page } from "playwright/test";
+import { controlUiPluginAssetPrefix } from "../src/gateway/control-ui-plugin-assets-contract.js";
+import { readPluginControlUiAssets } from "../src/plugins/control-ui-assets.js";
+import type { PluginManifestControlUi } from "../src/plugins/manifest-types.js";
+import {
+  defaultControlUiFeatureMethods,
+  installMockGateway,
+  resolvePlaywrightChromiumExecutablePath,
+  startBuiltControlUiE2eServer,
+  startProductionControlUiE2eServer,
+  type ControlUiMockGateway,
+  type ControlUiMockGatewayScenario,
+} from "../ui/src/test-helpers/control-ui-e2e.ts";
+import { buildWorkboardMocks } from "../ui/src/test-helpers/control-ui-workboard-fixtures.ts";
+import { installWorkboardBoardMock } from "../ui/src/test-helpers/control-ui-workboard-mocks.ts";
+import {
+  mapColdLoadCpuProfile,
+  summarizeCpuProfile,
+  summarizeScriptCoverage,
+} from "./lib/control-ui-cold-load-trace.ts";
+import { summarizeInteractionTrace } from "./lib/control-ui-interaction-trace.ts";
+
+const { values } = parseArgs({
+  options: {
+    "bundle-dir": { type: "string", default: "dist/control-ui" },
+    "plugin-root": { type: "string", default: "extensions" },
+    "compare-plugin-root": { type: "string" },
+    "build-host": { type: "boolean", default: false },
+    plugins: { type: "string", default: "workboard,memory-core,nostr" },
+    profiles: { type: "string", default: "local,remote" },
+    pairs: { type: "string", default: "10" },
+    cards: { type: "string", default: "300" },
+    output: { type: "string", default: ".artifacts/plugin-views/measure" },
+    trace: { type: "boolean", default: false },
+    coverage: { type: "boolean", default: false },
+    "thread-cpu-time": { type: "boolean", default: false },
+  },
+});
+const pairs = Number(values.pairs);
+const cardCount = Number(values.cards);
+const pluginIds = values.plugins.split(",");
+const profiles = values.profiles.split(",");
+if (
+  !Number.isInteger(pairs) ||
+  pairs < 1 ||
+  !Number.isInteger(cardCount) ||
+  cardCount < 6 ||
+  pluginIds.some((id) => !["workboard", "memory-core", "nostr"].includes(id)) ||
+  profiles.some((id) => !["local", "remote"].includes(id))
+) {
+  throw new Error(
+    "Use positive --pairs, --cards >= 6, known --plugins and --profiles local,remote",
+  );
+}
+const output = path.resolve(values.output);
+await mkdir(output, { recursive: true });
+type Metrics = Record<string, number>;
+type Step = {
+  id: string;
+  wallMs: number;
+  metrics: Metrics;
+  longTasks: number[];
+  requests: Record<string, number>;
+  assets: string[];
+  trace?: unknown;
+  heapBytes: number;
+  nodes: number;
+  elements: number;
+  menuElements: number;
+};
+type Sample = {
+  plugin: string;
+  profile: string;
+  pair: number;
+  variant: number;
+  root: string;
+  browserVersion: string;
+  hostLoad: number[];
+  status: "passed" | "failed";
+  steps: Step[];
+  error?: string;
+  errors: string[];
+  coverage?: unknown;
+};
+const results: Sample[] = [];
+const roots = [values["plugin-root"], values["compare-plugin-root"]].filter(
+  (root): root is string => Boolean(root),
+);
+const statuses = ["todo", "ready", "running", "review", "blocked", "done"];
+const fixtureTime = Date.now();
+const seed = buildWorkboardMocks(fixtureTime, { id: "benchmark", label: "Benchmark" });
+seed.cards = Array.from({ length: cardCount }, (_, index) => ({
+  ...seed.cards[0]!,
+  id: `bench-${index}`,
+  title: `Benchmark card ${String(index).padStart(3, "0")}`,
+  status: statuses[index % statuses.length]!,
+  position: (Math.floor(index / statuses.length) + 1) * 1000,
+  sessionKey: undefined,
+  createdAt: fixtureTime - 60_000,
+  updatedAt: fixtureTime,
+  priority: index % 2 ? "high" : "normal",
+  labels: [index % 2 ? "review" : "engineering"],
+  metadata: { automation: { boardId: "benchmark" } },
+}));
+seed.boards = [
+  {
+    ...seed.board,
+    id: "benchmark",
+    name: "Benchmark board",
+    total: cardCount,
+    active: cardCount,
+    archived: 0,
+    byStatus: Object.fromEntries(
+      statuses.map((status) => [
+        status,
+        seed.cards.filter((card) => card.status === status).length,
+      ]),
+    ),
+  },
+];
+seed.methodResponses["workboard.cards.list"].cards = seed.cards;
+seed.methodResponses["workboard.cards.list"].boards = seed.boards;
+seed.methodResponses["workboard.boards.list"].boards = seed.boards;
+
+async function metrics(cdp: CDPSession): Promise<Metrics> {
+  const result: { metrics: Array<{ name: string; value: number }> } =
+    await cdp.send("Performance.getMetrics");
+  return Object.fromEntries(result.metrics.map(({ name, value }) => [name, value]));
+}
+async function frames(page: Page) {
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve) => {
+        requestAnimationFrame(() => requestAnimationFrame(() => resolve()));
+      }),
+  );
+}
+function distribution(numbers: number[]) {
+  const sorted = numbers.toSorted((a, b) => a - b);
+  const middle = Math.floor(sorted.length / 2);
+  return {
+    median: sorted.length % 2 ? sorted[middle]! : (sorted[middle - 1]! + sorted[middle]!) / 2,
+    p95: sorted[Math.ceil(sorted.length * 0.95) - 1]!,
+    min: sorted[0]!,
+    max: sorted.at(-1)!,
+  };
+}
+async function loadPlugin(root: string, pluginId: string) {
+  const rootDir = path.resolve(root, pluginId);
+  const manifest = JSON.parse(
+    await readFile(path.join(rootDir, "dist/openclaw.plugin.json"), "utf8"),
+  ) as { controlUi: PluginManifestControlUi };
+  const declaration = manifest.controlUi;
+  const revision = path.basename(path.dirname(declaration.entry));
+  const prefix = `${controlUiPluginAssetPrefix(pluginId)}${revision}/`;
+  const generation = await readPluginControlUiAssets(rootDir, declaration);
+  return {
+    files: generation.assets,
+    assets: new Map([...generation.assets].map(([name, asset]) => [`${prefix}${name}`, asset])),
+    descriptor: {
+      pluginId,
+      name: pluginId,
+      revision,
+      entryUrl: `${prefix}${generation.entryName}`,
+      styles: generation.styles.map((name) => `${prefix}${name}`),
+    },
+    bytes: generation.bytes,
+    directory: path.join(rootDir, generation.directory),
+    sha256: createHash("sha256")
+      .update(
+        [...generation.assets]
+          .map(
+            ([name, asset]) => `${name}:${createHash("sha256").update(asset.body).digest("hex")}`,
+          )
+          .join("\n"),
+      )
+      .digest("hex"),
+  };
+}
+
+function scenario(
+  plugin: string,
+  descriptor: Awaited<ReturnType<typeof loadPlugin>>["descriptor"],
+  build: { buildId: string; version: string },
+): ControlUiMockGatewayScenario {
+  const common: ControlUiMockGatewayScenario = {
+    serverBuildId: build.buildId,
+    serverVersion: build.version,
+    communityInvite: false,
+    featureMethods: [
+      ...defaultControlUiFeatureMethods,
+      "plugins.controlUi.list",
+      "plugins.controlUi.report",
+      "memory.search",
+      "agents.workspace.get",
+    ],
+    methodResponses: {
+      "plugins.list": { plugins: [], diagnostics: [], mutationAllowed: true },
+      "plugins.controlUi.list": {
+        plugins: plugin === "workboard" ? [descriptor] : [],
+        diagnostics: [],
+        revision: descriptor.revision,
+      },
+      "plugins.controlUi.report": { ok: true },
+    },
+  };
+  if (plugin === "workboard") {
+    return {
+      ...common,
+      controlUiTabs: [
+        {
+          pluginId: plugin,
+          id: "workboard",
+          label: "Workboard",
+          placement: "route:workboard",
+          icon: "kanban",
+          group: "control",
+        },
+      ],
+      methodResponses: { ...seed.methodResponses, ...common.methodResponses },
+    };
+  }
+  if (plugin === "memory-core") {
+    return {
+      ...common,
+      methodResponses: {
+        ...common.methodResponses,
+        "memory.search": {
+          agentId: "main",
+          provider: "local",
+          searchMode: "hybrid",
+          results: Array.from({ length: 20 }, (_, index) => ({
+            path: `memory/benchmark-${index}.md`,
+            startLine: 1,
+            endLine: 2,
+            score: 1 - index / 100,
+            source: "memory",
+            snippet: `Benchmark memory ${index}: synthetic review notes.`,
+          })),
+        },
+        "agents.workspace.get": {
+          file: {
+            encoding: "utf8",
+            content: "Benchmark memory\nSynthetic review notes.\nAdditional detail.",
+          },
+        },
+      },
+    };
+  }
+  return {
+    ...common,
+    methodResponses: {
+      ...common.methodResponses,
+      "channels.status": {
+        ts: 1,
+        channelOrder: ["nostr"],
+        channelLabels: { nostr: "Nostr" },
+        channels: {
+          nostr: {
+            configured: true,
+            running: true,
+            publicKey: "npub1benchmark",
+            profile: { name: "Benchmark" },
+          },
+        },
+        channelAccounts: { nostr: [{ accountId: "benchmark", configured: true, running: true }] },
+        channelDefaultAccountId: { nostr: "benchmark" },
+      },
+    },
+  };
+}
+
+const bundles = await Promise.all(
+  roots.map(async (root) => ({
+    root,
+    plugins: new Map(
+      await Promise.all(
+        pluginIds.map(async (plugin) => [plugin, await loadPlugin(root, plugin)] as const),
+      ),
+    ),
+  })),
+);
+const server = values["build-host"]
+  ? await startProductionControlUiE2eServer(path.resolve(values["bundle-dir"]), "plugin-benchmark")
+  : await startBuiltControlUiE2eServer(path.resolve(values["bundle-dir"]));
+const build = await (async () => {
+  const html = await readFile(path.join(values["bundle-dir"], "index.html"), "utf8");
+  const raw = html.match(/globalThis\.OPENCLAW_CONTROL_UI_BUILD_INFO=(\{.*?\});<\/script>/su)?.[1];
+  if (!raw) {
+    throw new Error("Built UI is missing its build identity");
+  }
+  return JSON.parse(raw) as { buildId: string; version: string };
+})().catch(async (error: unknown) => {
+  await server.close();
+  throw error;
+});
+try {
+  for (const profile of profiles) {
+    for (let pair = 0; pair < pairs; pair++) {
+      for (const variant of pair % 2 ? [...bundles.keys()].toReversed() : bundles.keys()) {
+        for (const plugin of pluginIds) {
+          const bundle = bundles[variant]!;
+          const asset = bundle.plugins.get(plugin)!;
+          const prefix = `${plugin}-${profile}-${pair + 1}-${variant}`;
+          // A fresh process keeps browser caches and renderer ownership out of AB order.
+          const browser = await chromium.launch({
+            executablePath: resolvePlaywrightChromiumExecutablePath(chromium.executablePath()),
+            headless: true,
+          });
+          const context = await browser.newContext({
+            viewport: { width: 1440, height: 1000 },
+            serviceWorkers: "block",
+            locale: "en-US",
+            reducedMotion: "reduce",
+          });
+          const page = await context.newPage();
+          page.setDefaultTimeout(30_000);
+          const cdp = await context.newCDPSession(page);
+          const sample: Sample = {
+            plugin,
+            profile,
+            pair: pair + 1,
+            variant,
+            root: bundle.root,
+            browserVersion: browser.version(),
+            hostLoad: os.loadavg(),
+            status: "failed",
+            steps: [],
+            errors: [],
+          };
+          page.on("pageerror", (error) => sample.errors.push(error.message));
+          const assets: string[] = [];
+          page.on("response", (response) => {
+            const pathname = new URL(response.url()).pathname;
+            if (/\.(?:js|css)$/u.test(pathname)) {
+              assets.push(pathname);
+            }
+            if (response.status() >= 400) {
+              sample.errors.push(`HTTP ${response.status()} ${new URL(response.url()).pathname}`);
+            }
+          });
+          let tracing = false;
+          const traceEvents: unknown[] = [];
+          const marks: Array<{ id: string; start: string; end: string }> = [];
+          try {
+            await page.addInitScript("globalThis.__name = (fn) => fn");
+            await page.addInitScript(() => {
+              const state = { longTasks: [] as Array<{ start: number; duration: number }> };
+              Object.assign(window, { pluginBenchmark: state });
+              new PerformanceObserver((list) => {
+                for (const entry of list.getEntries()) {
+                  state.longTasks.push({ start: entry.startTime, duration: entry.duration });
+                }
+              }).observe({ type: "longtask", buffered: true });
+            });
+            const gateway = await installMockGateway(
+              page,
+              scenario(plugin, asset.descriptor, build),
+            );
+            if (plugin === "workboard") {
+              await page.addInitScript(installWorkboardBoardMock, seed);
+            }
+            if (profile === "remote") {
+              await page.addInitScript(() => {
+                // The fixture transport has no network; add the full RTT at delivery.
+                const prototype = WebSocket.prototype as WebSocket & {
+                  deliver: (frame: unknown) => void;
+                };
+                const deliver = prototype.deliver;
+                prototype.deliver = function (frame) {
+                  setTimeout(() => deliver.call(this, frame), 100);
+                };
+              });
+            }
+            await page.route("**/__openclaw__/plugins/control-ui/**", async (route) => {
+              const resource = asset.assets.get(new URL(route.request().url()).pathname);
+              if (!resource) {
+                return route.fulfill({ status: 404 });
+              }
+              if (profile === "remote") {
+                await new Promise((resolve) => {
+                  setTimeout(resolve, 100);
+                });
+              }
+              return route.fulfill({ status: 200, ...resource });
+            });
+            await page.route(`**/assets/plugins/${plugin}/**`, async (route) => {
+              const generationPath = new URL(route.request().url()).pathname.split(
+                `/assets/plugins/${plugin}/`,
+              )[1]!;
+              const name = generationPath.slice(generationPath.indexOf("/") + 1);
+              const resource = asset.files.get(name);
+              if (!resource) {
+                return route.fulfill({ status: 404 });
+              }
+              return route.fulfill({ status: 200, ...resource });
+            });
+            if (profile === "remote") {
+              await page.route("**/*", async (route) => {
+                if (!route.request().url().includes("/__openclaw__/plugins/control-ui/")) {
+                  await new Promise((resolve) => {
+                    setTimeout(resolve, 100);
+                  });
+                }
+                await route.fallback();
+              });
+            }
+            await cdp.send("Performance.enable", {
+              timeDomain: values["thread-cpu-time"] ? "threadTicks" : "timeTicks",
+            });
+            if (values.trace) {
+              cdp.on("Tracing.dataCollected", ({ value }) => traceEvents.push(...value));
+              await cdp.send("Tracing.start", {
+                categories:
+                  "devtools.timeline,blink.user_timing,v8,disabled-by-default-devtools.timeline,disabled-by-default-devtools.timeline.stack",
+                transferMode: "ReportEvents",
+              });
+              tracing = true;
+              await cdp.send("Profiler.enable");
+              await cdp.send("Profiler.start");
+            }
+            const requestCounts = async () => {
+              const requests = await gateway.getRequests();
+              return requests.reduce<Record<string, number>>((counts, request) => {
+                counts[request.method] = (counts[request.method] ?? 0) + 1;
+                return counts;
+              }, {});
+            };
+            const step = async (id: string, action: () => Promise<unknown>, navigation = false) => {
+              const before = await metrics(cdp);
+              const assetsBefore = assets.length;
+              const requestsBefore = navigation ? {} : await requestCounts();
+              const start = `${prefix}-${id}-start`,
+                end = `${prefix}-${id}-end`;
+              if (!navigation) {
+                await page.evaluate((name) => performance.mark(name), start);
+              }
+              const started = performance.now();
+              await action();
+              await frames(page);
+              const wallMs = performance.now() - started;
+              await page.evaluate((name) => performance.mark(name), end);
+              const after = await metrics(cdp);
+              const requestsAfter = await requestCounts();
+              const longTasks = await page.evaluate(
+                ({ navigation: isNavigation, start: startMark }) => {
+                  const state = (
+                    window as Window & {
+                      pluginBenchmark?: { longTasks: Array<{ start: number; duration: number }> };
+                    }
+                  ).pluginBenchmark;
+                  const boundary = isNavigation
+                    ? 0
+                    : (performance.getEntriesByName(startMark)[0]?.startTime ?? 0);
+                  return (
+                    state?.longTasks
+                      .filter((entry) => entry.start >= boundary)
+                      .map((entry) => entry.duration) ?? []
+                  );
+                },
+                { navigation, start },
+              );
+              const measured: Step = {
+                id,
+                wallMs,
+                metrics: Object.fromEntries(
+                  [
+                    "TaskDuration",
+                    "ScriptDuration",
+                    "LayoutDuration",
+                    "RecalcStyleDuration",
+                    "LayoutCount",
+                    "RecalcStyleCount",
+                  ].map((name) => [
+                    name,
+                    ((after[name] ?? 0) - (navigation ? 0 : (before[name] ?? 0))) *
+                      (name.endsWith("Duration") ? 1000 : 1),
+                  ]),
+                ),
+                longTasks,
+                requests: Object.fromEntries(
+                  Object.entries(requestsAfter)
+                    .map(([name, count]) => [name, count - (requestsBefore[name] ?? 0)])
+                    .filter(([, count]) => count),
+                ),
+                assets: assets.slice(assetsBefore),
+                heapBytes: after.JSHeapUsedSize ?? 0,
+                nodes: after.Nodes ?? 0,
+                ...(await page.evaluate(() => ({
+                  elements: document.getElementsByTagName("*").length,
+                  menuElements: document.querySelectorAll(".workboard-card__action-menu-panel *")
+                    .length,
+                }))),
+              };
+              sample.steps.push(measured);
+              if (!navigation) {
+                marks.push({ id, start, end });
+              }
+              if (pair === 0) {
+                await page.screenshot({ path: path.join(output, `${prefix}-${id}.png`) });
+              }
+            };
+            const route =
+              plugin === "workboard"
+                ? "workboard/benchmark"
+                : plugin === "memory-core"
+                  ? "settings/memory/memories"
+                  : "settings/channels";
+            const ready = async () => {
+              if (plugin === "workboard") {
+                await expect(page.locator(".workboard-card")).toHaveCount(cardCount);
+              } else if (plugin === "memory-core") {
+                await expect(
+                  page.getByRole("searchbox", { name: "Search memories" }),
+                ).toBeVisible();
+              } else {
+                await page
+                  .locator("button.channels-item, button.channels-item__detail")
+                  .filter({ hasText: "Nostr" })
+                  .first()
+                  .click();
+                await expect(
+                  page.getByRole("button", { name: "Edit Profile", exact: true }),
+                ).toBeVisible();
+              }
+            };
+            if (values.coverage) {
+              await page.coverage.startJSCoverage({ resetOnNavigation: true });
+            }
+            await step(
+              "cold-load",
+              async () => {
+                await page.goto(new URL(route, server.baseUrl).href);
+                await ready();
+              },
+              true,
+            );
+            if (values.coverage) {
+              const entries = await page.coverage.stopJSCoverage();
+              const pluginEntries = entries.filter(
+                (entry) =>
+                  entry.url.includes(`/plugins/control-ui/${plugin}/`) ||
+                  entry.url.includes(`/assets/plugins/${plugin}/`),
+              );
+              await writeFile(
+                path.join(output, `${prefix}-coverage.json`),
+                JSON.stringify(pluginEntries),
+              );
+              const scripts = pluginEntries.map((entry) =>
+                Object.assign({ url: new URL(entry.url).pathname }, summarizeScriptCoverage(entry)),
+              );
+              sample.coverage = {
+                scripts,
+                ...scripts.reduce(
+                  (total, row) => ({
+                    loadedBytes: total.loadedBytes + row.loadedBytes,
+                    executedBytes: total.executedBytes + row.executedBytes,
+                    unusedBytes: total.unusedBytes + row.unusedBytes,
+                  }),
+                  { loadedBytes: 0, executedBytes: 0, unusedBytes: 0 },
+                ),
+              };
+            }
+            const navigate = async (pathname: string) => {
+              await page.evaluate((next) => {
+                history.pushState(null, "", next);
+                window.dispatchEvent(new PopStateEvent("popstate"));
+              }, pathname);
+            };
+            await navigate("/new");
+            await expect(
+              page.locator(".workboard-board--page, .memory-memories, openclaw-channels-page"),
+            ).toHaveCount(0);
+            await step("warm-route-load", async () => {
+              await navigate(`/${route}`);
+              await ready();
+            });
+            if (plugin === "workboard") {
+              const menuTrigger = page.locator(".workboard-card__menu-trigger").first();
+              await menuTrigger.focus();
+              await step("open-menu", async () => {
+                await menuTrigger.press("Enter");
+                await expect(
+                  page.locator(
+                    '.workboard-card__action-menu-panel:popover-open [aria-label="View details"]',
+                  ),
+                ).toBeVisible();
+              });
+              await page.keyboard.press("Escape");
+              await expect(menuTrigger).toBeFocused();
+              await step("search", async () => {
+                await page.getByRole("button", { name: "Search cards", exact: true }).click();
+                await page
+                  .getByRole("searchbox", { name: "Search cards" })
+                  .fill("Benchmark card 000");
+                await expect(page.locator(".workboard-card")).toHaveCount(1);
+              });
+              await step("clear-search", async () => {
+                await page.getByRole("searchbox", { name: "Search cards" }).fill("");
+                await expect(page.locator(".workboard-card")).toHaveCount(cardCount);
+              });
+              await page.getByRole("button", { name: "Filters", exact: true }).click();
+              await step("filter-priority", async () => {
+                await page
+                  .locator(
+                    '.workboard-filter-section__options[aria-label="Priority"] label[title="High"] input',
+                  )
+                  .check();
+                await expect(page.locator(".workboard-card")).toHaveCount(
+                  Math.floor(cardCount / 2),
+                );
+              });
+              await page.getByRole("button", { name: "Clear filters", exact: true }).click();
+              await expect(page.locator(".workboard-card")).toHaveCount(cardCount);
+              await page.keyboard.press("Escape");
+              await step("select", async () => {
+                await page
+                  .locator(".workboard-card")
+                  .first()
+                  .click({ modifiers: ["Shift"] });
+                await expect(page.locator(".workboard-card--selected")).toHaveCount(1);
+              });
+              await page.locator(".workboard-card--selected").click({ modifiers: ["Shift"] });
+              await step("scroll", async () => {
+                const cards = page.locator(".workboard-column__cards").first();
+                const before = await cards.evaluate((element) => element.scrollTop);
+                await cards.hover();
+                await page.mouse.wheel(0, 1000);
+                await expect
+                  .poll(() => cards.evaluate((element) => element.scrollTop))
+                  .toBeGreaterThan(before);
+              });
+              await step("open-card", async () => {
+                await page.locator(".workboard-card").first().click();
+                await expect(page.locator(".workboard-detail")).toBeVisible();
+              });
+              await page.keyboard.press("Escape");
+              const source = page
+                .locator(".workboard-column")
+                .nth(0)
+                .locator(".workboard-card")
+                .first();
+              const target = page.locator(".workboard-column").nth(1);
+              const sourceTitle = await source.locator("h3").textContent();
+              if (!sourceTitle) {
+                throw new Error("Benchmark card is missing its unique title");
+              }
+              await step("drag-reorder", async () => {
+                const before = (await gateway.getRequests("workboard.cards.move")).length;
+                await source.dragTo(target);
+                await gateway.waitForRequest("workboard.cards.move", { after: before });
+              });
+              expect(
+                await target
+                  .locator(".workboard-card")
+                  .getByRole("heading", { name: sourceTitle, exact: true })
+                  .count(),
+              ).toBe(1);
+              await step("live-update", async () => {
+                const card = {
+                  ...seed.cards[0]!,
+                  title: "Live benchmark update",
+                  updatedAt: fixtureTime + 10_000,
+                };
+                await page.evaluate(
+                  (payload) => {
+                    const browserGateway = (
+                      window as Window & { openclawControlUiE2eGateway?: ControlUiMockGateway }
+                    ).openclawControlUiE2eGateway;
+                    if (!browserGateway) {
+                      throw new Error("Missing synthetic Gateway");
+                    }
+                    browserGateway.setRequestHandler("workboard.cards.list", ({ respond }) =>
+                      respond(payload),
+                    );
+                  },
+                  { statuses, cards: [card, ...seed.cards.slice(1)], boards: seed.boards },
+                );
+                await gateway.emitGatewayEvent("plugin.workboard.changed", {
+                  epoch: "benchmark-live",
+                  revision: 1,
+                });
+                await expect(
+                  page.locator(".workboard-card", { hasText: "Live benchmark update" }),
+                ).toBeVisible();
+              });
+            } else if (plugin === "memory-core") {
+              await step("search-20", async () => {
+                await page.getByRole("searchbox", { name: "Search memories" }).fill("Benchmark");
+                await page.getByRole("button", { name: "Search", exact: true }).click();
+                await expect(page.locator(".memory-memories article")).toHaveCount(20);
+              });
+              await step("expand", async () => {
+                await page.locator(".memory-memories article > button").first().click();
+                await expect(page.locator("[data-memory-match]")).toBeVisible();
+              });
+              await step("scroll", async () => {
+                const last = page.locator(".memory-memories article").last();
+                await last.scrollIntoViewIfNeeded();
+                await expect(last).toBeInViewport();
+              });
+            } else {
+              await page.locator(".channels-detail__close").click();
+              await step("open-settings", async () => {
+                await page
+                  .locator("button.channels-item, button.channels-item__detail")
+                  .filter({ hasText: "Nostr" })
+                  .first()
+                  .click();
+                await expect(
+                  page.getByRole("button", { name: "Edit Profile", exact: true }),
+                ).toBeVisible();
+              });
+              await step("edit-profile", async () => {
+                await page.getByRole("button", { name: "Edit Profile", exact: true }).click();
+                await page.locator("#nostr-profile-name").fill("Benchmark Updated");
+                await expect(page.locator("#nostr-profile-name")).toHaveValue("Benchmark Updated");
+              });
+            }
+            if (sample.errors.length) {
+              throw new Error(sample.errors.join("\n"));
+            }
+            sample.status = "passed";
+          } catch (error) {
+            sample.error = error instanceof Error ? (error.stack ?? error.message) : String(error);
+            await page
+              .screenshot({ path: path.join(output, `${prefix}-failure.png`) })
+              .catch(() => undefined);
+          } finally {
+            try {
+              if (tracing) {
+                const { profile: cpuProfile } = await cdp.send("Profiler.stop");
+                await writeFile(
+                  path.join(output, `${prefix}.cpuprofile`),
+                  JSON.stringify(cpuProfile),
+                );
+                const pluginFrame =
+                  cpuProfile.nodes.find(
+                    (node: { callFrame: { url: string } }) =>
+                      node.callFrame.url.includes(`/plugins/control-ui/${plugin}/`) ||
+                      node.callFrame.url.includes(`/assets/plugins/${plugin}/`),
+                  )?.callFrame.url ?? asset.descriptor.entryUrl;
+                const mapped = await mapColdLoadCpuProfile(cpuProfile, {
+                  assetBaseUrl: new URL(".", new URL(pluginFrame, server.baseUrl)).href,
+                  assetDirectory: asset.directory,
+                });
+                await writeFile(
+                  path.join(output, `${prefix}-cpu.json`),
+                  JSON.stringify(
+                    {
+                      mappedFrames: mapped.mappedFrames,
+                      unmappedFrames: mapped.unmappedFrames,
+                      ...summarizeCpuProfile(mapped.profile, { includeTables: true }),
+                    },
+                    null,
+                    2,
+                  ),
+                );
+                const complete = new Promise<void>((resolve) => {
+                  cdp.once("Tracing.tracingComplete", () => resolve());
+                });
+                await cdp.send("Tracing.end");
+                await complete;
+                await writeFile(
+                  path.join(output, `${prefix}-trace.json`),
+                  JSON.stringify({ traceEvents }),
+                );
+                for (const mark of marks) {
+                  const found = sample.steps.find((step) => step.id === mark.id);
+                  if (found) {
+                    found.trace = summarizeInteractionTrace(traceEvents, mark);
+                  }
+                }
+              }
+            } catch (error) {
+              sample.status = "failed";
+              sample.error = `${sample.error ?? ""}\nCapture: ${String(error)}`.trim();
+            }
+            results.push(sample);
+            await writeFile(path.join(output, "samples.json"), JSON.stringify(results, null, 2));
+            console.log(
+              JSON.stringify({
+                plugin,
+                profile,
+                pair: pair + 1,
+                variant,
+                status: sample.status,
+                error: sample.error,
+              }),
+            );
+            await cdp.detach();
+            await context.close();
+            await browser.close();
+          }
+        }
+      }
+    }
+  }
+} finally {
+  await server.close();
+}
+const summary = [];
+for (const plugin of pluginIds) {
+  for (const profile of profiles) {
+    for (const variant of bundles.keys()) {
+      const samples = results.filter(
+        (sample) =>
+          sample.plugin === plugin && sample.profile === profile && sample.variant === variant,
+      );
+      for (const id of new Set(samples.flatMap((sample) => sample.steps.map((step) => step.id)))) {
+        const steps = samples.flatMap((sample) => sample.steps.filter((step) => step.id === id));
+        summary.push({
+          plugin,
+          profile,
+          variant,
+          step: id,
+          n: steps.length,
+          wallMs: distribution(steps.map((step) => step.wallMs)),
+          metrics: Object.fromEntries(
+            Object.keys(steps[0]!.metrics).map((name) => [
+              name,
+              distribution(steps.map((step) => step.metrics[name]!)),
+            ]),
+          ),
+          longestTaskMs: distribution(steps.map((step) => Math.max(0, ...step.longTasks))),
+          heapBytes: distribution(steps.map((step) => step.heapBytes)),
+          nodes: distribution(steps.map((step) => step.nodes)),
+          elements: distribution(steps.map((step) => step.elements)),
+          menuElements: distribution(steps.map((step) => step.menuElements)),
+          assetRequests: distribution(steps.map((step) => step.assets.length)),
+        });
+      }
+    }
+  }
+}
+await writeFile(
+  path.join(output, "summary.json"),
+  JSON.stringify(
+    {
+      workload: {
+        cards: cardCount,
+        memoryResults: 20,
+        nostr: "settings/profile; no feed renderer exists",
+      },
+      build,
+      viewport: { width: 1440, height: 1000 },
+      host: { platform: os.platform(), arch: os.arch(), cpuCount: os.cpus().length },
+      attempts: {
+        planned: profiles.length * pairs * bundles.length * pluginIds.length,
+        completed: results.length,
+        passed: results.filter((result) => result.status === "passed").length,
+        failed: results.filter((result) => result.status === "failed").length,
+      },
+      variants: bundles.map((bundle) => ({
+        root: bundle.root,
+        plugins: Object.fromEntries(
+          [...bundle.plugins].map(([id, plugin]) => [
+            id,
+            { bytes: plugin.bytes, sha256: plugin.sha256 },
+          ]),
+        ),
+      })),
+      instrumentation: {
+        trace: values.trace,
+        coverage: values.coverage,
+        timeDomain: values["thread-cpu-time"] ? "threadTicks" : "timeTicks",
+        remote: "100ms delay per HTTP request and synthetic WebSocket response/event delivery",
+        warm: "In-document route remount with resident modules; request routing disables HTTP cache",
+      },
+      summary,
+    },
+    null,
+    2,
+  ),
+);
+if (results.some((sample) => sample.status === "failed")) {
+  process.exitCode = 1;
+}

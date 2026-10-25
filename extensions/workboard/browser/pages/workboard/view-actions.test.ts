@@ -2,6 +2,7 @@ import "../../test/dom.setup.ts";
 import { GatewayProtocolRequestError } from "@openclaw/gateway-client/browser";
 import { expectDefined } from "@openclaw/normalization-core";
 import { createDeferred } from "openclaw/plugin-sdk/concurrency-runtime";
+import { flush } from "solid-js";
 import { describe, expect, it, vi } from "vitest";
 import { setWorkboardCards } from "../../lib/workboard/card-state.ts";
 import { resetWorkboardConnectionState } from "../../lib/workboard/runtime.ts";
@@ -14,6 +15,7 @@ import {
   buttonByLabel,
   buttonByText,
   requireButton,
+  openCardMenu,
 } from "./view.test-support.ts";
 
 describe("WorkboardView", () => {
@@ -402,7 +404,7 @@ describe("WorkboardView", () => {
       expect(buttonByText(container, "New card")).toBeNull();
       state.mutationReadiness = "ready";
       renderView();
-      expect(buttonByLabel(container, "Edit card")).not.toBeNull();
+      expect(buttonByLabel(openCardMenu(container), "Edit card")).not.toBeNull();
       expect(buttonByText(container, "New card")).not.toBeNull();
     } else {
       expect(buttonByLabel(container, "Delete card")).toBeNull();
@@ -449,13 +451,21 @@ describe("WorkboardView", () => {
     renderView();
     expect(state.selectedCardIds).toEqual(new Set(["first", "second"]));
     expect(second.getAttribute("aria-pressed")).toBe("true");
-    expectDefined(
-      second.querySelector<HTMLButtonElement>(".workboard-card__menu-trigger"),
-      ".workboard-card__menu-trigger",
-    ).click();
+    const panel = expectDefined(
+      second.querySelector<HTMLElement>(".workboard-card__action-menu-panel"),
+      "card menu panel",
+    );
+    expect(panel.childElementCount).toBe(0);
+    openCardMenu(second);
+    expect(panel.querySelector(".workboard-card__menu-group")).not.toBeNull();
     expect(state.selectedCardIds).toEqual(new Set(["first", "second"]));
     expect(state.detailCardId).toBeNull();
-    requireButton(second, "Edit card").click();
+    panel.dispatchEvent(
+      Object.assign(new Event("beforetoggle"), { oldState: "open", newState: "closed" }),
+    );
+    flush();
+    expect(panel.childElementCount).toBe(0);
+    requireButton(openCardMenu(second), "Edit card").click();
     renderView();
     expect(state.draftOpen).toBe(true);
     expect(state.editingCardId).toBe("second");
@@ -482,13 +492,12 @@ describe("WorkboardView", () => {
     const childCard = [...container.querySelectorAll<HTMLElement>(".workboard-card")].find((card) =>
       card.textContent?.includes("Ship game shell"),
     );
-    const start = childCard?.querySelector<HTMLButtonElement>(".workboard-card__start");
+    const menu = openCardMenu(expectDefined(childCard, "dependent card"));
+    const start = menu.querySelector<HTMLButtonElement>(".workboard-card__start");
     expect(childCard?.textContent).toContain("1 blocked");
     expect(start?.disabled).toBe(false);
     expect(start?.getAttribute("aria-label")).toBe("Run default agent");
-    childCard
-      ?.querySelector<HTMLButtonElement>('button[aria-label="View details"]')
-      ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    requireButton(menu, "View details").click();
     renderView();
     const detail = container.querySelector(".workboard-detail");
     expect(detail?.textContent).toContain("Dependencies");
@@ -534,16 +543,15 @@ describe("WorkboardView", () => {
       ];
       if (restriction === "non-admin") {
         renderView();
+        const menu = openCardMenu(container);
         const startButtons = [
-          ...container.querySelectorAll<HTMLButtonElement>(".workboard-card__start"),
+          ...menu.querySelectorAll<HTMLButtonElement>(".workboard-card__start"),
         ];
         expect(startButtons.map((button) => button.textContent?.trim())).toEqual(["Start"]);
         expect(startButtons.map((button) => button.getAttribute("aria-label"))).toEqual([
           "Run default agent",
         ]);
-        container
-          .querySelector<HTMLButtonElement>('button[aria-label="View details"]')
-          ?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        requireButton(menu, "View details").click();
       } else {
         state.detailCardId = "card-1";
       }
@@ -623,7 +631,9 @@ describe("WorkboardView", () => {
         .querySelector(".workboard-column--running")
         ?.dispatchEvent(new Event("drop", { bubbles: true, cancelable: true }));
     } else {
-      const moveSelect = container.querySelector<HTMLSelectElement>(".workboard-card__move-select");
+      const moveSelect = openCardMenu(container).querySelector<HTMLSelectElement>(
+        ".workboard-card__move-select",
+      );
       expect(moveSelect).not.toBeNull();
       if (route === "select" || route === "busy") {
         if (route === "busy") {

@@ -334,7 +334,7 @@ it("clears a roster error in the mounted plugin without issuing a Doctor request
 });
 
 describe("Memory overview request presentation", () => {
-  function fixture(props = snapshot()) {
+  async function fixture(props = snapshot()) {
     const abort = new AbortController();
     const pending: ReturnType<typeof deferred<DoctorMemoryStatusPayload>>[] = [];
     const request = vi.fn((_method: string, _params?: unknown) => {
@@ -352,6 +352,7 @@ describe("Memory overview request presentation", () => {
     const handle = settingsViews[0]!.mount(container, context);
     disposers.push(() => handle.dispose());
     flush();
+    await waitForSolid(() => expect(container.querySelector(".memory-overview")).not.toBeNull());
     let current = props;
     return {
       abort,
@@ -372,13 +373,31 @@ describe("Memory overview request presentation", () => {
     embedding: { ok: false, checked: false },
     embeddingRuntime: { state: "ready", engine: "llama.cpp", buildInfo: id },
   });
-  async function settle(f: ReturnType<typeof fixture>, index: number, id: string) {
+  async function settle(f: Awaited<ReturnType<typeof fixture>>, index: number, id: string) {
     f.pending[index]!.resolve(payload(id));
     await waitForSolid(() => expect(f.container.textContent).toContain(id));
   }
 
+  it("admits reads and scope updates before the lazy renderer is ready", async () => {
+    const previous = deferred<DoctorMemoryStatusPayload>();
+    const current = deferred<DoctorMemoryStatusPayload>();
+    const request = vi
+      .fn<ControlUiSettingsContext["request"]>()
+      .mockReturnValueOnce(previous.promise)
+      .mockReturnValueOnce(current.promise);
+    const context = overviewContext();
+    context.request = request;
+    const { container, update } = mountSettingsView(settingsViews[0]!, context);
+    expect(request).toHaveBeenCalledTimes(1);
+    update({ agentId: "writer" });
+    expect(request).toHaveBeenLastCalledWith("doctor.memory.status", { agentId: "writer" });
+    previous.resolve(payload("retired-engine"));
+    current.resolve(payload("current-engine"));
+    await waitForSolid(() => expectText(container, ["current-engine"], ["retired-engine"]));
+  });
+
   it("deduplicates ordinary reads and retains cards while an explicit embedding test runs", async () => {
-    const f = fixture();
+    const f = await fixture();
     f.update({ locale: "en" });
     expect(f.request).toHaveBeenCalledTimes(1);
     expect(f.request).toHaveBeenLastCalledWith("doctor.memory.status", { agentId: "main" });
@@ -397,7 +416,7 @@ describe("Memory overview request presentation", () => {
   });
 
   it("shows read failures and replaces the error with loading during retry", async () => {
-    const f = fixture();
+    const f = await fixture();
     f.pending[0]!.reject(new Error("Doctor temporarily unavailable"));
     await waitForSolid(() =>
       expect(f.container.textContent).toContain("Doctor temporarily unavailable"),
@@ -415,7 +434,7 @@ describe("Memory overview request presentation", () => {
     ["epoch", { connectionEpoch: 2 }],
     ["route", { routeIntent: "overview?agent=writer" }],
   ])("retires a held probe when %s authority changes", async (_kind, patch) => {
-    const f = fixture();
+    const f = await fixture();
     await settle(f, 0, "accepted-engine");
     findButton(f.container, /^Test$/)?.click();
     f.update(patch);
@@ -433,7 +452,7 @@ describe("Memory overview request presentation", () => {
     ["offline", { connected: false }],
     ["no-agent", { agentId: null }],
   ])("retires pending reads when %s without another Doctor request", async (kind, patch) => {
-    const f = fixture();
+    const f = await fixture();
     f.update(patch);
     f.pending[0]!.resolve(payload("retired-engine"));
     await f.pending[0]!.promise;
@@ -453,12 +472,12 @@ describe("Memory overview request presentation", () => {
   });
 
   it("retains disabled-engine reads and makes disposed controls harmless", async () => {
-    const disabled = fixture(
+    const disabled = await fixture(
       snapshot({ engine: { ...snapshot().engine, availability: "disabled" } }),
     );
     expect(disabled.request).toHaveBeenCalledTimes(1);
     disabled.dispose();
-    const f = fixture();
+    const f = await fixture();
     expect(f.request).toHaveBeenCalledTimes(1);
     const refresh = findButton(f.container, /^Refresh status$/)!;
     f.abort.abort();

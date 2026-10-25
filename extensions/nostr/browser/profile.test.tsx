@@ -64,6 +64,12 @@ class ProfileFixture {
     });
     flush();
     this.click("Edit Profile");
+  }
+  async ready() {
+    await vi.waitFor(() => {
+      flush();
+      expect(this.input("name")).toBeTruthy();
+    });
     this.field("name", "Alice Updated");
   }
   button(label: string) {
@@ -106,8 +112,9 @@ class ProfileFixture {
   }
 }
 let f: ProfileFixture;
-beforeEach(() => {
+beforeEach(async () => {
   f = new ProfileFixture();
+  await f.ready();
 });
 
 it("retains channel and profile facts while refreshed snapshots update their values", () => {

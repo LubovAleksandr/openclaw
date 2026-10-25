@@ -5,16 +5,54 @@ import type {
   ControlUiSettingsView,
   DoctorMemoryStatusPayload,
 } from "openclaw/plugin-sdk/control-ui";
-import { createMemo, createSignal, Errored, isPending, latest, Loading } from "solid-js";
+import { createMemo, createSignal, Errored, isPending, latest, lazy, Loading } from "solid-js";
 import { createTranslator } from "./i18n/index.ts";
-import { memoriesView } from "./memories.tsx";
-import { createMemoryOverview, type MemoryOverviewStatus } from "./overview.tsx";
+import { loadMessages } from "./i18n/locales.ts";
+import type { MemoryOverviewStatus } from "./overview.tsx";
+
+const MemoryMemories = lazy(() => import("./memories.tsx"), { export: "MemoryMemories" });
+
+export const memoriesView: ControlUiSettingsView = {
+  placement: { section: "memory", panel: "memories" },
+  mount(container, context) {
+    void loadMessages(context.props.locale);
+    // Only the host's imperative lifetime writes this presentation projection.
+    const [snapshot, setSnapshot] = createSignal(context.props, { ownedWrite: true });
+    const dispose = render(() => {
+      const t = createTranslator(() => snapshot().locale);
+      return (
+        <Errored
+          fallback={(error, retry) => (
+            <div class="callout danger" role="alert">
+              <p>{context.formatError(error())}</p>
+              <button class="btn btn--sm" onClick={retry}>
+                {t("memoryPage.memories.retry")}
+              </button>
+            </div>
+          )}
+        >
+          <Loading fallback={<p role="status">{t("common.loading")}</p>}>
+            <MemoryMemories context={context} snapshot={snapshot()} />
+          </Loading>
+        </Errored>
+      );
+    }, container);
+    return {
+      update(next) {
+        void loadMessages(next.locale);
+        setSnapshot(next);
+      },
+      dispose,
+    };
+  },
+};
 
 export const pluginId = "memory-core";
 export const settingsViews: readonly ControlUiSettingsView[] = [
   {
     placement: { section: "memory", panel: "overview" },
     mount(container, context) {
+      void loadMessages(context.props.locale);
       let current = context.props;
       let active = true;
       let request: object | undefined;
@@ -74,7 +112,10 @@ export const settingsViews: readonly ControlUiSettingsView[] = [
 
       function Overview() {
         const t = createTranslator(() => snapshot().locale);
-        const MemoryOverview = createMemoryOverview(context, snapshot);
+        const MemoryOverview = lazy(async () => {
+          const { createMemoryOverview } = await import("./overview.tsx");
+          return { default: createMemoryOverview(context, snapshot) };
+        });
         // Advance the admitted request and selected scope together before old data settles.
         const payload = createMemo(() => {
           const selected = latest(snapshot);
@@ -119,21 +160,36 @@ export const settingsViews: readonly ControlUiSettingsView[] = [
           return accepted ? { kind: "ready", payload: accepted } : { kind: "idle" };
         };
         return (
-          <Loading
-            on={latest(loadingReset)}
-            fallback={<Presentation status={{ kind: "loading" }} />}
+          <Errored
+            fallback={(error, retry) => (
+              <div class="callout danger" role="alert">
+                <p>{context.formatError(error())}</p>
+                <button class="btn btn--sm" onClick={retry}>
+                  {t("memoryPage.overview.hero.retry")}
+                </button>
+              </div>
+            )}
           >
-            <Errored
-              fallback={(error) => (
-                <Presentation status={{ kind: "error", message: context.formatError(error()) }} />
-              )}
-            >
-              <Presentation
-                status={status()}
-                probing={latest(receipt)?.probe && isPending(payload)}
-              />
-            </Errored>
-          </Loading>
+            <Loading fallback={<p role="status">{t("common.loading")}</p>}>
+              <Loading
+                on={latest(loadingReset)}
+                fallback={<Presentation status={{ kind: "loading" }} />}
+              >
+                <Errored
+                  fallback={(error) => (
+                    <Presentation
+                      status={{ kind: "error", message: context.formatError(error()) }}
+                    />
+                  )}
+                >
+                  <Presentation
+                    status={status()}
+                    probing={latest(receipt)?.probe && isPending(payload)}
+                  />
+                </Errored>
+              </Loading>
+            </Loading>
+          </Errored>
         );
       }
       const stop = render(() => <Overview />, container);
@@ -144,6 +200,7 @@ export const settingsViews: readonly ControlUiSettingsView[] = [
             return;
           }
           const changedScope = scope(current) !== scope(next);
+          void loadMessages(next.locale);
           current = next;
           setSnapshot(next);
           if (changedScope) {

@@ -1,6 +1,6 @@
 /** @jsxImportSource @solidjs/web */
 import { asDateTimestampMs } from "openclaw/plugin-sdk/string-coerce-runtime";
-import { createMemo, For } from "solid-js";
+import { createMemo, createSignal, For, Show } from "solid-js";
 import { icons } from "../../components/icons.tsx";
 import { t } from "../../i18n/index.ts";
 import type { createElementRefs } from "../../lib/element-refs.ts";
@@ -99,100 +99,106 @@ export function WorkboardCardView(input: {
     }
     input.workboard.onRequestUpdate?.();
   };
-  const ActionsMenu = () => (
-    <>
-      {!widget() && (action().writable || action().linkedSessionKey) ? (
-        <div class="workboard-card__action-menu">
-          <button
-            type="button"
-            class="workboard-card__menu-trigger"
-            aria-label={t("workboard.cardActions")}
-            aria-haspopup="dialog"
-            aria-expanded="false"
-            popovertarget={`workboard-card-menu-${input.card.id}`}
-          >
-            {icons.moreHorizontal}
-          </button>
-          <div
-            id={`workboard-card-menu-${input.card.id}`}
-            popover="auto"
-            role="dialog"
-            aria-label={t("workboard.cardActions")}
-            class="workboard-card__action-menu-panel"
-            ref={workboardPopoverRef("end")}
-            onClick={closeWorkboardPopoverOnAction}
-          >
-            <div class="workboard-card__menu-group">
-              <button
-                class="btn"
-                type="button"
-                aria-label={t("workboard.viewDetails")}
-                aria-haspopup="dialog"
-                aria-expanded={action().state.detailCardId === input.card.id ? "true" : "false"}
-                aria-controls={workboardCardDetailDrawerId}
-                onClick={showDetails}
-              >
-                {icons.eye}
-                <span>{t("workboard.viewDetails")}</span>
-              </button>{" "}
-              {action().writable && !action().archived ? (
-                <CardAction kind="edit" workboard={input.workboard} card={input.card} />
-              ) : null}
-            </div>
-            {action().showStartControls ||
-            action().sessionTarget ||
-            (action().writable && action().linkedSessionKey && action().live) ? (
-              <div class="workboard-card__menu-group">
-                {action().showStartControls ? (
-                  <StartExecutionButton
-                    workboard={input.workboard}
-                    card={input.card}
-                    engine={null}
-                    mode="autonomous"
-                  />
-                ) : null}{" "}
-                <OpenSessionCardAction
-                  workboard={input.workboard}
-                  session={action().sessionTarget}
-                />{" "}
-                {action().writable && action().linkedSessionKey && action().live ? (
-                  <CardAction
-                    kind="stop"
-                    workboard={input.workboard}
-                    card={input.card}
-                    busy={action().busy}
-                  />
+  const ActionsMenu = () => {
+    const [open, setOpen] = createSignal(false);
+    return (
+      <>
+        {!widget() && (action().writable || action().linkedSessionKey) ? (
+          <div class="workboard-card__action-menu">
+            <button
+              type="button"
+              class="workboard-card__menu-trigger"
+              aria-label={t("workboard.cardActions")}
+              aria-haspopup="dialog"
+              aria-expanded="false"
+              popovertarget={`workboard-card-menu-${input.card.id}`}
+            >
+              {icons.moreHorizontal}
+            </button>
+            <div
+              id={`workboard-card-menu-${input.card.id}`}
+              popover="auto"
+              role="dialog"
+              aria-label={t("workboard.cardActions")}
+              class="workboard-card__action-menu-panel"
+              ref={workboardPopoverRef("end")}
+              onClick={closeWorkboardPopoverOnAction}
+              onBeforeToggle={(event) => setOpen(event.newState === "open")}
+            >
+              <Show when={open()}>
+                <div class="workboard-card__menu-group">
+                  <button
+                    class="btn"
+                    type="button"
+                    aria-label={t("workboard.viewDetails")}
+                    aria-haspopup="dialog"
+                    aria-expanded={action().state.detailCardId === input.card.id ? "true" : "false"}
+                    aria-controls={workboardCardDetailDrawerId}
+                    onClick={showDetails}
+                  >
+                    {icons.eye}
+                    <span>{t("workboard.viewDetails")}</span>
+                  </button>{" "}
+                  {action().writable && !action().archived ? (
+                    <CardAction kind="edit" workboard={input.workboard} card={input.card} />
+                  ) : null}
+                </div>
+                {action().showStartControls ||
+                action().sessionTarget ||
+                (action().writable && action().linkedSessionKey && action().live) ? (
+                  <div class="workboard-card__menu-group">
+                    {action().showStartControls ? (
+                      <StartExecutionButton
+                        workboard={input.workboard}
+                        card={input.card}
+                        engine={null}
+                        mode="autonomous"
+                      />
+                    ) : null}{" "}
+                    <OpenSessionCardAction
+                      workboard={input.workboard}
+                      session={action().sessionTarget}
+                    />{" "}
+                    {action().writable && action().linkedSessionKey && action().live ? (
+                      <CardAction
+                        kind="stop"
+                        workboard={input.workboard}
+                        card={input.card}
+                        busy={action().busy}
+                      />
+                    ) : null}
+                  </div>
                 ) : null}
-              </div>
-            ) : null}
-            {!(!action().archived && (action().writable || widget())) ? null : (
-              <div class="workboard-card__menu-status">
-                <span>{t("workboard.moveTo")}</span>
-                <MoveAction />
-              </div>
-            )}
-            {action().writable ? (
-              <div class="workboard-card__menu-group">
-                <CardAction
-                  kind="archive"
-                  workboard={input.workboard}
-                  card={input.card}
-                  busy={action().busy}
-                  archived={action().archived}
-                />{" "}
-                <CardAction
-                  kind="delete"
-                  workboard={input.workboard}
-                  card={input.card}
-                  busy={action().busy}
-                />
-              </div>
-            ) : null}
+                {!(!action().archived && (action().writable || widget())) ? null : (
+                  <div class="workboard-card__menu-status">
+                    <span>{t("workboard.moveTo")}</span>
+                    <MoveAction />
+                  </div>
+                )}
+                {action().writable ? (
+                  <div class="workboard-card__menu-group">
+                    <CardAction
+                      kind="archive"
+                      workboard={input.workboard}
+                      card={input.card}
+                      busy={action().busy}
+                      archived={action().archived}
+                    />{" "}
+                    <CardAction
+                      kind="delete"
+                      workboard={input.workboard}
+                      card={input.card}
+                      busy={action().busy}
+                    />
+                  </div>
+                ) : null}
+              </Show>
+            </div>
           </div>
-        </div>
-      ) : null}
-    </>
-  );
+        ) : null}
+      </>
+    );
+  };
   const ListContents = () => (
     <>
       {input.surface === "list" ? (
