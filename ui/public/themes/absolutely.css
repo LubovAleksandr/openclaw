@@ -26,6 +26,7 @@
 }
 
 :root[data-theme="absolutely"] {
+  --shell-divider-size: calc(var(--resize-handle-line-size) / 2);
   /* Terracotta stays the accent; neutral graphite keeps nested surfaces clear. */
   --ring: #d97757;
   --accent: #d97757;
@@ -94,6 +95,7 @@
 }
 
 :root[data-theme="absolutely-light"] {
+  --shell-divider-size: calc(var(--resize-handle-line-size) / 2);
   /* Keep the soft accent; primary fills are deeper so white labels stay readable. */
   --ring: #cc7d5d;
   --accent: #cc7d5d;
@@ -129,6 +131,7 @@
   --muted-strong: #52524c;
   --muted-foreground: #5e5e58;
 
+  --resize-handle-rest-color: color-mix(in srgb, var(--text) 10%, transparent);
   --border: color-mix(in srgb, var(--text) 7%, var(--bg-content));
   --border-strong: rgba(45, 45, 43, 0.111);
   --inline-code-border: rgba(45, 45, 43, 0.13);
