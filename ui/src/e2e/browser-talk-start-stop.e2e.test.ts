@@ -140,8 +140,20 @@ async function openTalk(page: Page, width = 1366, height = 900) {
 suite.define(() => {
   it("keeps reduced-motion voice activity readable in a narrow viewport", async () => {
     await suite.withPage({ permissions: ["microphone"] }, async ({ page }) => {
-      const gateway = await installTalkGateway(page, googleSession("voice-browser-talk-e2e"));
+      const gateway = await installTalkGateway(page, googleSession("voice-browser-talk-e2e"), {
+        deferredMethods: ["talk.client.create"],
+        webSocketPassthroughPrefixes: ["wss://generativelanguage.googleapis.com/"],
+      });
       await installTalkBrowserFixtures(page);
+      const providerSetup = Promise.withResolvers<() => void>();
+      await page.routeWebSocket("wss://generativelanguage.googleapis.com/**", (socket) => {
+        socket.onMessage((message) => {
+          const frame = JSON.parse(message.toString()) as { setup?: unknown };
+          if (frame.setup) {
+            providerSetup.resolve(() => socket.send(JSON.stringify({ setupComplete: {} })));
+          }
+        });
+      });
 
       await page.emulateMedia({ reducedMotion: "reduce" });
       const tapToTalk = page.getByRole("button", { name: "Tap to talk" });
@@ -167,7 +179,10 @@ suite.define(() => {
         .toBe("none");
       const connectingReducedMotionTransform = await barTransform();
 
-      await completeGoogleSetup(page, gateway);
+      await gateway.waitForRequest("talk.client.create");
+      await gateway.resolveDeferred("talk.client.create");
+      const completeProviderSetup = await providerSetup.promise;
+      completeProviderSetup();
       await expect
         .poll(() => page.locator('.agent-chat__voice-activity[data-status="listening"]').count())
         .toBe(1);
