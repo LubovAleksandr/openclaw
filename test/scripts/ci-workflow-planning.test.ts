@@ -10924,11 +10924,15 @@ describe("ci workflow guards", () => {
     expect(productionScenario.run).toContain("ui-e2e-production-artifact-contract-v1");
     expect(productionScenario.run).toContain("--config test/vitest/vitest.ui-e2e.config.ts");
     expect(productionScenario.run).toContain("--maxWorkers 2");
+    const productionCondition = expectDefined(
+      productionScenario.if,
+      "production fixture condition",
+    );
     for (const reuse of [false, true]) {
       for (const runUi of [false, true]) {
         for (const compatibility of [false, true]) {
-          const context = {
-            eventName: "pull_request" as const,
+          const context: Parameters<typeof evaluateWorkflowExpression>[1] = {
+            eventName: "pull_request",
             repository: "openclaw/openclaw",
             runAttempt: 1,
             preflightOutputs: {
@@ -10946,7 +10950,7 @@ describe("ci workflow guards", () => {
           expect(
             evaluateWorkflowExpression(uiE2e.env.OPENCLAW_UI_E2E_SKIP_PRODUCTION_ARTIFACT, context),
           ).toBe(delegated ? "1" : "0");
-          expect(evaluateWorkflowCondition(productionScenario.if, context)).toBe(delegated);
+          expect(evaluateWorkflowCondition(productionCondition, context)).toBe(delegated);
         }
       }
     }
