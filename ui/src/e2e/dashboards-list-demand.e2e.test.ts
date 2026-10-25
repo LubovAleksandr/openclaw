@@ -208,7 +208,7 @@ suite.define(() => {
           updatedDashboardLabel: `Updated dashboard tab ${index}`,
         };
       };
-      const tabs = [await makeTab(1), await makeTab(2)];
+      const tabs = [await makeTab(1), await makeTab(2)] as const;
       const gateways = tabs.map(({ gateway }) => gateway);
       const eachTab = (run: (tab: (typeof tabs)[number], index: number) => Promise<unknown>) =>
         Promise.all(tabs.map(run));
@@ -266,14 +266,15 @@ suite.define(() => {
           )
           .toBe("Sessions");
         await sidebar.getByText(canonicalLabel, { exact: true }).waitFor();
-        await page.clock.install();
-        await pauseVirtualClock(page);
       });
+      // Both tabs share the context clock; advance it once for each event wave.
+      await context.clock.install();
+      await pauseVirtualClock(tabs[0].page);
 
       expect(requestCounts((await listRequests(gateways)).flat())).toEqual([2, 2, 4]);
 
       const beforeWave = await listRequests(gateways);
-      await eachTab(async ({ gateway, page, updatedDashboardLabel }, index) => {
+      await eachTab(async ({ gateway, updatedDashboardLabel }, index) => {
         await gateway.setMethodResponse(
           listMethod,
           allBoardsResponse(
@@ -288,9 +289,9 @@ suite.define(() => {
           "sessions.changed",
           changedSession(`agent:main:changed-${index + 1}`, 20 + index),
         );
-        await page.clock.runFor(5_001);
-        await page.clock.resume();
       });
+      await context.clock.runFor(5_001);
+      await context.clock.resume();
       await eachTab(({ gateway }, index) =>
         expect
           .poll(async () => {

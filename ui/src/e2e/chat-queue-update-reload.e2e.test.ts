@@ -1,10 +1,7 @@
 import type { Locator, Page } from "playwright";
 import { expect, it } from "vitest";
 import { selectChatLayoutAction } from "../test-helpers/chat-layout-menu.ts";
-import {
-  waitForControlUiGatewayReady,
-  waitForControlUiGatewayReconnecting,
-} from "../test-helpers/control-ui-e2e-readiness.ts";
+import { waitForControlUiGatewayReady } from "../test-helpers/control-ui-e2e-readiness.ts";
 import {
   installMockGateway,
   createControlUiMockSameOriginGatewayScript,
@@ -40,9 +37,11 @@ async function installQueueGateway(page: Page, names = ["original", "second"]) {
 async function disconnectGateway(page: Page, gateway: Gateway) {
   await pauseVirtualClock(page);
   await gateway.setOnline(false);
-  // Show the offline status after its grace window and start the first retry socket.
+  // Start the first retry socket; narrow layouts can hide the status control.
   await page.clock.fastForward(2_000);
-  await waitForControlUiGatewayReconnecting(page);
+  await page.waitForFunction(
+    () => window.openclawControlUi?.snapshot().gatewayPhase === "reconnecting",
+  );
 }
 
 async function resumeGateway(page: Page, gateway: Gateway) {
