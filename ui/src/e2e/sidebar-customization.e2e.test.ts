@@ -596,8 +596,7 @@ suite.define(() => {
       await expect
         .poll(() => usage.evaluate((entry) => getComputedStyle(entry).backgroundColor))
         .not.toBe("rgba(0, 0, 0, 0)");
-      // Rail pins match the view buttons: same icon size, and the same fill for
-      // hover and for the current page.
+      // Rail pins match view buttons in each state; hover and selection stay distinct.
       const railUsage = pinnedItems.first();
       const iconWidth = (locator: typeof railUsage) =>
         locator
@@ -609,8 +608,14 @@ suite.define(() => {
       expect(await iconWidth(railUsage)).toBe(await iconWidth(pagesButton));
       await waitForControlUiProofSurface(pagesButton, []);
       const pressedBackground = await background(pagesButton);
+      const sessionsButton = sidebar.locator('[data-navigation-view="sessions"]');
+      expect(await sessionsButton.getAttribute("aria-pressed")).toBe("false");
+      await sessionsButton.hover();
+      await waitForControlUiProofSurface(sessionsButton, []);
+      const hoveredBackground = await background(sessionsButton);
+      expect(hoveredBackground).not.toBe(pressedBackground);
       await railUsage.hover();
-      await expect.poll(() => background(railUsage)).toBe(pressedBackground);
+      await expect.poll(() => background(railUsage)).toBe(hoveredBackground);
       await railUsage.click();
       await expect.poll(() => new URL(page.url()).pathname).toBe("/usage");
       await page.mouse.move(900, 600);
