@@ -39,7 +39,7 @@ it.each<[OpusOptions, string, string]>([
   let outputPath = "";
   runFfmpegMock.mockImplementationOnce(
     async (args: string[], execution: { timeoutMs?: number }) => {
-      inputPath = args[args.indexOf("-i") + 1];
+      inputPath = args[args.indexOf("-i") + 1] ?? "";
       outputPath = args.at(-1) ?? "";
       expect(path.basename(inputPath)).toBe(input);
       expect(path.basename(outputPath)).toContain(output);

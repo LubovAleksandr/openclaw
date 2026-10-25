@@ -38,12 +38,13 @@ export function createPage(
   };
   const snapshot = gateway.snapshot;
   Object.assign(snapshot, { client, phase: "connected", hello, sessionKey: "main" });
+  const router = createRouter({
+    routes: [definePage({ id: "plugin", path: "/plugin", component: () => ({}) })],
+  });
   const context = {
     gateway,
     config: createShellConfigFixture(),
-    router: createRouter({
-      routes: [definePage({ id: "plugin", path: "/plugin", component: () => ({}) })],
-    }),
+    router,
     ...configure(gateway, hello),
   } as ApplicationContext;
   const tab = controlUiTabs?.[0];
@@ -65,7 +66,7 @@ export function createPage(
     },
     dispose: () => {
       view.unmount();
-      context.router.stop();
+      router.stop();
     },
   };
 }

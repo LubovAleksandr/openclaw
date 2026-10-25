@@ -115,11 +115,14 @@ async function sendPrepared(overrides: Partial<ActionContext>) {
   const payload = await actions.prepareSendPayload!({ ctx, to, payload: { text } });
   expect(payload).not.toBeNull();
   return outbound.sendPayload!({
-    ...ctx,
+    cfg: ctx.cfg,
     to,
     text,
     payload: payload!,
     accountId: ctx.accountId ?? undefined,
+    mediaAccess: ctx.mediaAccess,
+    mediaLocalRoots: ctx.mediaLocalRoots,
+    mediaReadFile: ctx.mediaReadFile,
   });
 }
 
