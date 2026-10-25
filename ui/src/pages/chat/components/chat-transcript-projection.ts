@@ -65,6 +65,7 @@ export function projectChatTranscript(
 ) {
   const state = getTranscriptState(props.paneId);
   const { asyncQuestions, selectedSession: activeSession } = props;
+  const asyncQuestionGeneration = state.asyncQuestionGeneration;
   const { showOwnSenderName, replyPeople } = resolveTranscriptParticipants(props);
   const mediaPolicyKey = assistantMediaPolicyKey(activeSession, props.mediaPolicyEpoch);
   const { showReasoning, reasoning } = projectChatReasoning(props);
@@ -530,7 +531,7 @@ export function projectChatTranscript(
         ...transcriptReplyDependencies(item, loadedReplySources),
         // Durable drafts can restore the same map under a new callback generation.
         hasQuestions ? asyncQuestions.drafts : undefined,
-        hasQuestions ? state.asyncQuestionGeneration : undefined,
+        hasQuestions ? asyncQuestionGeneration : undefined,
         // Tool plugins own foreground activity; launch cards also read the child roster.
         hasTools ? presented : undefined,
         hasTools ? subagents.rowsKey : undefined,
