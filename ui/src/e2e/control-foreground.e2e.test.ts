@@ -338,7 +338,7 @@ suite.define(() => {
   );
 
   it.each(["light", "dark"] as const)(
-    "keeps settings links and selected copy legible in %s",
+    "preserves approved accent ink for settings links and selected copy in %s",
     async (mode) => {
       await suite.withPage(
         {
@@ -374,7 +374,6 @@ suite.define(() => {
           await page.goto(`${suite.server.baseUrl}chat`);
           const chatLink = page.locator('.chat-text a[href="https://example.test/guide"]');
           await chatLink.waitFor();
-          const linkInk = await color(chatLink);
           await page.goto(`${suite.server.baseUrl}settings/updates`);
           const genericLink = page.locator(
             'a[href="https://docs.openclaw.ai/install/update-troubleshooting"]',
@@ -382,11 +381,8 @@ suite.define(() => {
           await genericLink.waitFor();
           await genericLink.scrollIntoViewIfNeeded();
           expect
-            .soft(
-              await color(genericLink),
-              "settings help and transcript links share readable foreground",
-            )
-            .toEqual(linkInk);
+            .soft(await color(genericLink), "settings help retains the approved accent foreground")
+            .toEqual(await roleColor(genericLink, "--accent"));
           await capture(page, `settings-${mode}-generic-link`, [genericLink]);
           await page.goto(`${suite.server.baseUrl}settings/appearance`);
           await page.locator(".settings-theme-card--custom").click();
@@ -406,10 +402,9 @@ suite.define(() => {
           await active.waitFor();
           await active.scrollIntoViewIfNeeded();
           await page.mouse.move(10, 10);
-          const heading = page.locator(".settings-sidebar__title");
           expect
-            .soft(await color(active), "current section uses neutral heading foreground")
-            .toEqual(await color(heading));
+            .soft(await color(active), "current section retains the approved accent foreground")
+            .toEqual(await roleColor(active, "--accent"));
           await capture(page, `settings-${mode}-section-active`, [active]);
           await page.getByRole("button", { name: "Raw", exact: true }).click();
           await page
@@ -421,9 +416,9 @@ suite.define(() => {
           expect
             .soft(
               await color(summary),
-              "pending changes disclosure uses neutral heading foreground",
+              "pending changes disclosure retains the approved accent foreground",
             )
-            .toEqual(await color(heading));
+            .toEqual(await roleColor(summary, "--accent"));
           await capture(page, `settings-${mode}-pending-changes`, [summary]);
           const disclosure = page.locator(".config-diff");
           if ((await disclosure.getAttribute("open")) === null) {

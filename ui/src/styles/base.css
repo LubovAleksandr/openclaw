@@ -858,7 +858,7 @@ input:is(
 }
 
 a {
-  color: var(--link);
+  color: var(--accent);
   text-decoration: none;
   text-underline-offset: 2px;
 }

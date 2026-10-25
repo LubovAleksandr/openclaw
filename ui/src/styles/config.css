@@ -77,7 +77,7 @@
   padding: 10px 16px;
   font-size: 12px;
   font-weight: 600;
-  color: var(--text-strong);
+  color: var(--accent);
   list-style: none;
 }
 
@@ -589,13 +589,13 @@
   gap: 6px;
   width: max-content;
   max-width: 100%;
-  color: var(--link);
+  color: var(--accent);
   font-size: 12px;
   font-weight: 600;
 }
 
 .settings-theme-import__external:hover {
-  color: var(--link-hover);
+  color: var(--accent-hover);
   text-decoration: underline;
 }
 
@@ -1032,7 +1032,7 @@ div.mcp-server-form__actions {
 }
 
 .config-accordion-group__item--active {
-  color: var(--text-strong);
+  color: var(--accent);
   font-weight: 600;
 }
 
