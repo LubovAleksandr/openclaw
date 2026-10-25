@@ -100,9 +100,7 @@ async function prepareScenario(voiceDestination?: string) {
       return { hash: "config-hash" };
     }
     if (method === "channels.status") {
-      return {
-        channelAccounts: { discord: [{ accountId: "sut", running: true, connected: true }] },
-      };
+      return discordStatus(true);
     }
     throw new Error(`unexpected gateway call: ${method}`);
   });
@@ -124,14 +122,12 @@ function transcriptFixture() {
     throw new Error("unexpected scenario run kind");
   }
   const configureTranscriptVoiceAccess = vi.fn(async () => {});
+  const scenarioId = "discord-transcripts-voice-authorization";
+  const evidencePath = path.join(outputDir, `${scenarioId}-evidence.json`);
   const environment = createScenarioEnvironment({
     outputDir,
     runtimeEnv: { ...flowEnv, voiceChannelId },
-    scenario: {
-      id: "discord-transcripts-voice-authorization",
-      timeoutMs: 60_000,
-      title: "Discord transcript authorization",
-    },
+    scenario: { id: scenarioId, timeoutMs: 60_000, title: "Discord transcript authorization" },
   });
   return {
     run,
@@ -144,12 +140,7 @@ function transcriptFixture() {
         voiceChannel: { id: voiceChannelId, type: 2 },
       }),
     evidence: async (): Promise<Record<string, unknown>> =>
-      JSON.parse(
-        await fs.readFile(
-          path.join(outputDir, "discord-transcripts-voice-authorization-evidence.json"),
-          "utf8",
-        ),
-      ),
+      JSON.parse(await fs.readFile(evidencePath, "utf8")),
   };
 }
 
@@ -293,17 +284,17 @@ describe("discord live qa runtime", () => {
 
   it("normalizes observed Discord messages", () => {
     const timestamp = "2026-04-22T12:00:00.000Z";
-    expect(
-      normalizeDiscordObservedMessage({
-        id: voiceChannelId,
-        channel_id: channelId,
-        guild_id: guildId,
-        content: "hello",
-        timestamp,
-        author: { id: driverId, username: "driver", bot: true },
-        referenced_message: { id: sutId },
-      }),
-    ).toEqual({ ...polledReply(voiceChannelId, "hello", timestamp).message, senderId: driverId });
+    const observed = normalizeDiscordObservedMessage({
+      ...sentMessage(voiceChannelId, timestamp),
+      guild_id: guildId,
+      content: "hello",
+      author: { id: driverId, username: "driver", bot: true },
+      referenced_message: { id: sutId },
+    });
+    expect(observed).toEqual({
+      ...polledReply(voiceChannelId, "hello", timestamp).message,
+      senderId: driverId,
+    });
   });
 
   it("matches Discord scenario replies by SUT id and marker", () => {
@@ -326,16 +317,12 @@ describe("discord live qa runtime", () => {
   });
 
   it("collects the status reaction sequence across timeline snapshots", () => {
-    expect(
-      collectSeenReactionSequence(
-        [
-          reactionSnapshot(0, ["👀"]),
-          reactionSnapshot(250, ["👀", "🤔"]),
-          reactionSnapshot(500, ["👍"]),
-        ],
-        ["👀", "🤔", "👍"],
-      ),
-    ).toEqual(["👀", "🤔", "👍"]);
+    const snapshots = [
+      reactionSnapshot(0, ["👀"]),
+      reactionSnapshot(250, ["👀", "🤔"]),
+      reactionSnapshot(500, ["👍"]),
+    ];
+    expect(collectSeenReactionSequence(snapshots, ["👀", "🤔", "👍"])).toEqual(["👀", "🤔", "👍"]);
   });
 
   it("normalizes reaction snapshots from Discord messages", () => {
@@ -622,20 +609,19 @@ describe("discord live qa runtime", () => {
 
   it("proves visible denial, authorized join/stop, and message cleanup", async () => {
     const f = transcriptFixture();
-    const send = vi
-      .spyOn(testing, "sendChannelMessage")
-      .mockResolvedValueOnce(sentMessage("623456789012345671", "2026-08-14T12:00:00.000Z"))
-      .mockResolvedValueOnce(sentMessage("623456789012345673", "2026-08-14T12:00:01.000Z"))
-      .mockResolvedValueOnce(sentMessage("623456789012345675", "2026-08-14T12:00:02.000Z"));
-    vi.spyOn(testing, "pollChannelMessages")
-      .mockResolvedValueOnce(
-        polledReply(
-          "623456789012345672",
-          `${f.run.negativeMarker} You are not authorized to use this command.`,
-        ),
-      )
-      .mockResolvedValueOnce(polledReply("623456789012345674", f.run.positiveMarker))
-      .mockResolvedValueOnce(polledReply("623456789012345676", f.run.stopMarker));
+    const send = vi.spyOn(testing, "sendChannelMessage");
+    const poll = vi.spyOn(testing, "pollChannelMessages");
+    const replies = [
+      `${f.run.negativeMarker} You are not authorized to use this command.`,
+      f.run.positiveMarker,
+      f.run.stopMarker,
+    ];
+    replies.forEach((text, index) => {
+      send.mockResolvedValueOnce(
+        sentMessage(`62345678901234567${index * 2 + 1}`, `2026-08-14T12:00:0${index}.000Z`),
+      );
+      poll.mockResolvedValueOnce(polledReply(`62345678901234567${index * 2 + 2}`, text));
+    });
     vi.spyOn(testing, "getCurrentDiscordVoiceState").mockResolvedValue(null);
     vi.spyOn(testing, "waitForDiscordVoiceState").mockResolvedValue({
       channel_id: voiceChannelId,
