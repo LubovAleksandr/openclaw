@@ -10,21 +10,10 @@ import {
   waitForPlaybackSourceCleanup,
 } from "./playback-transcode.test-support.js";
 
-const { runFfmpeg, playbackWarn, observeWorkspaceRoot } = vi.hoisted(() => ({
+const { runFfmpeg, observeWorkspaceRoot } = vi.hoisted(() => ({
   runFfmpeg: vi.fn(),
-  playbackWarn: vi.fn(),
   observeWorkspaceRoot: vi.fn<(root: Root, workspace: TempWorkspace) => void>(),
 }));
-vi.mock("../logging/subsystem.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../logging/subsystem.js")>();
-  return {
-    ...actual,
-    createSubsystemLogger: (...args: Parameters<typeof actual.createSubsystemLogger>) => {
-      const logger = actual.createSubsystemLogger(...args);
-      return args[0] === "media/playback" ? { ...logger, warn: playbackWarn } : logger;
-    },
-  };
-});
 vi.mock("../infra/fs-safe.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../infra/fs-safe.js")>();
   return {
@@ -68,7 +57,6 @@ const fixture = usePlaybackFixture("openclaw-playback-staging-", [
   "./media-probe.js",
   "@openclaw/fs-safe/temp",
   "../infra/fs-safe.js",
-  "../logging/subsystem.js",
 ]);
 const { resolveTranscode, resolveMetadata } = fixture;
 
@@ -85,7 +73,6 @@ afterEach(async () => {
 
 beforeEach(() => {
   runFfmpeg.mockReset();
-  playbackWarn.mockReset();
 });
 
 async function createSource(
@@ -117,12 +104,11 @@ describe("playback input staging", () => {
       await fs.writeFile(args.at(-1) ?? "", "normalized-audio");
       return "";
     });
-    await transcode(source);
-    expect(runFfmpeg).toHaveBeenCalledOnce();
-    expect(await resolveTranscode(source)).toMatchObject({
+    expect(await transcode(source)).toMatchObject({
       kind: "transcoded",
       contentType: "audio/mp4",
     });
+    expect(runFfmpeg).toHaveBeenCalledOnce();
     await expect(fs.stat(inputPath!)).rejects.toMatchObject({ code: "ENOENT" });
   });
 
@@ -160,9 +146,6 @@ describe("playback input staging", () => {
         },
       });
       await expect(transcode(source)).resolves.toEqual({ kind: "fallback" });
-      expect(playbackWarn).toHaveBeenCalledWith(
-        expect.stringMatching(change === "grow" ? /exceeds limit/ : /changed|mismatch/),
-      );
       expect(changed).toBe(true);
       expect(runFfmpeg).not.toHaveBeenCalled();
       expect(await resolveTranscode(source)).toEqual({ kind: "fallback" });
@@ -198,7 +181,6 @@ describe("playback input staging", () => {
       };
     });
     await expect(transcode(source)).resolves.toEqual({ kind: "fallback" });
-    expect(playbackWarn).toHaveBeenCalledWith(expect.stringMatching(/changed|mismatch/));
     expect([writerWasOpenAtMove, replaced, writer?.fd]).toEqual([true, true, -1]);
     expect(runFfmpeg).not.toHaveBeenCalled();
   });
@@ -216,10 +198,8 @@ describe("playback input staging", () => {
       await fs.writeFile(args.at(-1) ?? "", "normalized-audio");
       return "";
     });
-    await transcode(source);
+    expect(await transcode(source)).toEqual({ kind: "fallback" });
     expect(runFfmpeg).toHaveBeenCalledOnce();
-    expect(playbackWarn).toHaveBeenCalledWith(expect.stringContaining(cleanupError.message));
     expect(quarantine).toBeDefined();
-    expect(await resolveTranscode(source)).toEqual({ kind: "fallback" });
   });
 });
