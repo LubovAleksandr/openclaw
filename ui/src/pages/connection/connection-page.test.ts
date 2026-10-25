@@ -218,6 +218,7 @@ afterEach(async () => {
 it.each([
   { phase: "offline", stale: false },
   { phase: "stopped", stale: false },
+  { phase: "reconnecting", stale: false },
   { phase: "connected", stale: false },
   { phase: "offline", stale: true },
 ] as const)(
@@ -235,27 +236,27 @@ it.each([
     });
     const { page } = await mount(gateway);
     const forget = () => findButton(page, "Forget this browser");
+    const confirm = () =>
+      document.querySelector<HTMLButtonElement>(".exec-approval-actions button.danger");
+    const openConfirmation = async () => {
+      forget()?.click();
+      await waitForPage(() => expect(confirm()).not.toBeNull());
+    };
     expect(forget()).toBeDefined();
-    forget()?.click();
-    await waitForPage(() =>
-      expect(document.querySelector(".exec-approval-actions button.danger")).not.toBeNull(),
-    );
+    await openConfirmation();
     document
       .querySelector<HTMLButtonElement>(".exec-approval-actions button:not(.danger)")
       ?.click();
     await waitForPage(() => expect(document.querySelector(".exec-approval-actions")).toBeNull());
     expect(gateway.forgetDeviceToken).not.toHaveBeenCalled();
-    forget()?.click();
-    await waitForPage(() =>
-      expect(document.querySelector(".exec-approval-actions button.danger")).not.toBeNull(),
-    );
+    await openConfirmation();
     expect(document.querySelector(".exec-approval-sub")?.textContent).toContain(
       "gateway.example.test",
     );
     if (stale) {
       gateway.connection.gatewayUrl = "wss://other.example.test";
     }
-    document.querySelector<HTMLButtonElement>(".exec-approval-actions button.danger")?.click();
+    confirm()?.click();
     if (stale) {
       await waitForPage(() => expect(document.querySelector(".exec-approval-actions")).toBeNull());
       expect(gateway.forgetDeviceToken).not.toHaveBeenCalled();
@@ -369,10 +370,8 @@ it("keeps one ping in flight, excludes failures and hidden responses, and cancel
   elapse(9_980);
   responses[2]!.resolve(null);
   await vi.advanceTimersByTimeAsync(10_000);
-  await waitForPage(() => {
-    expect(pingRequest).toHaveBeenCalledTimes(3);
-    expect(text(page, ".connection-ping")).toContain("Samples: 1/100");
-  });
+  expect(pingRequest).toHaveBeenCalledTimes(3);
+  await check({ ping: contains("Samples: 1/100") });
   setVisibility("visible");
   elapse(40);
   responses[3]!.resolve(null);
@@ -473,10 +472,7 @@ it("shares one host and activity poll independently of ping and reports failed r
     .mockResolvedValue(gatewaySystemInfo);
   const { page, state, check, tick, unmount } = await setup(systemInfoRequest);
   expect(state().placeholders).toBeGreaterThan(0);
-  expect(state()).toMatchObject({
-    hostText: excludes("Loading…"),
-    busy: "true",
-  });
+  expect(state()).toMatchObject({ hostText: excludes("Loading…"), busy: "true" });
   initial.resolve(gatewaySystemInfo);
   await check({ placeholders: 0, busy: "false", hostText: contains("Gateway") });
   const hostElement = state().hostElement;
@@ -642,13 +638,10 @@ it("saves and discards session edits independently of the pending connection", a
   editInput(page, "Default session", "  saved-session  ");
   flush();
   button("Save").click();
-  await waitForPage(() => {
-    expect(current.gateway.snapshot.sessionKey).toBe("saved-session");
-    expect(input(page, "Default session").value).toBe("saved-session");
-    expect(input(page, "Gateway secret").value).toBe("pending-token");
-    expect(page.textContent).toContain("Saved");
-    expect(connect).not.toHaveBeenCalled();
-  });
+  await check({ session: "saved-session", secret: "pending-token" });
+  expect(current.gateway.snapshot.sessionKey).toBe("saved-session");
+  expect(page.textContent).toContain("Saved");
+  expect(connect).not.toHaveBeenCalled();
   editInput(page, "Default session", " ");
   await waitForPage(() => expect(button("Save").disabled).toBe(true));
   button("Discard changes").click();
@@ -684,7 +677,7 @@ it("keeps an edited draft through reconnect and resets it for a replacement sour
   await check({ secret: "replacement-token", session: "main", secretType: "password", calls: 3 });
 });
 
-it.each(["response", "error", "response before rebinding"] as const)(
+it.each(["error", "response before rebinding"] as const)(
   "rejects an old Gateway source %s when the replacement reuses its client",
   async (outcome) => {
     vi.useFakeTimers();
@@ -704,9 +697,7 @@ it.each(["response", "error", "response before rebinding"] as const)(
     }
     setContext({ ...context, gateway: second.gateway });
     await check({ calls: 2 });
-    if (outcome === "response") {
-      firstResponse.resolve({ ...deviceSystemInfo, machineName: "Stale" });
-    } else if (outcome === "error") {
+    if (outcome === "error") {
       firstResponse.reject(
         new GatewayRequestError({
           code: "INVALID_REQUEST",

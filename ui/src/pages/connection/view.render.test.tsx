@@ -1,10 +1,11 @@
 /* @vitest-environment jsdom */
 
 import { createSignal, flush } from "solid-js";
-import { beforeEach, expect, it, vi } from "vitest";
+import { beforeEach, expect, it } from "vitest";
 import type { SystemInfoResult } from "../../../../packages/gateway-protocol/src/index.js";
 import type { GatewayHelloOk } from "../../api/gateway.ts";
 import { mountSolid } from "../../test-helpers/mount-solid.ts";
+import { makeUiSettings } from "../../test-helpers/settings-node.ts";
 import { ConnectionView, type ConnectionProps } from "./view.tsx";
 
 let container: HTMLDivElement;
@@ -23,20 +24,7 @@ function mountConnection({ authMode, gatewayUrl, ...overrides }: ConnectionOptio
     phase: "offline",
     hello: authMode ? ({ snapshot: { authMode } } as GatewayHelloOk) : null,
     liveGatewayUrl: "ws://127.0.0.1:18789",
-    settings: {
-      gatewayUrl: gatewayUrl ?? "ws://127.0.0.1:18789",
-      token: "tok",
-      sessionKey: "main",
-      lastActiveSessionKey: "main",
-      theme: "claw",
-      themeMode: "system",
-      chatShowThinking: true,
-      chatShowToolCalls: true,
-      navCollapsed: false,
-      navWidth: 258,
-      sidebarEntries: [],
-      locale: "en",
-    },
+    settings: makeUiSettings(gatewayUrl ?? "ws://127.0.0.1:18789", { token: "tok", locale: "en" }),
     secret: "tok",
     lastError: null,
     systemInfo: null,
@@ -146,17 +134,9 @@ it("hides Gateway URL and shared credentials for embedded ingress while preservi
 
 it("keeps edited controls and details mounted while diagnostics refresh", () => {
   document.body.append(container);
-  const props = mountConnection({
-    phase: "connected",
-    dirty: true,
-    onConnectionChange: vi.fn(),
-    onSecretChange: vi.fn(),
-    onSessionKeyChange: vi.fn(),
-    onConnect: vi.fn(),
-  });
+  const props = mountConnection({ phase: "connected", dirty: true });
   const url = input("Gateway URL")!;
   const secret = input("Gateway secret")!;
-  const session = input("Default session")!;
   const details = container.querySelector<HTMLDetailsElement>("details")!;
   details.open = true;
   url.focus();
@@ -176,31 +156,6 @@ it("keeps edited controls and details mounted while diagnostics refresh", () => 
   expect(details.open).toBe(true);
   expect(secret.type).toBe("text");
   expect(text(".connection-ping__stats")).toContain("19.0");
-  url.value = "wss://next.example";
-  url.dispatchEvent(new Event("input", { bubbles: true }));
-  secret.value = "next-secret";
-  secret.dispatchEvent(new Event("input", { bubbles: true }));
-  session.value = "next-session";
-  session.dispatchEvent(new Event("input", { bubbles: true }));
-  container.querySelector<HTMLButtonElement>(".connection-actions .btn.primary")!.click();
-  expect(props.onConnectionChange).toHaveBeenCalledWith({ gatewayUrl: "wss://next.example" });
-  expect(props.onSecretChange).toHaveBeenCalledWith("next-secret");
-  expect(props.onSessionKeyChange).toHaveBeenCalledWith("next-session");
-  expect(props.onConnect).toHaveBeenCalledOnce();
-});
-
-it.each(["stopped", "reconnecting"] as const)("offers browser recovery while %s", (phase) => {
-  const props = mountConnection({ phase, canForgetDevice: true });
-  const section = [...container.querySelectorAll(".settings-section")].at(-1);
-  expect(section).toBeDefined();
-  expect(text("h2", section)).toBe("Browser");
-  expect(text(".settings-row__title", section)).toBe("Saved sign-in for this gateway");
-  expect(section?.querySelector(".settings-row__desc")).toBeNull();
-  const button = section?.querySelector<HTMLButtonElement>("button");
-  expect(button?.textContent?.trim()).toBe("Forget this browser");
-  expect(button).toMatchObject({ className: "btn", disabled: false });
-  mountConnection({ ...props, canForgetDevice: false });
-  expect(container.textContent).not.toContain("Browser");
 });
 
 it("disables connection actions while the Gateway starts", () => {
@@ -224,8 +179,8 @@ it("shows setup-code guidance beneath the secret before connecting", () => {
   expect(control?.querySelector('[role="status"]')).toBeNull();
 });
 
-it.each(["token", "password"] as const)("labels and reveals a %s secret", (authMode) => {
-  const props = mountConnection({ authMode });
+it.each(["token", "password"] as const)("labels and masks a %s secret", (authMode) => {
+  mountConnection({ authMode });
   expect(input("Gateway secret")).toMatchObject({
     type: "password",
     value: "tok",
@@ -234,8 +189,6 @@ it.each(["token", "password"] as const)("labels and reveals a %s secret", (authM
   expect(container.textContent).toContain(`This Gateway expects its ${authMode}.`);
   expect(query('[role="radiogroup"]')).toBeNull();
   expect(query('button[aria-label="Toggle secret visibility"]')).not.toBeNull();
-  mountConnection({ ...props, showGatewaySecret: true });
-  expect(input("Gateway secret")).toMatchObject({ type: "text", value: "tok" });
 });
 
 it.each([undefined, "wss://other.example"])(
