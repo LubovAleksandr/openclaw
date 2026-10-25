@@ -105,10 +105,9 @@ async function deliver(
     const isPatch = fixture.id.startsWith("tool-diff");
     const isError = fixture.id === "tool-diff-error";
     const name = isPatch ? "apply_patch" : "exec";
-    const args =
-      isPatch
-        ? { changes: [{ path: "synthetic.ts", kind: { type: "update" }, diff: fixture.text }] }
-        : { input: "text(await tools.exec_command({cmd: 'synthetic-fixture'}));" };
+    const args = isPatch
+      ? { changes: [{ path: "synthetic.ts", kind: { type: "update" }, diff: fixture.text }] }
+      : { input: "text(await tools.exec_command({cmd: 'synthetic-fixture'}));" };
     await gateway.emitGatewayEvent("agent", {
       sessionKey,
       runId,
