@@ -270,6 +270,9 @@ type Result = {
   taskMs?: number;
   layoutMs?: number;
   styleMs?: number;
+  heapBeforeBytes?: number;
+  heapAfterBytes?: number;
+  heapDeltaBytes?: number;
   durationBreakdownMs?: Record<string, number>;
   longTasks?: { count: number; totalMs: number; maxMs: number };
   requests?: Record<string, number>;
@@ -334,8 +337,9 @@ if (values["process-wakeups"]) {
     }
   }
 }
+const browserExecutable = resolvePlaywrightChromiumExecutablePath(chromium.executablePath());
 const browser = await chromium.launch({
-  executablePath: resolvePlaywrightChromiumExecutablePath(chromium.executablePath()),
+  executablePath: browserExecutable,
   headless: !values.headed,
 });
 
@@ -488,6 +492,7 @@ try {
       {
         revision: execFileSync("git", ["rev-parse", "HEAD"], { encoding: "utf8" }).trim(),
         browser: browser.version(),
+        browserExecutable,
         host: {
           platform: os.platform(),
           arch: os.arch(),
@@ -895,6 +900,9 @@ try {
               result.projectionCoverageArtifact = artifact;
             }
             const after = await metrics(cdp);
+            result.heapBeforeBytes = before.JSHeapUsedSize;
+            result.heapAfterBytes = after.JSHeapUsedSize;
+            result.heapDeltaBytes = after.JSHeapUsedSize - before.JSHeapUsedSize;
             result.longTasks = await taskProbe.evaluate(({ durations, observer }) => {
               durations.push(...observer.takeRecords().map((entry) => entry.duration));
               observer.disconnect();

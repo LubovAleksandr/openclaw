@@ -19,6 +19,7 @@ import type { ProjectionFamily } from "../../ui/src/test-helpers/control-ui-proj
 import { mcpResourceHtml } from "../../ui/src/test-helpers/control-ui-team-scale-widget-html.ts";
 import { cronListResponseFixture } from "../../ui/src/test-helpers/cron.ts";
 import { meetingStatus } from "../../ui/src/test-helpers/transcripts.test-support.ts";
+import { heavyContentScenarios } from "./control-ui-heavy-content-scenarios.ts";
 import { runProjectionFixture } from "./control-ui-projection-fixtures.ts";
 import type { ControlUiResourceCounts } from "./control-ui-resource-counts.ts";
 
@@ -54,6 +55,7 @@ export type InteractionSandbox = { sandboxUrl: string; sandboxPort: number };
 export type InteractionEvidence = Record<string, number | boolean>;
 
 type InteractionFixtureOptions = {
+  heavyContent?: boolean;
   runningSessions?: boolean;
   longSessionLabels?: boolean;
   longUserMessages?: boolean;
@@ -329,7 +331,7 @@ export function createInteractionFixture(
         .map((key) => [
           key,
           {
-            messages: Array.from({ length: 400 }, (_, index) => ({
+            messages: Array.from({ length: options.heavyContent ? 0 : 400 }, (_, index) => ({
               role: index % 2 === 0 ? "user" : "assistant",
               content: `Transcript ${sessionKeys.indexOf(key)} message ${index}.\n${"Synthetic transcript detail.\n".repeat(
                 options.longUserMessages && index % 2 === 0 ? 80 : 4,
@@ -1532,6 +1534,7 @@ async function prepareProviderUsage(page: Page) {
 }
 
 export const interactionScenarios: readonly InteractionScenario[] = [
+  ...heavyContentScenarios,
   ...(["sdk-avatars", "sdk-avatar-identities"] as const).map((family): InteractionScenario => ({
     id: `projection-${family}`,
     route: controlUiSessionPath(sessionKeys[0]),
