@@ -15,21 +15,22 @@ export function readThemeBlocks(stylesDir: string): Map<string, Map<string, stri
   ];
   const blocks = new Map<string, Map<string, string>>();
   postcss.parse(files.map((file) => fs.readFileSync(file, "utf8")).join("\n")).walkRules((rule) => {
-    const selector = rule.selector;
-    if (
-      !/^:root(?::where\(\[data-theme-mode="light"\]\)|\[data-theme(?:-mode)?="[^"]+"\])?$/u.test(
-        selector,
-      )
-    ) {
-      return;
-    }
-    const tokens = blocks.get(selector) ?? new Map<string, string>();
-    for (const node of rule.nodes) {
-      if (node.type === "decl" && node.prop.startsWith("--")) {
-        tokens.set(node.prop, node.value.trim());
+    for (const selector of rule.selectors) {
+      if (
+        !/^:root(?::where\(\[data-theme-mode="light"\]\)|\[data-theme(?:-mode)?="[^"]+"\])?$/u.test(
+          selector,
+        )
+      ) {
+        continue;
       }
+      const tokens = blocks.get(selector) ?? new Map<string, string>();
+      for (const node of rule.nodes) {
+        if (node.type === "decl" && node.prop.startsWith("--")) {
+          tokens.set(node.prop, node.value.trim());
+        }
+      }
+      blocks.set(selector, tokens);
     }
-    blocks.set(selector, tokens);
   });
   return blocks;
 }

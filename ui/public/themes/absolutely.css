@@ -1,5 +1,29 @@
 /* Absolutely palette; selected by index.html and app/theme.ts. */
 
+:root[data-theme="absolutely"],
+:root[data-theme="absolutely-light"] {
+  --accent-foreground: #ffffff;
+  --chat-send-foreground: var(--accent-foreground);
+  --sidebar-rail-action-stroke-width: 2.15px;
+  --sidebar-rail-surface: color-mix(in srgb, var(--text) 4%, var(--bg-content));
+  --bg: color-mix(in srgb, var(--text) 2%, var(--bg-content));
+  --bg-muted: color-mix(in srgb, var(--text) 5%, var(--bg-content));
+  --card: var(--bg-elevated);
+  --popover: var(--bg-elevated);
+  --panel-strong: var(--bg-content);
+  --input: var(--border);
+  --overlay-border: var(--border);
+  --secondary: var(--bg-accent);
+  /* Components draw their own contour; elevation adds only the two soft shadows. */
+  --shadow-md: 0 3px 7.5px rgba(0, 0, 0, 0.04), 0 0 20px rgba(0, 0, 0, 0.05);
+  --overlay-shadow: var(--shadow-md);
+  /* Typography is this theme's signature: a grotesque for chrome, a reading
+     serif for chat prose (styles/fonts.css self-hosts both). The stacks keep
+     system fallbacks so a failed font load degrades instead of blanking text. */
+  --font-body: "Space Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-chat: "Lora", Georgia, "Times New Roman", serif;
+}
+
 :root[data-theme="absolutely"] {
   /* Terracotta stays the accent; neutral graphite keeps nested surfaces clear. */
   --ring: #d97757;
@@ -11,14 +35,9 @@
   --primary: #d97757;
   --primary-hover: #e68b6b;
   --primary-foreground: #241f1b;
-  --accent-foreground: #ffffff;
-  --chat-send-foreground: var(--accent-foreground);
 
   /* Keep the selection fill distinct from the lifted dark card surface. */
   --selection-bg: #5b7694;
-
-  --sidebar-rail-action-stroke-width: 2.15px;
-  --sidebar-rail-surface: color-mix(in srgb, var(--text) 4%, var(--bg-content));
 
   /* Deepen only the text-bearing destructive fill; keep danger accents vivid. */
   --destructive: #d32f2f;
@@ -30,22 +49,17 @@
 
   /* Keep reading deep; floating panels lift, and the composer lifts further. */
   --bg-content: #1b1b1a;
-  --bg: color-mix(in srgb, var(--text) 2%, var(--bg-content));
   --bg-accent: color-mix(in srgb, var(--text) 4%, var(--bg-content));
   --bg-elevated: color-mix(in srgb, var(--text) 8%, var(--bg-content));
   --bg-hover: color-mix(in srgb, var(--text) 10%, var(--bg-content));
-  --bg-muted: color-mix(in srgb, var(--text) 5%, var(--bg-content));
   --chat-composer-surface: color-mix(in srgb, var(--text) 14%, var(--bg-content));
   --chat-user-surface: color-mix(in srgb, var(--accent) 14%, var(--bg-content));
 
-  --card: var(--bg-elevated);
   --card-foreground: #e8e8e2;
   --card-highlight: rgba(255, 255, 248, 0.04);
-  --popover: var(--bg-elevated);
   --popover-foreground: #e8e8e2;
 
   --panel: var(--bg-content);
-  --panel-strong: var(--bg-content);
   --panel-hover: color-mix(in srgb, var(--text) 14%, var(--bg-content));
   --chrome: rgba(31, 31, 30, 0.96);
   --chrome-strong: rgba(31, 31, 30, 0.98);
@@ -60,27 +74,16 @@
   --border: color-mix(in srgb, var(--text) 12%, var(--bg-content));
   --border-strong: rgba(249, 249, 247, 0.143);
   --border-hover: color-mix(in srgb, var(--text) 26%, var(--bg-content));
-  --input: var(--border);
-  --overlay-border: var(--border);
 
-  --secondary: var(--bg-accent);
   --secondary-foreground: #e8e8e2;
   --accent-2: #b8926a;
   --accent-2-muted: rgba(184, 146, 106, 0.7);
   --accent-2-subtle: rgba(184, 146, 106, 0.12);
 
   --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.35);
-  /* Components draw their own contour; elevation adds only the two soft shadows. */
-  --shadow-md: 0 3px 7.5px rgba(0, 0, 0, 0.04), 0 0 20px rgba(0, 0, 0, 0.05);
   --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.55);
-  --overlay-shadow: var(--shadow-md);
 
   --grid-line: rgba(255, 255, 248, 0.03);
-  /* Typography is this theme's signature: a grotesque for chrome, a reading
-     serif for chat prose (styles/fonts.css self-hosts both). The stacks keep
-     system fallbacks so a failed font load degrades instead of blanking text. */
-  --font-body: "Space Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  --font-chat: "Lora", Georgia, "Times New Roman", serif;
 }
 
 :root[data-theme="absolutely-light"] {
@@ -94,29 +97,20 @@
   --primary: #a5654b;
   --primary-hover: #995d45;
   --primary-foreground: #ffffff;
-  --accent-foreground: #ffffff;
-  --chat-send-foreground: var(--accent-foreground);
   --link: color-mix(in srgb, var(--accent) 50%, var(--text));
-  --sidebar-rail-action-stroke-width: 2.15px;
-  --sidebar-rail-surface: color-mix(in srgb, var(--text) 4%, var(--bg-content));
 
   /* Navigation recedes; the reading canvas and elevated controls stay distinct. */
-  --bg: color-mix(in srgb, var(--text) 2%, var(--bg-content));
   --bg-accent: var(--bg);
   --bg-elevated: color-mix(in srgb, var(--bg-content) 70%, white);
   --bg-hover: color-mix(in srgb, var(--text) 5%, var(--bg-content));
-  --bg-muted: color-mix(in srgb, var(--text) 5%, var(--bg-content));
   --bg-content: #f8f8f7;
   --chat-user-surface: color-mix(in srgb, var(--accent) 12%, var(--bg-content));
 
-  --card: var(--bg-elevated);
   --card-foreground: #20201e;
   --card-highlight: rgba(30, 30, 24, 0.02);
-  --popover: var(--bg-elevated);
   --popover-foreground: #20201e;
 
   --panel: var(--bg);
-  --panel-strong: var(--bg-content);
   --panel-hover: color-mix(in srgb, var(--text) 8%, var(--bg-content));
   --chrome: rgba(244, 244, 243, 0.96);
   --chrome-strong: rgba(244, 244, 243, 0.98);
@@ -131,24 +125,14 @@
   --border: color-mix(in srgb, var(--text) 7%, var(--bg-content));
   --border-strong: rgba(45, 45, 43, 0.13);
   --border-hover: color-mix(in srgb, var(--text) 18%, var(--bg-content));
-  --input: var(--border);
-  --overlay-border: var(--border);
 
-  --secondary: var(--bg-accent);
   --secondary-foreground: #353531;
   --accent-2: #8a6a44;
   --accent-2-muted: rgba(138, 106, 68, 0.75);
   --accent-2-subtle: rgba(138, 106, 68, 0.1);
 
   --shadow-sm: 0 1px 2px rgba(30, 30, 24, 0.05);
-  --shadow-md: 0 3px 7.5px rgba(0, 0, 0, 0.04), 0 0 20px rgba(0, 0, 0, 0.05);
   --shadow-lg: 0 12px 28px rgba(30, 30, 24, 0.09);
-  --overlay-shadow: var(--shadow-md);
 
   --grid-line: rgba(30, 30, 24, 0.04);
-  /* Typography is this theme's signature: a grotesque for chrome, a reading
-     serif for chat prose (styles/fonts.css self-hosts both). The stacks keep
-     system fallbacks so a failed font load degrades instead of blanking text. */
-  --font-body: "Space Grotesk", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  --font-chat: "Lora", Georgia, "Times New Roman", serif;
 }
