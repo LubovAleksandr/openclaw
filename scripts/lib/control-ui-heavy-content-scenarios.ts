@@ -413,6 +413,51 @@ async function evidence(page: Page, fixture: Fixture) {
   };
 }
 
+async function setupHeavyContentPage(page: Page) {
+  await page.addInitScript(() => {
+    const observation: WorkerObservation = {
+      starts: 0,
+      replies: 0,
+      errors: 0,
+      terminations: 0,
+      active: 0,
+    };
+    // SAFETY: This synthetic fixture owns its page and observation property.
+    window.heavyContentWorkers = observation;
+    const NativeWorker = window.Worker;
+    const observed = new WeakSet<Worker>();
+    window.Worker = class extends NativeWorker {
+      constructor(url: string | URL, options?: WorkerOptions) {
+        super(url, options);
+        if (!String(url).includes("markdown-code-highlight")) {
+          return;
+        }
+        observed.add(this);
+        observation.starts++;
+        observation.active++;
+        this.addEventListener("message", () => observation.replies++);
+        this.addEventListener("error", () => observation.errors++);
+      }
+      override terminate() {
+        if (observed.delete(this)) {
+          observation.terminations++;
+          observation.active--;
+        }
+        super.terminate();
+      }
+    };
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: {
+        writeText: async (text: string) => {
+          // SAFETY: This scenario owns the page-local clipboard observation.
+          (window as Window & { heavyContentCopied?: string }).heavyContentCopied = text;
+        },
+      },
+    });
+  });
+}
+
 export const heavyContentScenarios: InteractionScenario[] = heavyContentFixtures.flatMap(
   (fixture) => {
     const shared = {
@@ -424,48 +469,7 @@ export const heavyContentScenarios: InteractionScenario[] = heavyContentFixtures
           // Generate once outside the measured interval; every arm receives identical bytes.
           nativeImageSources ??= createHeavyContentImageSources();
         }
-        await page.addInitScript(() => {
-          const observation: WorkerObservation = {
-            starts: 0,
-            replies: 0,
-            errors: 0,
-            terminations: 0,
-            active: 0,
-          };
-          // SAFETY: This synthetic fixture owns its page and observation property.
-          window.heavyContentWorkers = observation;
-          const NativeWorker = window.Worker;
-          const observed = new WeakSet<Worker>();
-          window.Worker = class extends NativeWorker {
-            constructor(url: string | URL, options?: WorkerOptions) {
-              super(url, options);
-              if (!String(url).includes("markdown-code-highlight")) {
-                return;
-              }
-              observed.add(this);
-              observation.starts++;
-              observation.active++;
-              this.addEventListener("message", () => observation.replies++);
-              this.addEventListener("error", () => observation.errors++);
-            }
-            override terminate() {
-              if (observed.delete(this)) {
-                observation.terminations++;
-                observation.active--;
-              }
-              super.terminate();
-            }
-          };
-          Object.defineProperty(navigator, "clipboard", {
-            configurable: true,
-            value: {
-              writeText: async (text: string) => {
-                // SAFETY: This scenario owns the page-local clipboard observation.
-                (window as Window & { heavyContentCopied?: string }).heavyContentCopied = text;
-              },
-            },
-          });
-        });
+        await setupHeavyContentPage(page);
       },
     };
     // Native image cards publish with the final message; Markdown images also stream.
@@ -962,5 +966,258 @@ export const heavyContentScenarios: InteractionScenario[] = heavyContentFixtures
       });
     }
     return scenarios;
+  },
+);
+
+// The real attachment reader caps text at 256 KiB; this fenced document is 258,899 B.
+const denseCode = Array.from(
+  { length: 5_000 },
+  (_, index) =>
+    `const item${String(index).padStart(4, "0")} = { n: ${index}, ok: true, s: "v${String(index).padStart(4, "0")}" };\n`,
+).join("");
+const denseDocument = `\`\`\`ts\n${denseCode}\`\`\``;
+const denseMessage = `\`\`\`ts\n${Array.from(
+  { length: 5_000 },
+  (_, index) =>
+    `const item${index} = { n: ${index}, ok: true, s: "value-${index}" }; // synthetic dense stream ${index}\n`,
+).join("")}\`\`\``;
+const denseMediaSource = "media://inbound/heavy-dense-markdown";
+const densePanel = "openclaw-chat-detail-panel";
+const denseArticle = `${densePanel} article.sidebar-attachment-preview__markdown`;
+const denseShared = {
+  route: controlUiSessionPath(sessionKey),
+  fixture: { heavyContent: true },
+  resourceOnly: true,
+  setup: async (page: Page) => {
+    await setupHeavyContentPage(page);
+    await page.route("**/__openclaw__/assistant-media?*", async (route) => {
+      const url = new URL(route.request().url());
+      if (url.searchParams.get("source") !== denseMediaSource) {
+        await route.fallback();
+        return;
+      }
+      if (url.searchParams.get("meta") === "1") {
+        await route.fulfill({
+          json: {
+            available: true,
+            mediaTicket: "heavy-dense-ticket",
+            mediaTicketExpiresAt: new Date(Date.now() + 300_000).toISOString(),
+            sizeBytes: denseDocument.length,
+          },
+        });
+        return;
+      }
+      if (url.searchParams.get("mediaTicket") !== "heavy-dense-ticket") {
+        throw new Error("Dense attachment body read did not carry its resolved media ticket");
+      }
+      await route.fulfill({ contentType: "text/markdown; charset=utf-8", body: denseDocument });
+    });
+  },
+};
+
+async function openDenseAttachment(page: Page, gateway: MockGatewayControls) {
+  await gateway.emitGatewayEvent("chat", {
+    sessionKey,
+    runId: runs.get(page)!,
+    state: "final",
+    message: {
+      role: "assistant",
+      content: [
+        { type: "text", text: "A dense synthetic TypeScript document." },
+        {
+          type: "attachment",
+          attachment: {
+            url: denseMediaSource,
+            kind: "document",
+            label: "dense.md",
+            mimeType: "text/markdown",
+            sizeBytes: denseDocument.length,
+          },
+        },
+      ],
+      __openclaw: { id: "heavy-dense-document" },
+      timestamp: Date.now(),
+    },
+  });
+  await page
+    .locator(`${pane} .chat-assistant-attachment-card--compact`)
+    .filter({ hasText: "dense.md" })
+    .getByRole("button", { name: "Open dense.md in the side panel", exact: true })
+    .click();
+  await page.locator(`${denseArticle} .code-block-expand`).click({ timeout: 60_000 });
+  await page.waitForFunction(
+    ({ selector, source }) => {
+      const code = document.querySelector(`${selector} pre code`);
+      return (
+        code?.textContent === source &&
+        code.querySelectorAll(".hljs-keyword").length === 5_000 &&
+        code.querySelectorAll(".hljs-string").length === 5_000 &&
+        code.querySelectorAll(".hljs-number").length === 5_000 &&
+        window.heavyContentWorkers.active === 0
+      );
+    },
+    { selector: denseArticle, source: denseCode },
+  );
+  await frames(page);
+}
+
+async function denseAttachmentEvidence(page: Page) {
+  return {
+    ...(await page.locator(denseArticle).evaluate((article) => ({
+      codeTextChars: article.querySelector("pre code")?.textContent?.length ?? 0,
+      highlightedSpans: article.querySelectorAll("pre code span").length,
+      keywordSpans: article.querySelectorAll(".hljs-keyword").length,
+      stringSpans: article.querySelectorAll(".hljs-string").length,
+      numberSpans: article.querySelectorAll(".hljs-number").length,
+      domElements: article.querySelectorAll("*").length,
+    }))),
+    fixtureChars: denseDocument.length,
+    supportedReaderCapBytes: 256 * 1024,
+    sourceLines: 5_000,
+    ...(await workerObservation(page)),
+  };
+}
+
+heavyContentScenarios.push(
+  {
+    ...denseShared,
+    id: "heavy-dense-attachment-full-arrival",
+    expected:
+      "A real ticketed Markdown attachment preserves all 5,000 dense TypeScript lines and completes expanded syntax decoration within the existing 256 KiB reader contract.",
+    prepare,
+    run: async (page, gateway) => {
+      await openDenseAttachment(page, gateway);
+      return denseAttachmentEvidence(page);
+    },
+  },
+  {
+    ...denseShared,
+    id: "heavy-dense-attachment-full-scroll",
+    expected:
+      "Native scrolling traverses the expanded dense attachment; both existing copy actions preserve their complete source contract.",
+    prepare: async (page, gateway) => {
+      await prepare(page, gateway);
+      await openDenseAttachment(page, gateway);
+      await page
+        .locator(`${densePanel} .sidebar-file-toolbar__actions`)
+        .getByRole("button", { name: "Copy", exact: true })
+        .click();
+      await page.waitForFunction(
+        (expected) =>
+          (window as Window & { heavyContentCopied?: string }).heavyContentCopied === expected,
+        denseDocument,
+      );
+      const documentCopy = await page.evaluate(
+        () => (window as Window & { heavyContentCopied?: string }).heavyContentCopied,
+      );
+      if (documentCopy !== denseDocument) {
+        throw new Error("Dense attachment toolbar copy did not preserve the complete Markdown");
+      }
+      await page.locator(`${denseArticle} .code-block-copy`).click();
+      await page.waitForFunction(
+        (expected) =>
+          (window as Window & { heavyContentCopied?: string }).heavyContentCopied === expected,
+        denseCode.replace(/\n$/u, ""),
+      );
+      const sourceCopy = await page.evaluate(
+        () => (window as Window & { heavyContentCopied?: string }).heavyContentCopied,
+      );
+      if (sourceCopy !== denseCode.replace(/\n$/u, "")) {
+        throw new Error(
+          "Dense attachment code copy did not preserve the existing terminal-LF contract",
+        );
+      }
+    },
+    run: async (page) => {
+      const scroller = page.locator(`${densePanel} .sidebar-content`);
+      await scroller.hover();
+      await page.mouse.wheel(0, -100_000);
+      await frames(page);
+      const geometry = await scroller.evaluate((element) => ({
+        height: element.clientHeight,
+        travel: element.scrollHeight - element.clientHeight,
+        top: element.scrollTop,
+      }));
+      if (geometry.height <= 0 || geometry.travel <= 0) {
+        throw new Error("Dense attachment did not expose its scrollable full source");
+      }
+      const distance = geometry.height * 0.75;
+      const scrollSteps = Math.ceil(geometry.travel / distance);
+      for (let step = 0; step < scrollSteps; step++) {
+        await page.mouse.wheel(0, distance);
+        await frames(page);
+      }
+      const final = await scroller.evaluate((element) => ({
+        top: element.scrollTop,
+        max: element.scrollHeight - element.clientHeight,
+      }));
+      if (final.top < final.max - 2) {
+        throw new Error(
+          `Dense attachment stopped at ${final.top} before scroll bottom ${final.max}`,
+        );
+      }
+      return {
+        ...(await denseAttachmentEvidence(page)),
+        scrollSteps,
+        scrollStart: geometry.top,
+        scrollEnd: final.top,
+        scrollMax: final.max,
+        completeCopies: 2,
+      };
+    },
+  },
+  {
+    ...denseShared,
+    id: "heavy-dense-message-stream",
+    expected:
+      "A dense message above 300 KiB follows the existing literal-text and 140,000-character presentation limits while retaining the complete message source.",
+    prepare,
+    run: async (page, gateway) => {
+      const runId = runs.get(page)!;
+      for (let index = 1; index <= 20; index++) {
+        const start = Math.ceil((denseMessage.length * (index - 1)) / 20);
+        const end = Math.ceil((denseMessage.length * index) / 20);
+        await gateway.emitGatewayEvent("chat", {
+          sessionKey,
+          runId,
+          state: "delta",
+          deltaText: denseMessage.slice(start, end),
+          message: {
+            role: "assistant",
+            content: [{ type: "text", text: denseMessage.slice(0, end) }],
+          },
+        });
+        await frames(page);
+      }
+      await gateway.emitChatFinal({ sessionKey, runId, text: denseMessage });
+      const bubble = page.locator(`${pane} .chat-bubble`).last();
+      const fallback = bubble.locator(".markdown-plain-text-fallback");
+      await fallback.waitFor();
+      const shown = await fallback.evaluate(
+        (element) =>
+          (element.querySelector(".markdown-plain-text-source") ?? element).textContent ?? "",
+      );
+      if (
+        (await bubble.getAttribute("data-message-text")) !== denseMessage ||
+        !shown.startsWith(denseMessage.slice(0, 140_000)) ||
+        shown.length <= 140_000 ||
+        shown.length > 142_000 ||
+        (await bubble.locator(".code-block-wrapper").count()) !== 0
+      ) {
+        throw new Error(
+          "Dense message changed the existing source-retention or truncated-fallback contract",
+        );
+      }
+      await page.waitForFunction(() => window.heavyContentWorkers.active === 0);
+      await frames(page);
+      return {
+        fixtureChars: denseMessage.length,
+        displayedChars: shown.length,
+        presentationLimitChars: 140_000,
+        contentIsFallback: true,
+        sourceLines: 5_000,
+        ...(await workerObservation(page)),
+      };
+    },
   },
 );
