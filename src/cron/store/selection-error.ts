@@ -1,4 +1,4 @@
-import type { CronStoreSelection } from "./paths.js";
+import type { CronStoreSelection } from "./selection.types.js";
 
 /** An operator choice pauses cron without requiring Gateway recovery. */
 export class CronStoreSelectionRequiredError extends Error {

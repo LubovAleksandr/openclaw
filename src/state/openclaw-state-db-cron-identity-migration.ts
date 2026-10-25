@@ -3,7 +3,11 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { sql } from "kysely";
 import { resolveConfigDir } from "../infra/config-dir.js";
 import { jsonPickObject, jsonValid } from "../infra/database-engine/json-values.js";
-import { executeSqliteQuerySync, getNodeSqliteKysely } from "../infra/kysely-sync.js";
+import {
+  executeSqliteQuerySync,
+  executeSqliteQueryTakeFirstSync,
+  getNodeSqliteKysely,
+} from "../infra/kysely-sync.js";
 import type { EngineConnection } from "../infra/sql-connection.js";
 import { getSqliteWorkerCronDefaultStoreKey } from "../infra/sqlite-worker-state-context.js";
 import type { ConfigMachineStateDatabase } from "./config-machine-state-row.js";
@@ -36,23 +40,50 @@ function readBindingRow(db: EngineConnection, sourceTables?: ReadonlySet<string>
   if (!(sourceTables?.has("config_machine_state") ?? tableExists(db, "config_machine_state"))) {
     return undefined;
   }
-  return db
-    .prepare("SELECT value_json FROM config_machine_state WHERE state_key = ?")
-    .get(CRON_DEFAULT_STORE_KEY_STATE_KEY);
+  return executeSqliteQueryTakeFirstSync(
+    db,
+    getNodeSqliteKysely<ConfigMachineStateDatabase>(db)
+      .selectFrom("config_machine_state")
+      .select("value_json")
+      .where("state_key", "=", CRON_DEFAULT_STORE_KEY_STATE_KEY),
+  );
+}
+
+export function readCronDefaultStoreBindingInDatabase(
+  db: EngineConnection,
+): { status: "absent" | "invalid" } | { status: "ready"; storeKey: string } {
+  const row = readBindingRow(db);
+  if (!row) {
+    return { status: "absent" };
+  }
+  if (typeof row.value_json !== "string") {
+    return { status: "invalid" };
+  }
+  try {
+    const value: unknown = JSON.parse(row.value_json);
+    return typeof value === "string" && value.length > 0
+      ? { status: "ready", storeKey: value }
+      : { status: "invalid" };
+  } catch {
+    return { status: "invalid" };
+  }
 }
 
 /** A malformed binding stays unresolved, so unrelated Gateway functions remain available. */
 export function readCronDefaultStoreKeyInDatabase(db: EngineConnection): string | undefined {
-  const row = readBindingRow(db);
-  if (!row || typeof row.value_json !== "string") {
-    return undefined;
-  }
-  try {
-    const value: unknown = JSON.parse(row.value_json);
-    return typeof value === "string" && value.length > 0 ? value : undefined;
-  } catch {
-    return undefined;
-  }
+  const binding = readCronDefaultStoreBindingInDatabase(db);
+  return binding.status === "ready" ? binding.storeKey : undefined;
+}
+
+/** Only a matching original selector or an empty inventory proves a legacy default. */
+export function resolveUnboundCronDefaultStoreKey(
+  inventory: readonly CronStorePartitionInventory[],
+  legacyDefaultStoreKey: string,
+): string | undefined {
+  return inventory.length === 0 ||
+    inventory.some((entry) => entry.storeKey === legacyDefaultStoreKey)
+    ? legacyDefaultStoreKey
+    : undefined;
 }
 
 const keyedTables = [
@@ -94,9 +125,12 @@ export function readCronStorePartitionInventoryInDatabase(
   };
   for (const [table, field] of keyedTables) {
     if (sourceTables?.has(table) ?? tableExists(db, table)) {
-      for (const row of db
-        .prepare(`SELECT store_key, count(*) AS count FROM ${table} GROUP BY store_key`)
-        .all()) {
+      const query = getNodeSqliteKysely<DB>(db)
+        .selectFrom(table)
+        .select("store_key")
+        .select((eb) => eb.fn.countAll().as("count"))
+        .groupBy("store_key");
+      for (const row of executeSqliteQuerySync(db, query).rows) {
         add(row.store_key, field, Number(row.count));
       }
     }
@@ -125,20 +159,24 @@ export function readCronStorePartitionInventoryInDatabase(
     }
   }
   if (sourceTables?.has("diagnostic_events") ?? tableExists(db, "diagnostic_events")) {
-    for (const row of db
-      .prepare(
-        "SELECT scope, count(*) AS count FROM diagnostic_events WHERE scope LIKE ? GROUP BY scope",
-      )
-      .all(`${quarantinePrefix}%`)) {
+    const query = getNodeSqliteKysely<DB>(db)
+      .selectFrom("diagnostic_events")
+      .select("scope")
+      .select((eb) => eb.fn.countAll().as("count"))
+      .where("scope", "like", `${quarantinePrefix}%`)
+      .groupBy("scope");
+    for (const row of executeSqliteQuerySync(db, query).rows) {
       if (typeof row.scope === "string") {
         add(row.scope.slice(quarantinePrefix.length), "quarantine", Number(row.count));
       }
     }
   }
-  for (const row of db
-    .prepare("SELECT state_key FROM config_machine_state WHERE state_key LIKE ?")
-    .all(`${proactivePrefix}%`)) {
-    if (typeof row.state_key === "string") {
+  if (sourceTables?.has("config_machine_state") ?? tableExists(db, "config_machine_state")) {
+    const query = getNodeSqliteKysely<ConfigMachineStateDatabase>(db)
+      .selectFrom("config_machine_state")
+      .select("state_key")
+      .where("state_key", "like", `${proactivePrefix}%`);
+    for (const row of executeSqliteQuerySync(db, query).rows) {
       // Agent IDs contain no colon; partition keys may include a Windows drive letter.
       add(
         row.state_key.slice(proactivePrefix.length, row.state_key.lastIndexOf(":")),
@@ -238,27 +276,35 @@ export function migrateCronDefaultStoreIdentity(
     const matched = keyedTables.some(
       ([table]) =>
         (options.sourceTables?.has(table) ?? tableExists(db, table)) &&
-        db
-          .prepare(`SELECT 1 FROM ${table} WHERE store_key = ? LIMIT 1`)
-          .get(options.legacyDefaultStoreKey),
+        executeSqliteQueryTakeFirstSync(
+          db,
+          getNodeSqliteKysely<DB>(db)
+            .selectFrom(table)
+            .select("store_key")
+            .where("store_key", "=", options.legacyDefaultStoreKey)
+            .limit(1),
+        ),
     );
     if (matched) {
       storeKey = options.legacyDefaultStoreKey;
     } else {
       const inventory = readCronStorePartitionInventoryInDatabase(db, options.sourceTables);
-      if (inventory.some((partition) => partition.storeKey === options.legacyDefaultStoreKey)) {
-        storeKey = options.legacyDefaultStoreKey;
-      } else if (inventory.length === 0) {
-        storeKey = options.legacyDefaultStoreKey;
-      }
+      storeKey = resolveUnboundCronDefaultStoreKey(inventory, options.legacyDefaultStoreKey);
     }
   }
   // An old moved store has no provable default. Doctor can bind an explicit inventory choice.
   if (storeKey === undefined) {
     return false;
   }
-  db.prepare(
-    "INSERT INTO config_machine_state (state_key, value_json, updated_at_ms) VALUES (?, ?, ?)",
-  ).run(CRON_DEFAULT_STORE_KEY_STATE_KEY, JSON.stringify(storeKey), options.nowMs ?? Date.now());
+  executeSqliteQuerySync(
+    db,
+    getNodeSqliteKysely<ConfigMachineStateDatabase>(db)
+      .insertInto("config_machine_state")
+      .values({
+        state_key: CRON_DEFAULT_STORE_KEY_STATE_KEY,
+        value_json: JSON.stringify(storeKey),
+        updated_at_ms: options.nowMs ?? Date.now(),
+      }),
+  );
   return true;
 }

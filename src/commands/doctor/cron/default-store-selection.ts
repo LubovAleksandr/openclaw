@@ -5,6 +5,7 @@ import {
   resolveCronStoreSelectionAsync,
   type CronStoreSelection,
 } from "../../../cron/store/paths.js";
+import { withArtifactPreservingStateReads } from "../../../state/artifact-preserving-state-reads.js";
 import { getOpenClawDatabaseMaintenanceScope } from "../../../state/openclaw-state-db-async-lifecycle.js";
 import { resolveOpenClawStateSqlitePath } from "../../../state/openclaw-state-db.paths.js";
 import type { DoctorOptions, DoctorPrompter } from "../../doctor-prompter.js";
@@ -15,7 +16,9 @@ export function readCronStoreSelectionForDoctor(
   env: NodeJS.ProcessEnv = process.env,
 ): Promise<CronStoreSelection> {
   const store = asOptionalRecord(cfg.cron)?.store;
-  return resolveCronStoreSelectionAsync(typeof store === "string" ? store : undefined, env);
+  return withArtifactPreservingStateReads(() =>
+    resolveCronStoreSelectionAsync(typeof store === "string" ? store : undefined, env),
+  );
 }
 
 /** Selection is the only deferred cron operation; unrelated Doctor work remains available. */

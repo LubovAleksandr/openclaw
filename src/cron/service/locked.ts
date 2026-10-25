@@ -51,7 +51,10 @@ export async function locked<T>(
   fn: () => Promise<T>,
   opts?: { readOnly?: boolean },
 ): Promise<T> {
-  await prepareCronServiceStore(state);
+  const preparation = prepareCronServiceStore(state);
+  if (preparation) {
+    await preparation;
+  }
   const previous = state.op;
   const next = cronOperations.enqueue(state.deps.storeKey, async () => {
     await resolveChain(previous);

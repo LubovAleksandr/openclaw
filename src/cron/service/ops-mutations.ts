@@ -95,7 +95,10 @@ export async function add(
   input: CronJobCreate,
   opts?: CronAddOptions,
 ): Promise<CronAddResult> {
-  await prepareCronServiceStore(state);
+  const preparation = prepareCronServiceStore(state);
+  if (preparation) {
+    await preparation;
+  }
   const source = captureCronJobMutationSource(state);
   let pendingSessionCleanup: Promise<void> | undefined;
   return await locked(state, async () => {
@@ -335,7 +338,10 @@ export async function update(
   patch: CronJobPatch,
   opts?: CronUpdateOptions,
 ) {
-  await prepareCronServiceStore(state);
+  const preparation = prepareCronServiceStore(state);
+  if (preparation) {
+    await preparation;
+  }
   const source = captureCronJobMutationSource(state);
   return await locked(state, async () => await updateLoadedJob({ state, source, id, patch, opts }));
 }
@@ -348,7 +354,10 @@ export async function updateWithPrecondition(
   precondition: CronUpdatePrecondition,
   opts?: CronUpdateOptions,
 ) {
-  await prepareCronServiceStore(state);
+  const preparation = prepareCronServiceStore(state);
+  if (preparation) {
+    await preparation;
+  }
   const source = captureCronJobMutationSource(state);
   return await locked(
     state,
@@ -358,7 +367,10 @@ export async function updateWithPrecondition(
 
 /** Removes a cron job through its worker owner before canceling and cleaning up host work. */
 export async function remove(state: CronServiceState, id: string, opts?: CronRemoveOptions) {
-  await prepareCronServiceStore(state);
+  const preparation = prepareCronServiceStore(state);
+  if (preparation) {
+    await preparation;
+  }
   const source = captureCronJobMutationSource(state);
   let sessionCleanup:
     | {
@@ -498,7 +510,10 @@ export async function removeAgentJobsTransactional<T>(
   agentId: string,
   commit: () => Promise<T>,
 ): Promise<T> {
-  await prepareCronServiceStore(state);
+  const preparation = prepareCronServiceStore(state);
+  if (preparation) {
+    await preparation;
+  }
   const source = captureCronServiceMutationSource(state);
   return await locked(state, async () => {
     source.assertCurrent();

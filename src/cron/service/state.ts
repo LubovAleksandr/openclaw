@@ -2,8 +2,6 @@ import type { AdmittedRunContext } from "../../agents/admitted-run-context.js";
 import type { ExecutionIdentityAdmissionFacts } from "../../audit/execution-identity-admission.js";
 import type { ReplyPayload } from "../../auto-reply/reply-payload.js";
 import type { SessionEventTarget } from "../../auto-reply/reply/session-event-contract.js";
-import type { SessionEntryCurrentCheck } from "../../config/sessions/session-entry-current.types.js";
-import type { SessionCreatedActor } from "../../config/sessions/session-entry-provenance.js";
 import type { CronConfig } from "../../config/types.cron.js";
 import type { GatewayScheduler, GatewaySchedulerScope } from "../../infra/gateway-scheduler.js";
 import { LEGACY_IMPLICIT_AGENT_ID } from "../../routing/session-key.js";
@@ -15,13 +13,11 @@ import type { CronAgentAvailability } from "../agent-availability.js";
 import type { CronCompletionDeliveryFence } from "../delivery-attempt-fence.js";
 import type { PluginCommandScheduleHost } from "../plugin-command-schedule.types.js";
 import { toPublicCronJob } from "../public-job.js";
-import type { CronRuntimeAuthority } from "../runtime-authority.js";
 import type { ScheduledOccurrence } from "../scheduled-occurrence.js";
 import type { CronScheduledToolPolicy } from "../scheduled-tool-policy.js";
 import type { CronJobScratchState } from "../scratch-contract.js";
 import { cronStoreKey } from "../store/key.js";
 import { resolveCronStoreKeyAsync, resolveDefaultCronStorePath } from "../store/paths.js";
-import type { CronStreamExecApproval, CronStreamExecPolicy } from "../stream-exec-authority.js";
 import type { QuarantinedCronConfigJob } from "../types-shared.js";
 import type {
   CronWebhookDeliveryOutcome,
@@ -41,9 +37,8 @@ import type {
   CronRunTelemetry,
   CronStoredJob,
   CronStoreFile,
-  CronToolsAllowExecTarget,
-  CronToolsAllowProvenance,
 } from "../types.js";
+import type { CronAddOptions } from "./job-options.types.js";
 import type { CronJobsSortBy, CronSortDir } from "./list-page-types.js";
 import type {
   CronNotificationIntent,
@@ -51,6 +46,8 @@ import type {
   CronNotificationRouting,
   ResolvedFailureAlert,
 } from "./notification-intents.js";
+
+export type { CronAddOptions } from "./job-options.types.js";
 
 /** Transient internal context delivered beside, but never projected into, a CronEvent. */
 type CronEventContext = {
@@ -475,15 +472,16 @@ const preparedStoreSelections = new WeakMap<
   {
     admission: ReturnType<typeof captureOpenClawStateWorkerContext>["admission"];
     promise: Promise<void>;
+    ready: boolean;
   }
 >();
 
-/** Resolve the public path once per admission; warm operations carry the opaque key. */
-export async function prepareCronServiceStore(state: CronServiceState): Promise<void> {
+/** Resolve once per admission; warm callers enter their operation queue without yielding. */
+export function prepareCronServiceStore(state: CronServiceState): Promise<void> | undefined {
   const context = captureOpenClawStateWorkerContext();
   const previous = preparedStoreSelections.get(state);
   if (previous?.admission === context.admission) {
-    return previous.promise;
+    return previous.ready ? undefined : previous.promise;
   }
   if (previous) {
     state.store = null;
@@ -496,12 +494,18 @@ export async function prepareCronServiceStore(state: CronServiceState): Promise<
     }
     state.deps.storeKey = await resolveCronStoreKeyAsync(state.deps.storePath, env, context);
   })();
-  preparedStoreSelections.set(state, { admission: context.admission, promise });
-  void promise.catch(() => {
-    if (preparedStoreSelections.get(state)?.promise === promise) {
-      preparedStoreSelections.delete(state);
-    }
-  });
+  const selection = { admission: context.admission, promise, ready: false };
+  preparedStoreSelections.set(state, selection);
+  void promise.then(
+    () => {
+      selection.ready = true;
+    },
+    () => {
+      if (preparedStoreSelections.get(state)?.promise === promise) {
+        preparedStoreSelections.delete(state);
+      }
+    },
+  );
   return promise;
 }
 
@@ -572,42 +576,6 @@ export type CronUpdateResult = CronJob;
 
 export type CronListResult = CronJob[];
 export type CronAddInput = CronJobCreate;
-/** Caller-specific declaration-key visibility and explicit enablement metadata. */
-export type CronAddOptions = {
-  /** Validated host invocation facts; immutable after fresh command-job creation. */
-  pluginCommand?: CronStoredJob["pluginCommand"];
-  /** Captured source digest of the admitting plugin instance; enables restart continuity. */
-  pluginCommandSourceDigest?: string;
-  operatorSource?: NonNullable<CronStoredJob["operatorSource"]>["source"];
-  operatorSourceExecutionRevision?: string;
-  inferenceBinding?: CronStoredJob["inferenceBinding"];
-  sourceConversation?: CronStoredJob["sourceConversation"];
-  /** Logical sandbox target captured from the admitted creator, never public input. */
-  streamSandbox?: CronStoredJob["streamSandbox"];
-  /** Selected revisions captured from a validated caller session, never public input. */
-  skillLibrarySelections?: CronStoredJob["skillLibrarySelections"];
-  matchesExisting?: (job: CronJob) => boolean;
-  enabledExplicit?: boolean;
-  /** Reserved declaration namespaces require trusted ownership at creation. */
-  systemOwned?: boolean;
-  /** Trusted creator provenance persisted with new jobs; never accepted from public input. */
-  createdActor?: SessionCreatedActor;
-  /** Authenticated caller provenance stamped by the service, never public input. */
-  scheduledToolPolicy?: CronScheduledToolPolicy;
-  /** Private proof from an authenticated agent-runtime caller. */
-  toolsAllowProvenance?: CronToolsAllowProvenance;
-  /** Restrict-only exec pin from the signed creator-turn identity. */
-  toolsAllowExecTarget?: CronToolsAllowExecTarget;
-  /** Synchronous Gateway-owned liveness check repeated at mutation admission and commit. */
-  commitGuard?: () => void;
-  /** Prepared caller policy; host floors use the committing transaction's approvals. */
-  execPolicy?: CronStreamExecPolicy;
-  streamExecApproval?: CronStreamExecApproval;
-  /** Creator-session facts refreshed by the worker at each native admission. */
-  sessionEntryCurrent?: SessionEntryCurrentCheck;
-  /** One-use fresh capture; callback presence means fresh even when it returns undefined. */
-  captureRuntimeAuthority?: () => CronRuntimeAuthority | undefined;
-};
 export type CronUpdateInput = CronJobPatch;
 /** Authenticated caller provenance used only when a tool policy is explicitly adopted. */
 export type CronUpdateOptions = Pick<

@@ -1,4 +1,4 @@
-import type { CronStoreSelection } from "./store/paths.js";
+import type { CronStoreSelection } from "./store/selection.types.js";
 import type { CronStoredJob } from "./types.js";
 
 export type DefaultProactiveJobReceipt = {

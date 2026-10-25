@@ -140,7 +140,10 @@ export async function commitCronRunRequests(
   if (state.stopped || jobs.length === 0) {
     return [];
   }
-  await prepareCronServiceStore(state);
+  const preparation = prepareCronServiceStore(state);
+  if (preparation) {
+    await preparation;
+  }
   const source = captureCronServiceMutationSource(state);
   const nowMs = state.deps.nowMs();
   const generation = state.lifecycleGeneration;

@@ -25,6 +25,7 @@ import { resolveOpenClawStateSqlitePath } from "../../../state/openclaw-state-db
 import { admitOpenClawMaintenanceLiveAuthorityReads } from "../../../state/openclaw-state-maintenance-context.js";
 import { prepareDoctorMigrationBackups } from "../../doctor-heartbeat-migration-backup.js";
 import { createDoctorPrompter } from "../../doctor-prompter.js";
+import { readCronStoreSelectionForDoctor } from "./default-store-selection.js";
 import { collectLegacyCronStoreHealthFindings, maybeRepairLegacyCronStore } from "./index.js";
 import { inspectCronJobsForDoctor } from "./store-repair.js";
 
@@ -904,6 +905,42 @@ it("inspects cron under offline Doctor custody when disposable snapshot allocati
     allocation.mockRestore();
   }
 });
+
+it.each([
+  { binding: "absent", populated: false, expected: "ready" },
+  { binding: "absent", populated: true, expected: "ready" },
+  { binding: "malformed", populated: false, expected: "unresolved" },
+  { binding: "malformed", populated: true, expected: "unresolved" },
+])(
+  "classifies a $binding binding with populated=$populated without changing it",
+  async ({ binding, populated, expected }) => {
+    vi.stubEnv("OPENCLAW_STATE_DIR", tempRoot!);
+    vi.stubEnv("OPENCLAW_CONFIG_PATH", path.join(tempRoot!, "openclaw.json"));
+    if (populated) {
+      await saveCronStore(storePath, { version: 1, jobs: [createCurrentCronJob() as never] });
+    }
+    const { db } = openOpenClawStateDatabase();
+    db.prepare("DELETE FROM config_machine_state WHERE state_key = 'cron.defaultStoreKey'").run();
+    if (binding === "malformed") {
+      db.prepare(
+        "INSERT INTO config_machine_state (state_key, value_json, updated_at_ms) VALUES ('cron.defaultStoreKey', '17', 1)",
+      ).run();
+    }
+    const before = db
+      .prepare("SELECT * FROM config_machine_state WHERE state_key = 'cron.defaultStoreKey'")
+      .all();
+    const selection = await readCronStoreSelectionForDoctor({});
+    expect(selection.status).toBe(expected);
+    if (selection.status === "ready") {
+      expect(selection.storeKey).toBe(storePath);
+    }
+    expect(
+      db
+        .prepare("SELECT * FROM config_machine_state WHERE state_key = 'cron.defaultStoreKey'")
+        .all(),
+    ).toEqual(before);
+  },
+);
 
 it("reports a moved partition, refuses --yes guessing, and binds only an explicit Doctor choice", async () => {
   vi.stubEnv("OPENCLAW_STATE_DIR", tempRoot!);

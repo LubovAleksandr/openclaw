@@ -335,7 +335,7 @@ export function buildGatewayCronService(params: {
     prepareStoreKey: () => cron.prepareStoreKey(),
     isStopped: () => stopped,
   });
-  const readHeartbeatSummary = heartbeatSummary.read;
+  const readHeartbeatSummary = (cfg: OpenClawConfig) => heartbeatSummary.read(cfg);
   const legacyMonitorJobs = new Map<string, CronJob>();
   let legacyProjectionClosed = false;
   let legacyProjectionRevision = 0;

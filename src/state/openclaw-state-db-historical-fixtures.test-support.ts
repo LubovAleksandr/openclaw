@@ -12,6 +12,23 @@ const V2026_7_1_2_STATE_FIXTURE_URL = new URL(
   import.meta.url,
 );
 
+export const V2026_7_1_2_STATE_MIGRATION_CHANGES = [
+  "Discarded retired shared-state commitments rows, table, and indexes",
+  "Retired six dead shared-state tables (v10)",
+  "Retired legacy skill curator lifecycle and proposal origin-run tables",
+  "Folded singleton state tables into config_machine_state (v12)",
+  "Migrated shared state audit event ledger → versioned message lifecycle schema",
+  "Derived meeting transcript selectors and bounded delivery retention columns (v21)",
+  "Promoted portable ACP resume keys and cursor identities (v22)",
+  "Consolidated shared state tables (v13)",
+  "Qualified historical cron creator attribution as unknown (v14)",
+  "Removed redundant conversation binding target projections (v15)",
+  "Replaced retained task indexes with ordered cron history indexes (v24)",
+  "Removed redundant replay and skill indexes and narrowed the lease-owner index (v27)",
+  "Introduced durable default cron partition selection (v34)",
+  "Migrated shared state tables to SQLite STRICT typing (46)",
+];
+
 export function materializeV2026_7_1_2StateDatabase(stateDir: string) {
   const compressed = fs.readFileSync(V2026_7_1_2_STATE_FIXTURE_URL);
   const raw = gunzipSync(compressed);

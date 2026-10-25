@@ -19,6 +19,24 @@ import { withStateMigrationBackupForTest } from "./openclaw-state-schema.test-su
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
 afterEach(() => closeState());
 
+it("inventories a pre-fold-in database without machine state", () => {
+  using db = new DatabaseSync(":memory:");
+  db.exec(`CREATE TABLE cron_jobs (store_key TEXT NOT NULL);
+    INSERT INTO cron_jobs VALUES ('/legacy/cron/jobs.json');`);
+  expect(readCronDefaultStoreKeyInDatabase(db)).toBeUndefined();
+  expect(readCronStorePartitionInventoryInDatabase(db)).toEqual([
+    {
+      storeKey: "/legacy/cron/jobs.json",
+      jobs: 1,
+      scratch: 0,
+      receipts: 0,
+      history: 0,
+      quarantine: 0,
+      proactiveReceipts: 0,
+    },
+  ]);
+});
+
 function seedPartition(db: DatabaseSync, storeKey: string, jobs: boolean) {
   if (jobs) {
     db.prepare(`INSERT INTO cron_jobs

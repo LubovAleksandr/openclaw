@@ -26,7 +26,10 @@ export async function skipCronJobsWithoutOwners(
     };
   },
 ): Promise<CronJob[]> {
-  await prepareCronServiceStore(state);
+  const preparation = prepareCronServiceStore(state);
+  if (preparation) {
+    await preparation;
+  }
   const source = opts?.source ?? captureCronServiceMutationSource(state);
   const resolveOwnerAgentId = (job: CronJob) =>
     tryResolveCronJobEffectiveAgentId(

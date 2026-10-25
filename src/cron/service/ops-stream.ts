@@ -29,7 +29,10 @@ async function mutateExternalState(
   jobId: string,
   requested: CronExternalStateChange,
 ): Promise<CronJob | undefined> {
-  await prepareCronServiceStore(state);
+  const preparation = prepareCronServiceStore(state);
+  if (preparation) {
+    await preparation;
+  }
   const source = captureCronJobMutationSource(state);
   const change = structuredClone(requested);
   return await locked(state, async () => {

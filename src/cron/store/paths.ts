@@ -4,8 +4,9 @@ import { cloneEnvWithPlatformSemantics } from "../../config/config-env-vars.js";
 import { expandHomePrefix } from "../../infra/home-dir.js";
 import type { EngineConnection } from "../../infra/sql-connection.js";
 import {
-  readCronDefaultStoreKeyInDatabase,
+  readCronDefaultStoreBindingInDatabase,
   readCronStorePartitionInventoryInDatabase,
+  resolveUnboundCronDefaultStoreKey,
 } from "../../state/openclaw-state-db-cron-identity-migration.js";
 import { executeExistingOpenClawStateRead } from "../../state/openclaw-state-db-readonly.js";
 import { captureOpenClawStateWorkerContext } from "../../state/openclaw-state-worker-context.js";
@@ -18,8 +19,10 @@ import {
   readCronStoreStatePathInDatabase,
 } from "./config-state.js";
 import { CronStoreSelectionRequiredError } from "./selection-error.js";
+import type { CronStoreSelection } from "./selection.types.js";
 
 export { CronStoreSelectionRequiredError };
+export type { CronStoreSelection } from "./selection.types.js";
 
 function resolveDefaultCronDir(env: NodeJS.ProcessEnv): string {
   return path.join(resolveConfigDir(env), "cron");
@@ -28,15 +31,6 @@ function resolveDefaultCronDir(env: NodeJS.ProcessEnv): string {
 export function resolveDefaultCronStorePath(env: NodeJS.ProcessEnv): string {
   return path.join(resolveDefaultCronDir(env), "jobs.json");
 }
-
-export type CronStoreSelection =
-  | { status: "ready"; storeKey: string; storePath: string }
-  | {
-      status: "unresolved";
-      storePath: string;
-      partitions: ReturnType<typeof readCronStorePartitionInventoryInDatabase>;
-      message: string;
-    };
 
 export function requireCronStoreSelection(selection: CronStoreSelection) {
   if (selection.status === "unresolved") {
@@ -57,11 +51,17 @@ export function resolveCronStoreSelectionInDatabase(
   if (displayPath !== defaultStorePath) {
     return { status: "ready", storeKey: displayPath, storePath: displayPath };
   }
-  const storeKey = readCronDefaultStoreKeyInDatabase(db);
-  if (storeKey !== undefined) {
-    return { status: "ready", storeKey, storePath: displayPath };
+  const binding = readCronDefaultStoreBindingInDatabase(db);
+  if (binding.status === "ready") {
+    return { status: "ready", storeKey: binding.storeKey, storePath: displayPath };
   }
   const partitions = readCronStorePartitionInventoryInDatabase(db);
+  if (binding.status === "absent") {
+    const storeKey = resolveUnboundCronDefaultStoreKey(partitions, defaultStorePath);
+    if (storeKey !== undefined) {
+      return { status: "ready", storeKey, storePath: displayPath };
+    }
+  }
   const inventory = partitions.length
     ? partitions.map((partition) => JSON.stringify(partition)).join("; ")
     : "(no persisted cron partitions)";

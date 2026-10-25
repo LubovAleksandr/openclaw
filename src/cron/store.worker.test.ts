@@ -757,7 +757,7 @@ it.each(["unchanged", "intervening", "evicted before reply", "evicted after repl
   async (change) => {
     const storePath = `/synthetic/cron-save-revision-${change}/jobs.json`;
     const pending = createDeferred<CronStoreSaveWorkerOperations["cron.save"]["output"]>();
-    const admitted = createDeferred<void>();
+    const admitted = createDeferred();
     vi.spyOn(stateWorker, "runOpenClawStateWorkerOperation").mockImplementation(
       async (_context, operation) =>
         operation({

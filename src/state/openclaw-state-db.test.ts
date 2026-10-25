@@ -54,6 +54,7 @@ import { hasDanglingSkillWorkshopCollectionReviewIndex } from "./openclaw-state-
 import {
   markStateDatabaseVersion,
   materializeV2026_7_1_2StateDatabase,
+  V2026_7_1_2_STATE_MIGRATION_CHANGES,
 } from "./openclaw-state-db-historical-fixtures.test-support.js";
 import { runHotRollbackJournalRecoveryProbe } from "./openclaw-state-db-hot-journal.test-support.js";
 import { prepareStateDatabaseSchemaRepair } from "./openclaw-state-db-maintenance.js";
@@ -1650,21 +1651,7 @@ describe("openclaw state database", () => {
       pathname: fixture.databasePath,
     });
 
-    await expectRepair(options, [
-      "Discarded retired shared-state commitments rows, table, and indexes",
-      "Retired six dead shared-state tables (v10)",
-      "Retired legacy skill curator lifecycle and proposal origin-run tables",
-      "Folded singleton state tables into config_machine_state (v12)",
-      "Migrated shared state audit event ledger → versioned message lifecycle schema",
-      "Derived meeting transcript selectors and bounded delivery retention columns (v21)",
-      "Promoted portable ACP resume keys and cursor identities (v22)",
-      "Consolidated shared state tables (v13)",
-      "Qualified historical cron creator attribution as unknown (v14)",
-      "Removed redundant conversation binding target projections (v15)",
-      "Replaced retained task indexes with ordered cron history indexes (v24)",
-      "Removed redundant replay and skill indexes and narrowed the lease-owner index (v27)",
-      "Migrated shared state tables to SQLite STRICT typing (46)",
-    ]);
+    await expectRepair(options, V2026_7_1_2_STATE_MIGRATION_CHANGES);
     const migrated = openOpenClawStateDatabase(options);
     const native = requireNativeSqliteDatabase(migrated.db);
     expectCurrentStateVersion(native);

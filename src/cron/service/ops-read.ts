@@ -104,7 +104,10 @@ export async function readScratch(
   id: string,
   options?: { assertCurrent?: () => void; signal?: AbortSignal },
 ) {
-  await prepareCronServiceStore(state);
+  const preparation = prepareCronServiceStore(state);
+  if (preparation) {
+    await preparation;
+  }
   const source = captureCronJobMutationSource(state);
   const callerCurrent = options?.assertCurrent;
   const signal = options?.signal;
@@ -147,7 +150,10 @@ export async function writeScratch(
     commitGuard?: () => void;
   },
 ) {
-  await prepareCronServiceStore(state);
+  const preparation = prepareCronServiceStore(state);
+  if (preparation) {
+    await preparation;
+  }
   const source = captureCronJobMutationSource(state);
   return await locked(state, async () => {
     source.assertCurrent();
