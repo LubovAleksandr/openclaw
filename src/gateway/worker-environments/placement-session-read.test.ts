@@ -38,6 +38,13 @@ it("retains SQL-free placement facts through bookkeeping, claims, dispatch, reti
     const current = () => withoutHostSql(() => read.current());
     try {
       expect(current()).toBeUndefined();
+      {
+        using keys = vi.spyOn(Object, "keys");
+        const warm = await store.prepareSessionPlacement(session.sessionId);
+        expect(warm.current()).toBeUndefined();
+        warm.release();
+        expect(keys.mock.calls.filter(([source]) => source === process.env)).toHaveLength(0);
+      }
       const claim = await store.claimTurn({
         ...session,
         owner: { kind: "local" },
@@ -123,23 +130,6 @@ it("retains SQL-free placement facts through bookkeeping, claims, dispatch, reti
   });
 });
 
-it("prepares warm placement authority without enumerating the process environment", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async () => {
-    const store = createWorkerSessionPlacementStore();
-    const sessionId = "environment-free-placement-read";
-    const warm = await store.prepareSessionPlacement(sessionId);
-    warm.release();
-    using keys = vi.spyOn(Object, "keys");
-    const read = await store.prepareSessionPlacement(sessionId);
-    try {
-      expect(read.current()).toBeUndefined();
-      expect(keys.mock.calls.filter(([source]) => source === process.env)).toHaveLength(0);
-    } finally {
-      read.release();
-    }
-  });
-});
-
 it("installs the committed placement when acquisition overlaps its writer receipt", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     const store = createWorkerSessionPlacementStore();
@@ -165,15 +155,6 @@ it("installs the committed placement when acquisition overlaps its writer receip
   });
 });
 
-it("retains a cold async placement read for SQL-free synchronous compatibility access", async () => {
-  await withOpenClawTestState({ scenario: "minimal" }, async () => {
-    const store = createWorkerSessionPlacementStore();
-    const sessionIds = ["cold-placement-absence"];
-    expect(await store.getManyAsync(sessionIds)).toEqual(new Map());
-    expect(withoutHostSql(() => store.getMany(sessionIds))).toEqual(new Map());
-  });
-});
-
 it("keeps cold async worker placement results independent of retained placement facts", async () => {
   await withOpenClawTestState({ scenario: "minimal" }, async () => {
     const database = openOpenClawStateDatabase();
@@ -183,6 +164,8 @@ it("keeps cold async worker placement results independent of retained placement 
       sessionKey: "agent:main:caller-owned-placement",
       sessionId: "caller-owned-placement",
     };
+    expect(await store.getManyAsync([session.sessionId])).toEqual(new Map());
+    expect(withoutHostSql(() => store.getMany([session.sessionId]))).toEqual(new Map());
     const environment = { environmentId: "caller-owned-environment", ownerEpoch: 7 };
     await advancePlacementFixtureToActive(store, database, session, environment);
     await store.claimTurn({
