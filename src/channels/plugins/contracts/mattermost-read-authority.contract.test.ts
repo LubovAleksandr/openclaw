@@ -14,12 +14,11 @@ import {
   releaseAgentRunDelegatedAuthority,
   validateAgentRunDelegatedAuthority,
 } from "../../../infra/agent-run-registry.js";
-import { createPluginRegistry } from "../../../plugins/registry.js";
+import { createTestPluginRegistry } from "../../../plugins/registry-runtime.test-helpers.js";
 import {
   resetPluginRuntimeStateForTest,
   setActivePluginRegistry,
 } from "../../../plugins/runtime.js";
-import type { PluginRuntime } from "../../../plugins/runtime/types.js";
 import { createPluginRecord } from "../../../plugins/status.test-fixtures.js";
 import { createChannelTestPluginBase } from "../../../test-utils/channel-plugins.js";
 import { dispatchChannelMessageAction } from "../message-action-dispatch.js";
@@ -87,11 +86,7 @@ async function withReadFixture(
   if (!mattermostPlugin || !actions) {
     throw new Error("Mattermost message actions are unavailable");
   }
-  const owner = createPluginRegistry({
-    logger: { info() {}, warn() {}, error() {}, debug() {} },
-    runtime: {} as PluginRuntime,
-    activateGlobalSideEffects: false,
-  });
+  const owner = createTestPluginRegistry();
   const record = createPluginRecord({
     id: "mattermost",
     origin: options.origin ?? "global",

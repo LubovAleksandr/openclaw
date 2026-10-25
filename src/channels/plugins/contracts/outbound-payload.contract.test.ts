@@ -123,8 +123,7 @@ describe("scoped channel media limits", () => {
 
   it("carries selected limits and unchanged text/media options to the sender", async () => {
     const cfg = scopedMediaConfig;
-    const textOptions = { kind: "text" };
-    const mediaOptions = { kind: "media" };
+    const optionsByKind = { text: { kind: "text" }, media: { kind: "media" } };
     const send = vi.fn(async (_to: string, _text: string, _options: { kind: string }) => ({
       messageId: "fixture-message",
     }));
@@ -132,18 +131,16 @@ describe("scoped channel media limits", () => {
       Parameters<typeof createDirectTextMediaOutbound>[0]["buildTextOptions"]
     >[0];
     const built: BuilderInput[] = [];
+    const build = (kind: keyof typeof optionsByKind) => (options: BuilderInput) => {
+      built.push(options);
+      return optionsByKind[kind];
+    };
     const outbound = createDirectTextMediaOutbound({
       channel: "media-limit-fixture",
       resolveSender: () => send,
       resolveMaxBytes: createScopedChannelMediaMaxBytesResolver("media-limit-fixture"),
-      buildTextOptions: (options) => {
-        built.push(options);
-        return textOptions;
-      },
-      buildMediaOptions: (options) => {
-        built.push(options);
-        return mediaOptions;
-      },
+      buildTextOptions: build("text"),
+      buildMediaOptions: build("media"),
     });
     const sendText = outbound.sendText;
     const sendMedia = outbound.sendMedia;
@@ -157,66 +154,54 @@ describe("scoped channel media limits", () => {
     const mediaAccess = { localRoots: roots, readFile, workspaceDir: "/tmp/media-limit-workspace" };
     const context = { cfg, to: "fixture-recipient", accountId: " OFFICE ", replyToId: "reply-1" };
 
-    const textResult = await sendText({ ...context, text: "text" });
-    const mediaResult = await sendMedia({
-      ...context,
-      text: "caption",
-      mediaUrl: "https://example.test/canonical.png",
-      mediaAccess,
-      mediaLocalRoots: legacyRoots,
-      mediaReadFile: legacyReadFile,
-    });
-    const legacyResult = await sendMedia({
-      ...context,
-      text: "legacy caption",
-      mediaUrl: "https://example.test/legacy.png",
-      mediaLocalRoots: legacyRoots,
-      mediaReadFile: legacyReadFile,
-    });
-
-    const commonOptions = { cfg, accountId: " OFFICE ", replyToId: "reply-1", maxBytes: 1048576 };
-    expect(built).toStrictEqual([
-      {
+    const commonOptions = {
+      cfg,
+      accountId: context.accountId,
+      replyToId: "reply-1",
+      maxBytes: 1048576,
+    };
+    for (const [text, suppliedAccess, expectedAccess] of [
+      ["text", undefined, undefined],
+      ["caption", mediaAccess, mediaAccess],
+      ["legacy caption", undefined, { localRoots: legacyRoots, readFile: legacyReadFile }],
+    ] as const) {
+      const isText = text === "text";
+      const mediaUrl = isText
+        ? undefined
+        : `https://example.test/${suppliedAccess ? "canonical" : "legacy"}.png`;
+      const result = await (isText ? sendText : sendMedia)({
+        ...context,
+        text,
+        mediaUrl,
+        ...(!isText && {
+          mediaAccess: suppliedAccess,
+          mediaLocalRoots: legacyRoots,
+          mediaReadFile: legacyReadFile,
+        }),
+      });
+      const options = built.at(-1);
+      expect(options).toStrictEqual({
         ...commonOptions,
-        mediaUrl: undefined,
-        mediaAccess: undefined,
-        mediaLocalRoots: undefined,
-        mediaReadFile: undefined,
-      },
-      {
-        ...commonOptions,
-        mediaUrl: "https://example.test/canonical.png",
-        mediaAccess,
-        mediaLocalRoots: roots,
-        mediaReadFile: readFile,
-      },
-      {
-        ...commonOptions,
-        mediaUrl: "https://example.test/legacy.png",
-        mediaAccess: { localRoots: legacyRoots, readFile: legacyReadFile },
-        mediaLocalRoots: legacyRoots,
-        mediaReadFile: legacyReadFile,
-      },
-    ]);
-    for (const options of built) {
-      expect(options.cfg).toBe(cfg);
+        mediaUrl,
+        mediaAccess: expectedAccess,
+        mediaLocalRoots: expectedAccess?.localRoots,
+        mediaReadFile: expectedAccess?.readFile,
+      });
+      expect(options?.cfg).toBe(cfg);
+      if (suppliedAccess) {
+        expect(options?.mediaAccess).toBe(suppliedAccess);
+      }
+      expect(options?.mediaLocalRoots).toBe(expectedAccess?.localRoots);
+      const sentOptions = optionsByKind[isText ? "text" : "media"];
+      expect(send.mock.calls.at(-1)).toStrictEqual(["fixture-recipient", text, sentOptions]);
+      expect(send.mock.calls.at(-1)?.[2]).toBe(sentOptions);
+      expect(result).toStrictEqual({
+        channel: "media-limit-fixture",
+        messageId: "fixture-message",
+      });
     }
-    expect(built[1]?.mediaAccess).toBe(mediaAccess);
-    expect(built[1]?.mediaLocalRoots).toBe(roots);
-    expect(built[2]?.mediaLocalRoots).toBe(legacyRoots);
-    expect(send.mock.calls).toStrictEqual([
-      ["fixture-recipient", "text", textOptions],
-      ["fixture-recipient", "caption", mediaOptions],
-      ["fixture-recipient", "legacy caption", mediaOptions],
-    ]);
-    expect(send.mock.calls[0]?.[2]).toBe(textOptions);
-    expect(send.mock.calls[1]?.[2]).toBe(mediaOptions);
-    expect(send.mock.calls[2]?.[2]).toBe(mediaOptions);
-    expect([textResult, mediaResult, legacyResult]).toStrictEqual([
-      { channel: "media-limit-fixture", messageId: "fixture-message" },
-      { channel: "media-limit-fixture", messageId: "fixture-message" },
-      { channel: "media-limit-fixture", messageId: "fixture-message" },
-    ]);
+    expect(built).toHaveLength(3);
+    expect(send).toHaveBeenCalledTimes(3);
     expect(readFile).not.toHaveBeenCalled();
     expect(legacyReadFile).not.toHaveBeenCalled();
   });

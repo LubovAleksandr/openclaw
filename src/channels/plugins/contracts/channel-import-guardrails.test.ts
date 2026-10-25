@@ -32,28 +32,12 @@ const bundledPluginRoots = new Map(
 const BUNDLED_EXTENSION_IDS = [...bundledPluginRoots.keys()].toSorted(
   (left, right) => right.length - left.length,
 );
-const GUARDED_CHANNEL_EXTENSIONS = new Set([
-  "discord",
-  "feishu",
-  "googlechat",
-  "imessage",
-  "irc",
-  "line",
-  "matrix",
-  "mattermost",
-  "msteams",
-  "nostr",
-  "nextcloud-talk",
-  "signal",
-  "slack",
-  "synology-chat",
-  "telegram",
-  "tlon",
-  "twitch",
-  "whatsapp",
-  "zalo",
-  "zalouser",
-]);
+const GUARDED_CHANNEL_EXTENSIONS = new Set(
+  `discord feishu googlechat imessage irc line matrix mattermost msteams nostr
+   nextcloud-talk signal slack synology-chat telegram tlon twitch whatsapp zalo zalouser`.split(
+    /\s+/u,
+  ),
+);
 
 function resolveBundledPluginSourceRoot(rootDir: string): string {
   const sourceRoot = resolve(REPO_ROOT, BUNDLED_PLUGIN_ROOT_DIR, basename(rootDir));
@@ -129,43 +113,11 @@ function expectGuardedSources(sources: GuardedSource[], read = readSource) {
   }
 }
 
-const LOCAL_EXTENSION_API_BARREL_GUARDS = [
-  "acpx",
-  "device-pair",
-  "diagnostics-otel",
-  "diagnostics-prometheus",
-  "discord",
-  "diffs",
-  "feishu",
-  "google",
-  "imessage",
-  "irc",
-  "llm-task",
-  "line",
-  "lobster",
-  "matrix",
-  "mattermost",
-  "memory-lancedb",
-  "msteams",
-  "nextcloud-talk",
-  "nostr",
-  "ollama",
-  "copilot-proxy",
-  "sglang",
-  "zai",
-  "signal",
-  "synology-chat",
-  "talk-voice",
-  "telegram",
-  "tlon",
-  "voice-call",
-  "vllm",
-  "whatsapp",
-  "twitch",
-  "xai",
-  "zalo",
-  "zalouser",
-] as const;
+const LOCAL_EXTENSION_API_BARREL_GUARDS =
+  `acpx device-pair diagnostics-otel diagnostics-prometheus discord diffs feishu google
+   imessage irc llm-task line lobster matrix mattermost memory-lancedb msteams nextcloud-talk
+   nostr ollama copilot-proxy sglang zai signal synology-chat talk-voice telegram tlon voice-call
+   vllm whatsapp twitch xai zalo zalouser`.split(/\s+/u);
 
 const LOCAL_EXTENSION_API_BARREL_EXCEPTIONS = [
   // Avoid accounts.ts -> runtime-api.ts -> plugin api barrel -> accounts.ts.
@@ -194,31 +146,6 @@ function readSource(path: string): string {
   return text;
 }
 
-function listTrackedSourceFiles(options: SourceFileCollectorOptions): string[] | null {
-  const relativeRoot = toRepoRelativePath(REPO_ROOT, options.rootDir);
-  if (!relativeRoot || relativeRoot.startsWith("..")) {
-    return null;
-  }
-  return (
-    listGitTrackedFiles({ repoRoot: REPO_ROOT, pathspecs: relativeRoot })
-      ?.map((file) => resolve(REPO_ROOT, file))
-      .filter((file) => isSourceFile(file, options))
-      .toSorted() ?? null
-  );
-}
-
-function isSourceFile(file: string, options: SourceFileCollectorOptions): boolean {
-  const normalizedFullPath = normalizePath(file);
-  return (
-    /\.(?:[cm]?ts|[cm]?js|tsx|jsx)$/u.test(file) &&
-    !file.endsWith(".d.ts") &&
-    !normalizedFullPath
-      .split("/")
-      .some((part) => ["node_modules", "dist", "coverage"].includes(part)) &&
-    !options.shouldSkipEntry?.({ entryName: basename(file), normalizedFullPath })
-  );
-}
-
 function collectSourceFiles(
   cached: string[] | undefined | null,
   options: SourceFileCollectorOptions,
@@ -226,20 +153,32 @@ function collectSourceFiles(
   if (cached) {
     return cached;
   }
-  const trackedFiles = listTrackedSourceFiles(options);
-  if (trackedFiles) {
-    return trackedFiles;
-  }
+  const ignoredDirs = new Set(["node_modules", "dist", "coverage"]);
   function walk(dir: string): string[] {
     return fs.readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
       const path = resolve(dir, entry.name);
       if (entry.isDirectory()) {
-        return ["node_modules", "dist", "coverage"].includes(entry.name) ? [] : walk(path);
+        return ignoredDirs.has(entry.name) ? [] : walk(path);
       }
-      return entry.isFile() && isSourceFile(path, options) ? [path] : [];
+      return entry.isFile() ? [path] : [];
     });
   }
-  return walk(options.rootDir);
+  const relativeRoot = toRepoRelativePath(REPO_ROOT, options.rootDir);
+  const tracked =
+    relativeRoot && !relativeRoot.startsWith("..")
+      ? listGitTrackedFiles({ repoRoot: REPO_ROOT, pathspecs: relativeRoot })
+      : null;
+  return (tracked?.map((file) => resolve(REPO_ROOT, file)) ?? walk(options.rootDir))
+    .filter((file) => {
+      const normalizedFullPath = normalizePath(file);
+      return (
+        /\.(?:[cm]?[jt]s|[jt]sx)$/u.test(file) &&
+        !file.endsWith(".d.ts") &&
+        !normalizedFullPath.split("/").some((part) => ignoredDirs.has(part)) &&
+        !options.shouldSkipEntry?.({ entryName: basename(file), normalizedFullPath })
+      );
+    })
+    .toSorted();
 }
 
 function readSetupBarrelImportBlock(path: string): string {
