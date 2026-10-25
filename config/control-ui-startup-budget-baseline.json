@@ -1,5 +1,5 @@
 {
-  "startupJsGzipBytes": 271032,
-  "reason": "CLS repair retains the measured initial-range CPU policy and brings every frozen reload cell below 0.02. Full packaged-plugin inventories on both sides measure startup 271146 to 271032 B gzip (-114 B), five JS and one CSS request; prior partial-plugin build figures were not comparable. Ratchet to the measured repaired head.",
+  "startupJsGzipBytes": 271110,
+  "reason": "CLS repair: all frozen reload cells below 0.02 and all primary CPU cells pass the prescribed noisy-host policy. Matched full packaged-plugin inventories measure startup 271146 to 271110 B gzip (-36 B, within build variance), identical 838411 raw bytes, five JS and one CSS request. Earlier partial-inventory figures are superseded. Ratchet to this measured repaired head.",
   "updatedAt": "2026-10-25"
 }
