@@ -94,7 +94,7 @@ function mountPage(context: ApplicationContext, initial: PluginPageProps) {
 }
 
 function createExternalPluginPage(
-  refresh: ApplicationConfigCapability["refresh"],
+  refresh: ApplicationConfigCapability["refresh"] = vi.fn(async () => externalPluginConfig()),
   requiresGatewayAuth = true,
   path = "/plugins/external/panel",
 ) {
@@ -299,7 +299,7 @@ describe("PluginPage", () => {
   it("keeps the frame unmounted when browser policy blocks the sandbox cookie", async () => {
     vi.useFakeTimers();
     probeResults = [Promise.resolve(false)];
-    const { page } = createExternalPluginPage(vi.fn(async () => externalPluginConfig()));
+    const { page } = createExternalPluginPage();
     await settle();
     await vi.advanceTimersByTimeAsync(5_000);
     await settle();
@@ -456,6 +456,22 @@ function createBundledPage(client: GatewayBrowserClient | null = null, includeEx
   };
 }
 
+async function pendingBundledPage(includeExternal = false) {
+  const load = createDeferred<BundledView>();
+  const started = setBundledLoad(load.promise);
+  const fixture = createBundledPage(null, includeExternal);
+  await started;
+  return { ...fixture, load };
+}
+
+async function retryBundledPage(page: HTMLElement) {
+  const load = createDeferred<BundledView>();
+  const started = setBundledLoad(load.promise);
+  page.querySelector<HTMLButtonElement>('[role="alert"] button')?.click();
+  await started;
+  return load;
+}
+
 function logbookResponse(method: string) {
   return method === "logbook.status"
     ? logbookStatus("2026-07-05", { todayCards: 0 })
@@ -486,12 +502,9 @@ describe("bundled plugin views", () => {
   });
 
   it("stops a bundled view when its advertised descriptor disappears", async () => {
-    const loaded = createDeferred<BundledView>();
+    const fixture = await pendingBundledPage();
     const disposed = vi.fn();
-    const started = setBundledLoad(loaded.promise);
-    const fixture = createBundledPage();
-    await started;
-    loaded.resolve(() => {
+    fixture.load.resolve(() => {
       onCleanup(disposed);
       return "Logbook view";
     });
@@ -535,41 +548,28 @@ describe("bundled plugin views", () => {
   });
 
   it("retries the rejected view and recovers without a Gateway update", async () => {
-    const failed = createDeferred<BundledView>();
-    const started = setBundledLoad(failed.promise);
-    const fixture = createBundledPage();
-    await started;
-    expect(fixture.page.querySelector('[role="status"]')).not.toBeNull();
-    failed.reject(new Error("Logbook chunk failed"));
+    const { page, load } = await pendingBundledPage();
+    expect(page.querySelector('[role="status"]')).not.toBeNull();
+    load.reject(new Error("Logbook chunk failed"));
     await waitForSolid(() =>
-      expect(fixture.page.querySelector('[role="alert"]')?.textContent).toContain(
-        "Logbook chunk failed",
-      ),
+      expect(page.querySelector('[role="alert"]')?.textContent).toContain("Logbook chunk failed"),
     );
-    const retry = createDeferred<BundledView>();
-    const retryStarted = setBundledLoad(retry.promise);
-    fixture.page.querySelector<HTMLButtonElement>('[role="alert"] button')?.click();
-    await retryStarted;
+    const retry = await retryBundledPage(page);
     await settle();
-    expect(fixture.page.querySelector('[role="alert"]')?.textContent).toContain(
-      "Logbook chunk failed",
-    );
+    expect(page.querySelector('[role="alert"]')?.textContent).toContain("Logbook chunk failed");
     retry.resolve(() => "recovered Logbook view");
-    await waitForSolid(() => expect(fixture.page.textContent).toContain("recovered Logbook view"));
-    expect(fixture.page.querySelector('[role="alert"]')).toBeNull();
+    await waitForSolid(() => expect(page.textContent).toContain("recovered Logbook view"));
+    expect(page.querySelector('[role="alert"]')).toBeNull();
   });
 
   it("ignores a retired import rejection before loading a fresh descriptor", async () => {
     const recover = vi.spyOn(staleChunkReload, "scheduleStaleChunkReload").mockResolvedValue(false);
     const failure = new Error("Failed to fetch dynamically imported module");
     interpretMockImportError(failure);
-    const stale = createDeferred<BundledView>();
-    const started = setBundledLoad(stale.promise);
-    const fixture = createBundledPage(null, true);
-    await started;
+    const fixture = await pendingBundledPage(true);
     fixture.setProps({ pluginId: "external-plugin", tabId: "panel" });
     await settle();
-    stale.reject(failure);
+    fixture.load.reject(failure);
     await vi.dynamicImportSettled();
     await settle();
     expect(fixture.page.pluginId).toBe("external-plugin");
@@ -583,7 +583,6 @@ describe("bundled plugin views", () => {
     await waitForSolid(() => expect(fixture.page.textContent).toContain("current Logbook view"));
     expect(fixture.page.pluginId).toBe("logbook");
     expect(fixture.page.querySelector('[role="alert"]')).toBeNull();
-    expect(fixture.page.textContent).toContain("current Logbook view");
     expect(recover).not.toHaveBeenCalled();
   });
 
@@ -594,16 +593,10 @@ describe("bundled plugin views", () => {
       .mockResolvedValue(false);
     const failure = new Error("Failed to fetch dynamically imported module");
     interpretMockImportError(failure);
-    const failed = createDeferred<BundledView>();
-    const started = setBundledLoad(failed.promise);
-    const fixture = createBundledPage();
-    await started;
-    failed.reject(new Error("Logbook chunk failed"));
+    const fixture = await pendingBundledPage();
+    fixture.load.reject(new Error("Logbook chunk failed"));
     await waitForSolid(() => expect(fixture.page.querySelector('[role="alert"]')).not.toBeNull());
-    const stale = createDeferred<BundledView>();
-    const staleStarted = setBundledLoad(stale.promise);
-    fixture.page.querySelector<HTMLButtonElement>('[role="alert"] button')?.click();
-    await staleStarted;
+    const stale = await retryBundledPage(fixture.page);
     stale.reject(failure);
     await waitForSolid(() => expect(recover).toHaveBeenCalledOnce());
     const mayRecover = recover.mock.calls[0]?.[0]?.canReload;
