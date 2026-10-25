@@ -41,7 +41,6 @@ import {
 import { createLazyImportLoader } from "../../shared/lazy-promise.js";
 import { resolveCronJobConfigRevision } from "../config-revision.js";
 import { resolveCronJobToolPolicyContext } from "../execution-context-admission.js";
-import { resolveScheduledSenderBit } from "../execution-context-registry.js";
 import { prepareCronRunAdmission } from "../run-admission.js";
 import { prepareCronRunInference } from "../run-inference.js";
 import { resolveCronAuthenticatedChannelRequester } from "../tools-allow-provenance.js";
@@ -214,9 +213,6 @@ export function createCronPromptExecutor(
       toolsAllow: params.agentPayload?.toolsAllow,
       operatorAuthority: params.operatorAuthority,
     });
-    // Embedded, Codex and CLI candidates share this one sender bit for the run;
-    // the CLI loopback reads the same decision from the run's context.
-    const scheduledSender = resolveScheduledSenderBit(scheduledExecution.result);
     const cronAdmission = prepareCronRunAdmission({
       scheduledExecution,
       operatorAuthority: params.operatorAuthority,
@@ -456,7 +452,9 @@ export function createCronPromptExecutor(
             agentId: params.agentId,
             trigger,
             jobId: params.job.id,
-            ...scheduledSender,
+            // Embedded, Codex and CLI candidates share this one sender bit for the run;
+            // the CLI loopback reads the same decision from the run's context.
+            ...cronAdmission.scheduledSender,
             messageActionTurnCapability: cronAdmission.messageActionTurnCapability,
             config: params.cfgWithAgentDefaults,
             prompt: promptText,
