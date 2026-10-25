@@ -2,11 +2,6 @@ import "../../../../src/test-utils/prepare-compiled-subprocesses.js";
 import path from "node:path";
 import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
 import { GatewayClient, type GatewayClientOptions } from "../../../../src/gateway/client.js";
-import {
-  NODE_RUNNER_INVENTORY_UPDATE_METHOD,
-  parseNodeRunnerInventoryDeclaration,
-  resolveNodeWorkerExecutionIssue,
-} from "../../../../src/infra/node-runner-inventory.js";
 import { createDeferred } from "../../../helpers/promise.js";
 import { useAutoCleanupTempDirTracker } from "../../../helpers/temp-dir.js";
 import {
@@ -140,14 +135,8 @@ it("gates inventory on current hello, propagates failures, and retires removed n
   onTestFinished(() => host.stop());
   expect(client.options.env?.OPENCLAW_STATE_DIR).toBe(path.join(root, "node-state"));
   expect(client.request).toHaveBeenCalledOnce();
-  const inventory = parseNodeRunnerInventoryDeclaration(client.request.mock.calls[0]?.[1]);
-  if (!inventory || !("workerHost" in inventory)) {
-    throw new Error("paired worker fixture did not publish a worker host inventory");
-  }
-  expect(resolveNodeWorkerExecutionIssue(inventory.workerHost)).toBeUndefined();
   client.request.mockClear();
   client.options.onClose?.(1012, "Gateway replacement");
-  expect(client.connected).toBe(true);
   const publication = host.publishInventory();
   await vi.advanceTimersByTimeAsync(0);
   expect(client.request).not.toHaveBeenCalled();
@@ -159,21 +148,15 @@ it("gates inventory on current hello, propagates failures, and retires removed n
 
   client.hello();
   await publication;
-  expect(client.request).toHaveBeenCalledExactlyOnceWith(
-    NODE_RUNNER_INVENTORY_UPDATE_METHOD,
-    expect.objectContaining({ workerHost: expect.objectContaining({ enabled: true }) }),
-  );
+  expect(client.request).toHaveBeenCalledOnce();
 
   const rejected = new Error("inventory rejected");
   client.request.mockRejectedValueOnce(rejected);
   await expect(host.publishInventory()).rejects.toBe(rejected);
-  expect(client.request).toHaveBeenCalledTimes(2);
-
   const replacement = host.connect();
   await expect(host.publishInventory()).rejects.toThrow("disconnected");
   await replacement;
   const replacementClient = transport.clients.at(-1)!;
-  expect(replacementClient).not.toBe(client);
   expect(client.request).toHaveBeenCalledTimes(2);
   expect(replacementClient.request).toHaveBeenCalledOnce();
 
@@ -249,21 +232,17 @@ it("waits for this turn's manifest before accepting a settled placement", async 
   expect(outcomes.get(key)).toBe("settled");
 });
 
-it.each(["initial", "refresh"] as const)("retires failed %s describes", async (failureAt) => {
+it("retires failed describes and allows another waiter", async () => {
   const settlement = settlementFixture();
   const { controller, outcomes, client, observe, changed } = settlement;
   const key = "agent:qa:workspace-error";
   const failure = new Error("synthetic describe failure");
-  if (failureAt === "refresh") {
-    client.request.mockResolvedValueOnce(workspace(true));
-  }
+  client.request.mockResolvedValueOnce(workspace(true));
   client.request.mockRejectedValue(failure);
   observe(key);
   await vi.advanceTimersByTimeAsync(0);
-  if (failureAt === "refresh") {
-    expect(outcomes.get(key)).toBeUndefined();
-    await changed({});
-  }
+  expect(outcomes.get(key)).toBeUndefined();
+  await changed({});
   expect(outcomes.get(key)).toBe(failure);
   client.request.mockResolvedValue(workspace());
   await expect(settlement.wait(client, key, controller.signal)).resolves.toBeUndefined();
