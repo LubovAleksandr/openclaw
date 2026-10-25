@@ -1,4 +1,3 @@
-// QA Lab Matrix tests cover scenario environment readiness boundaries.
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const buildMatrixQaConfig = vi.hoisted(() =>
@@ -47,6 +46,50 @@ const gatewayPaths = {
   workspaceDir: "/tmp/matrix-qa/workspace",
 };
 
+type Preparation = Parameters<ReturnType<typeof createEnvironment>["prepareFlow"]>[0];
+const prepareInput = (gateway: Preparation["gateway"], overrides: Partial<Preparation> = {}) => ({
+  config: {},
+  gateway,
+  outputDir: "/tmp/matrix-qa/output",
+  scenarioId: "matrix-test",
+  scenarioTitle: "Matrix test",
+  timeoutMs: 8_000,
+  waitForConfigRestartSettle: vi.fn(),
+  ...overrides,
+});
+const appliedConfig = (hash = "patched-config-hash") => ({
+  appliedConfigHash: hash,
+  configRevisionHash: hash,
+  hash,
+});
+const matrixAccounts = (accounts: Record<string, unknown>, enabled?: boolean) => ({
+  channels: { matrix: { accounts, ...(enabled === undefined ? {} : { enabled }) } },
+});
+type CallOptions = { deadlineMs?: number; expectFinal?: boolean; timeoutMs?: number };
+function gatewayFor(
+  handlers: Record<string, (params?: unknown, opts?: CallOptions) => unknown>,
+  onCall?: (method: string, opts?: CallOptions) => void,
+) {
+  return {
+    ...gatewayPaths,
+    call: vi.fn(async (method: string, params?: unknown, opts?: CallOptions) => {
+      onCall?.(method, opts);
+      const handler = handlers[method];
+      if (!handler) {
+        throw new Error(`unexpected gateway method ${method}`);
+      }
+      return handler(params, opts);
+    }),
+  };
+}
+function configReads(applied: (params?: unknown, opts?: CallOptions) => unknown) {
+  return vi
+    .fn()
+    .mockReturnValueOnce({ config: {} })
+    .mockReturnValueOnce({ hash: "config-hash" })
+    .mockImplementation(applied);
+}
+
 function healthyMatrixStatus(lastStartAt: number) {
   return {
     channelAccounts: {
@@ -78,82 +121,37 @@ describe("matrix scenario environment", () => {
         rules: [{ action: "deny" as const }],
       },
     };
-    const baselineConfig = {
-      channels: {
-        matrix: {
-          accounts: { sut: { enabled: true } },
-          enabled: false,
-        },
-      },
-    };
+    const baselineConfig = matrixAccounts({ sut: { enabled: true } }, false);
     const firstTarget = {
-      channels: {
-        matrix: {
-          accounts: {
-            sut: {
-              enabled: true,
-              execApprovals: execApprovalOverrides,
-            },
-          },
-          enabled: true,
-        },
-      },
-      tools: {
-        media: {
-          audio: {
-            scope: {
-              default: "deny",
-              rules: [{ action: "deny" }],
-            },
-          },
-        },
-      },
+      ...matrixAccounts({ sut: { enabled: true, execApprovals: execApprovalOverrides } }, true),
+      tools: { media: { audio: audioOverrides } },
     };
+    const preservedAccount = { deviceId: "CURRENT-DEVICE", lifecycleState: "preserve" };
+    const preservedPlugin = {
+      config: { preserve: "matrix-config" },
+      hooks: { allowConversationAccess: true },
+      llm: { allowModelOverride: true },
+      subagent: { allowModelOverride: true },
+    };
+    const staleAllowlist = ["@driver:test", "@stale:test"];
     const currentConfig = {
-      channels: {
-        matrix: {
-          accounts: {
-            sibling: { enabled: true },
-            sut: {
-              autoJoin: "allowlist",
-              autoJoinAllowlist: ["@driver:test", "@stale:test"],
-              deviceId: "CURRENT-DEVICE",
-              dm: {
-                allowFrom: ["@driver:test", "@stale:test"],
-                sessionScope: "per-user",
-              },
-              execApprovals: execApprovalOverrides,
-              groupAllowFrom: ["@driver:test", "@stale:test"],
-              groups: {
-                "!room:test": {
-                  tools: {
-                    allow: ["read", "write"],
-                    deny: ["shell", "network"],
-                  },
-                },
-              },
-              lifecycleState: "preserve",
-            },
-            "qa-driver-bot-source": { enabled: true },
+      ...matrixAccounts({
+        sibling: { enabled: true },
+        sut: {
+          ...preservedAccount,
+          autoJoin: "allowlist",
+          autoJoinAllowlist: staleAllowlist,
+          dm: { allowFrom: staleAllowlist, sessionScope: "per-user" },
+          execApprovals: execApprovalOverrides,
+          groupAllowFrom: staleAllowlist,
+          groups: {
+            "!room:test": { tools: { allow: ["read", "write"], deny: ["shell", "network"] } },
           },
         },
-      },
-      messages: {
-        groupChat: {
-          mentionPatterns: ["@sut", "@sut"],
-        },
-      },
-      plugins: {
-        entries: {
-          matrix: {
-            config: { preserve: "matrix-config" },
-            enabled: false,
-            hooks: { allowConversationAccess: true },
-            llm: { allowModelOverride: true },
-            subagent: { allowModelOverride: true },
-          },
-        },
-      },
+        "qa-driver-bot-source": { enabled: true },
+      }),
+      messages: { groupChat: { mentionPatterns: ["@sut", "@sut"] } },
+      plugins: { entries: { matrix: { ...preservedPlugin, enabled: false } } },
       tools: {
         media: {
           audio: {
@@ -168,44 +166,18 @@ describe("matrix scenario environment", () => {
       unrelated: { preserve: true },
     };
     const secondTarget = {
-      channels: {
-        matrix: {
-          accounts: {
-            sibling: { enabled: true },
-            sut: {
-              autoJoinAllowlist: ["@driver:test"],
-              deviceId: "CURRENT-DEVICE",
-              dm: { allowFrom: ["@driver:test"] },
-              groupAllowFrom: ["@driver:test"],
-              groups: {
-                "!room:test": {
-                  tools: {
-                    allow: ["read"],
-                    deny: ["shell"],
-                  },
-                },
-              },
-              lifecycleState: "preserve",
-            },
-          },
+      ...matrixAccounts({
+        sibling: { enabled: true },
+        sut: {
+          ...preservedAccount,
+          autoJoinAllowlist: ["@driver:test"],
+          dm: { allowFrom: ["@driver:test"] },
+          groupAllowFrom: ["@driver:test"],
+          groups: { "!room:test": { tools: { allow: ["read"], deny: ["shell"] } } },
         },
-      },
-      messages: {
-        groupChat: {
-          mentionPatterns: ["@sut"],
-        },
-      },
-      plugins: {
-        entries: {
-          matrix: {
-            config: { preserve: "matrix-config" },
-            enabled: true,
-            hooks: { allowConversationAccess: true },
-            llm: { allowModelOverride: true },
-            subagent: { allowModelOverride: true },
-          },
-        },
-      },
+      }),
+      messages: { groupChat: { mentionPatterns: ["@sut"] } },
+      plugins: { entries: { matrix: { ...preservedPlugin, enabled: true } } },
       tools: {
         media: {
           audio: {
@@ -224,57 +196,37 @@ describe("matrix scenario environment", () => {
     let configReadCount = 0;
     let patchCount = 0;
     let statusCount = 0;
-    const gateway = {
-      ...gatewayPaths,
-      call: vi.fn(
-        async (
-          method: string,
-          _params?: unknown,
-          _opts?: { deadlineMs?: number; expectFinal?: boolean; timeoutMs?: number },
-        ) => {
-          if (method === "config.get") {
-            configReadCount += 1;
-            const scenario = Math.ceil(configReadCount / 3);
-            const phase = (configReadCount - 1) % 3;
-            if (phase === 0) {
-              return { config: scenario === 1 ? baselineConfig : currentConfig };
-            }
-            if (phase === 1) {
-              return { hash: `base-${scenario}` };
-            }
-            return {
-              appliedConfigHash: `patched-${scenario}`,
-              configRevisionHash: `patched-${scenario}`,
-              hash: `patched-${scenario}`,
-            };
-          }
-          if (method === "config.patch") {
-            patchCount += 1;
-            return { hash: `patched-${patchCount}`, changedPaths: ["channels.matrix"], ok: true };
-          }
-          if (method === "channels.status") {
-            statusCount += 1;
-            return healthyMatrixStatus(statusCount);
-          }
-          throw new Error(`unexpected gateway method ${method}`);
-        },
-      ),
-    };
+    const gateway = gatewayFor({
+      "config.get": () => {
+        configReadCount += 1;
+        const scenario = Math.ceil(configReadCount / 3);
+        const phase = (configReadCount - 1) % 3;
+        if (phase === 0) {
+          return { config: scenario === 1 ? baselineConfig : currentConfig };
+        }
+        if (phase === 1) {
+          return { hash: `base-${scenario}` };
+        }
+        return appliedConfig(`patched-${scenario}`);
+      },
+      "config.patch": () => {
+        patchCount += 1;
+        return { hash: `patched-${patchCount}`, changedPaths: ["channels.matrix"], ok: true };
+      },
+      "channels.status": () => {
+        statusCount += 1;
+        return healthyMatrixStatus(statusCount);
+      },
+    });
     const environment = createEnvironment();
-    const input = {
+    const input: Preparation = prepareInput(gateway, {
       config: {
         matrixConfigOverrides: {
           audio: audioOverrides,
           execApprovals: execApprovalOverrides,
         },
       } as Record<string, unknown>,
-      gateway,
-      outputDir: "/tmp/matrix-qa/output",
-      scenarioId: "matrix-state-reset",
-      scenarioTitle: "Matrix state reset",
-      timeoutMs: 8_000,
-      waitForConfigRestartSettle: vi.fn(),
-    };
+    });
 
     await environment.prepareFlow(input);
     input.config = {};
@@ -318,20 +270,7 @@ describe("matrix scenario environment", () => {
       },
     });
     expect(secondPatch).toMatchObject({
-      plugins: {
-        entries: {
-          matrix: { enabled: true },
-        },
-      },
-      tools: {
-        media: {
-          audio: {
-            scope: {
-              default: null,
-            },
-          },
-        },
-      },
+      tools: { media: { audio: { scope: { default: null } } } },
     });
     expect(
       (secondPatch.plugins as { entries?: Record<string, unknown> }).entries?.matrix as Record<
@@ -358,76 +297,54 @@ describe("matrix scenario environment", () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
     const callOrder: string[] = [];
-    let configReadCount = 0;
+    let revisionReadCount = 0;
     let statusReadCount = 0;
     const revisionTimeouts: number[] = [];
     const statusTimeouts: number[] = [];
-    const gateway = {
-      ...gatewayPaths,
-      call: vi.fn(
-        async (
-          method: string,
-          _params?: unknown,
-          opts?: { deadlineMs?: number; timeoutMs?: number },
-        ) => {
-          callOrder.push(method);
-          if (opts?.deadlineMs !== undefined && opts.deadlineMs <= Date.now()) {
-            throw new Error("gateway RPC deadline expired");
+    const gateway = gatewayFor(
+      {
+        "config.get": configReads((_params, opts) => {
+          revisionReadCount += 1;
+          revisionTimeouts.push(opts?.timeoutMs ?? -1);
+          if (revisionReadCount === 1) {
+            vi.setSystemTime(56_000);
           }
-          if (method === "config.get") {
-            configReadCount += 1;
-            if (configReadCount === 1) {
-              return { config: {} };
-            }
-            if (configReadCount === 2) {
-              return { hash: "config-hash" };
-            }
-            revisionTimeouts.push(opts?.timeoutMs ?? -1);
-            if (configReadCount === 3) {
-              vi.setSystemTime(56_000);
-            }
-            return {
-              appliedConfigHash: configReadCount === 3 ? "old-revision" : "new-revision",
-              configRevisionHash: "new-revision",
-              hash: "patched-config-hash",
-            };
+          return {
+            appliedConfigHash: revisionReadCount === 1 ? "old-revision" : "new-revision",
+            configRevisionHash: "new-revision",
+            hash: "patched-config-hash",
+          };
+        }),
+        "config.patch": () => ({
+          hash: "patched-config-hash",
+          changedPaths: ["channels.matrix"],
+          ok: true,
+        }),
+        "channels.status": (_params, opts) => {
+          statusReadCount += 1;
+          statusTimeouts.push(opts?.timeoutMs ?? -1);
+          if (statusReadCount === 2) {
+            vi.setSystemTime(56_500);
           }
-          if (method === "config.patch") {
-            return {
-              hash: "patched-config-hash",
-              changedPaths: ["channels.matrix"],
-              ok: true,
-            };
-          }
-          if (method === "channels.status") {
-            statusReadCount += 1;
-            statusTimeouts.push(opts?.timeoutMs ?? -1);
-            if (statusReadCount === 2) {
-              vi.setSystemTime(56_500);
-            }
-            return healthyMatrixStatus(statusReadCount < 3 ? 100 : 200);
-          }
-          if (method === "exec.approval.request") {
-            return { id: "approval-1", status: "accepted" };
-          }
-          throw new Error(`unexpected gateway method ${method}`);
+          return healthyMatrixStatus(statusReadCount < 3 ? 100 : 200);
         },
-      ),
-    };
+        "exec.approval.request": () => ({ id: "approval-1", status: "accepted" }),
+      },
+      (method, opts) => {
+        callOrder.push(method);
+        if (opts?.deadlineMs !== undefined && opts.deadlineMs <= Date.now()) {
+          throw new Error("gateway RPC deadline expired");
+        }
+      },
+    );
     const environment = createEnvironment();
     const waitForConfigRestartSettle = vi.fn(async () => {
       callOrder.push("config.settle");
     });
 
-    const preparing = environment.prepareFlow({
-      config: {},
-      gateway,
-      outputDir: "/tmp/matrix-qa/output",
-      scenarioId: "matrix-approval",
-      scenarioTitle: "Matrix approval",
-      timeoutMs: 8_000,
-      waitForConfigRestartSettle,
-    });
+    const preparing = environment.prepareFlow(
+      prepareInput(gateway, { waitForConfigRestartSettle }),
+    );
     await vi.runAllTimersAsync();
     const prepared = await preparing;
     const scenarioContext = prepared.scenarioContext;
@@ -469,44 +386,22 @@ describe("matrix scenario environment", () => {
     vi.setSystemTime(0);
     let configReadCount = 0;
     const stale = new Error("config changed since last load");
-    const gateway = {
-      ...gatewayPaths,
-      call: vi.fn(
-        async (
-          method: string,
-          _params?: unknown,
-          _opts?: { deadlineMs?: number; timeoutMs?: number },
-        ) => {
-          if (method === "config.get") {
-            configReadCount += 1;
-            if (configReadCount === 1) {
-              return { config: {} };
-            }
-            return { hash: `base-${configReadCount}` };
-          }
-          if (method === "config.patch") {
-            throw stale;
-          }
-          if (method === "channels.status") {
-            return healthyMatrixStatus(100);
-          }
-          throw new Error(`unexpected gateway method ${method}`);
-        },
-      ),
-    };
+    const gateway = gatewayFor({
+      "config.get": () => {
+        configReadCount += 1;
+        if (configReadCount === 1) {
+          return { config: {} };
+        }
+        return { hash: `base-${configReadCount}` };
+      },
+      "config.patch": () => {
+        throw stale;
+      },
+      "channels.status": () => healthyMatrixStatus(100),
+    });
     const environment = createEnvironment();
 
-    await expect(
-      environment.prepareFlow({
-        config: {},
-        gateway,
-        outputDir: "/tmp/matrix-qa/output",
-        scenarioId: "matrix-stale-patch",
-        scenarioTitle: "Matrix stale patch",
-        timeoutMs: 8_000,
-        waitForConfigRestartSettle: vi.fn(),
-      }),
-    ).rejects.toBe(stale);
+    await expect(environment.prepareFlow(prepareInput(gateway))).rejects.toBe(stale);
 
     expect(gateway.call.mock.calls.map(([method]) => method)).toEqual([
       "config.get",
@@ -522,67 +417,37 @@ describe("matrix scenario environment", () => {
   it("requires a fresh account after an effective Matrix token change", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
-    let configReadCount = 0;
     let statusReadCount = 0;
     const statusTimeouts: number[] = [];
-    const gateway = {
-      ...gatewayPaths,
-      call: vi.fn(
-        async (
-          method: string,
-          params?: unknown,
-          opts?: { deadlineMs?: number; timeoutMs?: number },
-        ) => {
-          if (method === "config.get") {
-            configReadCount += 1;
-            if (configReadCount === 1) {
-              return { config: {} };
-            }
-            if (configReadCount === 2) {
-              return { hash: "config-hash" };
-            }
-            vi.setSystemTime(59_900);
-            return {
-              appliedConfigHash: "patched-config-hash",
-              configRevisionHash: "patched-config-hash",
-              hash: "patched-config-hash",
-            };
-          }
-          if (method === "config.patch") {
-            return {
-              hash: "patched-config-hash",
-              changedPaths: ["channels.matrix.accounts.sut.accessToken"],
-              noop: false,
-              ok: true,
-            };
-          }
-          if (method === "channels.status") {
-            statusReadCount += 1;
-            statusTimeouts.push(opts?.timeoutMs ?? -1);
-            if (statusReadCount === 2) {
-              expect((params as { timeoutMs?: number } | undefined)?.timeoutMs).toBe(100);
-              vi.setSystemTime(60_000);
-            }
-            if (statusReadCount === 3) {
-              vi.setSystemTime(60_000);
-            }
-            return healthyMatrixStatus(100);
-          }
-          throw new Error(`unexpected gateway method ${method}`);
-        },
-      ),
-    };
+    const gateway = gatewayFor({
+      "config.get": configReads(() => {
+        vi.setSystemTime(59_900);
+        return appliedConfig();
+      }),
+      "config.patch": () => ({
+        hash: "patched-config-hash",
+        changedPaths: ["channels.matrix.accounts.sut.accessToken"],
+        noop: false,
+        ok: true,
+      }),
+      "channels.status": (params, opts) => {
+        statusReadCount += 1;
+        statusTimeouts.push(opts?.timeoutMs ?? -1);
+        if (statusReadCount === 2) {
+          expect((params as { timeoutMs?: number } | undefined)?.timeoutMs).toBe(100);
+          vi.setSystemTime(60_000);
+        }
+        if (statusReadCount === 3) {
+          vi.setSystemTime(60_000);
+        }
+        return healthyMatrixStatus(100);
+      },
+    });
     const environment = createEnvironment();
     const waitForConfigRestartSettle = vi.fn();
-    const preparing = environment.prepareFlow({
-      config: {},
-      gateway,
-      outputDir: "/tmp/matrix-qa/output",
-      scenarioId: "matrix-deadline",
-      scenarioTitle: "Matrix deadline",
-      timeoutMs: 8_000,
-      waitForConfigRestartSettle,
-    });
+    const preparing = environment.prepareFlow(
+      prepareInput(gateway, { waitForConfigRestartSettle }),
+    );
     const outcome = expect(preparing).rejects.toThrow('matrix account "sut" did not become ready');
 
     await vi.runAllTimersAsync();
@@ -600,11 +465,23 @@ describe("matrix scenario environment", () => {
   it("rejects a stale account start after a delayed failed pre-restart status read", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_000);
-    let configReadCount = 0;
     let statusReadCount = 0;
     const mutateState = vi.fn(async () => undefined);
     const gateway = {
-      ...gatewayPaths,
+      ...gatewayFor({
+        "config.get": configReads(() => appliedConfig("config-hash")),
+        "config.patch": () => ({ hash: "config-hash", changedPaths: [], noop: true, ok: true }),
+        "channels.status": () => {
+          statusReadCount += 1;
+          if (statusReadCount === 3) {
+            vi.setSystemTime(1_500);
+            throw new Error("status temporarily unavailable");
+          }
+          return healthyMatrixStatus(
+            statusReadCount === 4 ? 1_200 : statusReadCount === 5 ? 1_500 : 1_600,
+          );
+        },
+      }),
       restartAfterStateMutation: vi.fn(
         async (
           mutate: (context: {
@@ -622,47 +499,9 @@ describe("matrix scenario environment", () => {
           });
         },
       ),
-      call: vi.fn(async (method: string) => {
-        if (method === "config.get") {
-          configReadCount += 1;
-          if (configReadCount === 1) {
-            return { config: {} };
-          }
-          if (configReadCount === 2) {
-            return { hash: "config-hash" };
-          }
-          return {
-            appliedConfigHash: "config-hash",
-            configRevisionHash: "config-hash",
-            hash: "config-hash",
-          };
-        }
-        if (method === "config.patch") {
-          return { hash: "config-hash", changedPaths: [], noop: true, ok: true };
-        }
-        if (method === "channels.status") {
-          statusReadCount += 1;
-          if (statusReadCount === 3) {
-            vi.setSystemTime(1_500);
-            throw new Error("status temporarily unavailable");
-          }
-          return healthyMatrixStatus(
-            statusReadCount === 4 ? 1_200 : statusReadCount === 5 ? 1_500 : 1_600,
-          );
-        }
-        throw new Error(`unexpected gateway method ${method}`);
-      }),
     };
     const environment = createEnvironment();
-    const prepared = await environment.prepareFlow({
-      config: {},
-      gateway,
-      outputDir: "/tmp/matrix-qa/output",
-      scenarioId: "matrix-state-restart",
-      scenarioTitle: "Matrix state restart",
-      timeoutMs: 2_000,
-      waitForConfigRestartSettle: vi.fn(),
-    });
+    const prepared = await environment.prepareFlow(prepareInput(gateway, { timeoutMs: 2_000 }));
 
     const restarting = prepared.scenarioContext.restartGatewayAfterStateMutation?.(mutateState, {
       timeoutMs: 2_000,

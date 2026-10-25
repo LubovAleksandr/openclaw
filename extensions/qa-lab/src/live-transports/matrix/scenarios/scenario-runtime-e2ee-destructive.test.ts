@@ -132,6 +132,29 @@ function account(label: string, deviceId = `${label.toUpperCase()}-DEVICE`) {
   };
 }
 
+function installOwner(owner: ReturnType<typeof createDisposableOwner>, withLogin = false) {
+  mocks.createMatrixQaClient.mockReturnValue({
+    registerWithToken: async () => account("owner", "OWNER"),
+    createPrivateRoom: async () => "!owner:matrix-qa.test",
+    ...(withLogin ? { loginWithPassword: mocks.loginMatrixQaRecoveryDevice } : {}),
+  });
+  mocks.createMatrixQaE2eeScenarioClient.mockResolvedValue(owner);
+  mocks.loginMatrixQaRecoveryDevice.mockResolvedValue({
+    accessToken: "recovery-token",
+    deviceId: "RECOVERY",
+    userId: "@owner:matrix-qa.test",
+  });
+}
+
+const recoveryContext = () => createMatrixQaE2eeTestContext({ gatewayRuntimeEnv: {} });
+
+function metadataStore(root: string, namespace = "storage-meta") {
+  return createPluginStateSyncKeyedStoreForTests("matrix", {
+    ...storageMetadataRuntime.openMatrixStorageMetaStoreOptions(root),
+    namespace,
+  });
+}
+
 function createWrongAccountContext() {
   return new Proxy(createMatrixQaE2eeTestContext(), {
     get(target, property, receiver) {
@@ -214,18 +237,12 @@ it.each(["deviceId", "userId"] as const)(
         userId: "@owner:matrix-qa.test",
         [field]: "OTHER",
       };
-      createPluginStateSyncKeyedStoreForTests(
-        "matrix",
-        storageMetadataRuntime.openMatrixStorageMetaStoreOptions(accountRoot),
-      ).register("current", { deviceId: "DEVICE", userId: "@owner:matrix-qa.test" });
-      createPluginStateSyncKeyedStoreForTests(
-        "matrix",
-        storageMetadataRuntime.openMatrixStorageMetaStoreOptions(otherRoot),
-      ).register("current", otherMetadata);
-      createPluginStateSyncKeyedStoreForTests("matrix", {
-        ...storageMetadataRuntime.openMatrixStorageMetaStoreOptions(accountRoot),
-        namespace: "recovery-key",
-      }).register("current", { retained: true });
+      metadataStore(accountRoot).register("current", {
+        deviceId: "DEVICE",
+        userId: "@owner:matrix-qa.test",
+      });
+      metadataStore(otherRoot).register("current", otherMetadata);
+      metadataStore(accountRoot, "recovery-key").register("current", { retained: true });
       resetPluginStateStoreForTests();
 
       await expect(
@@ -235,12 +252,7 @@ it.each(["deviceId", "userId"] as const)(
           userId: "@owner:matrix-qa.test",
         }),
       ).resolves.toBe(accountRoot);
-      expect(
-        createPluginStateSyncKeyedStoreForTests(
-          "matrix",
-          storageMetadataRuntime.openMatrixStorageMetaStoreOptions(otherRoot),
-        ).lookup("current"),
-      ).toEqual(otherMetadata);
+      expect(metadataStore(otherRoot).lookup("current")).toEqual(otherMetadata);
     } finally {
       resetPluginStateStoreForTests();
       await rm(stateDir, { force: true, recursive: true });
@@ -263,19 +275,9 @@ it.each([
   owner.getRecoveryKey
     .mockResolvedValueOnce({ encodedPrivateKey: "owner-recovery-key", keyId: "owner-key" })
     .mockResolvedValue({ encodedPrivateKey: "fresh-recovery-key", keyId: "fresh-key" });
-  mocks.createMatrixQaClient.mockReturnValue({
-    registerWithToken: async () => account("owner", "OWNER"),
-    createPrivateRoom: async () => "!owner:matrix-qa.test",
-    loginWithPassword: mocks.loginMatrixQaRecoveryDevice,
-  });
-  mocks.createMatrixQaE2eeScenarioClient.mockResolvedValue(owner);
-  mocks.loginMatrixQaRecoveryDevice.mockResolvedValue({
-    accessToken: "recovery-token",
-    deviceId: "RECOVERY",
-    userId: "@owner:matrix-qa.test",
-  });
+  installOwner(owner, true);
   mocks.createMatrixQaRecoveryCliRuntime.mockRejectedValueOnce(failure);
-  await expect(run(createMatrixQaE2eeTestContext({ gatewayRuntimeEnv: {} }))).rejects.toBe(failure);
+  await expect(run(recoveryContext())).rejects.toBe(failure);
   expect(cleanupOrder).toEqual(["owner:stop", "owner:delete:RECOVERY"]);
 });
 
@@ -288,16 +290,7 @@ it("checks deleted-device status before releasing its disposable recovery runtim
   const dispose = vi.fn(async () => {
     cleanupOrder.push("cli:dispose");
   });
-  mocks.createMatrixQaClient.mockReturnValue({
-    registerWithToken: async () => account("owner", "OWNER"),
-    createPrivateRoom: async () => "!owner:matrix-qa.test",
-  });
-  mocks.createMatrixQaE2eeScenarioClient.mockResolvedValue(owner);
-  mocks.loginMatrixQaRecoveryDevice.mockResolvedValue({
-    accessToken: "recovery-token",
-    deviceId: "RECOVERY",
-    userId: "@owner:matrix-qa.test",
-  });
+  installOwner(owner);
   mocks.createMatrixQaRecoveryCliRuntime.mockResolvedValue({ dispose });
   mocks.runMatrixQaCliJson
     .mockReset()
@@ -308,9 +301,8 @@ it("checks deleted-device status before releasing its disposable recovery runtim
     .mockResolvedValueOnce({ payload: { error: "M_UNKNOWN_TOKEN" }, result: { exitCode: 1 } })
     .mockResolvedValueOnce({ payload: { serverDeviceKnown: false }, result: { exitCode: 0 } });
 
-  const result = await runMatrixQaE2eeServerDeviceDeletedLocalStateIntactScenario(
-    createMatrixQaE2eeTestContext({ gatewayRuntimeEnv: {} }),
-  );
+  const result =
+    await runMatrixQaE2eeServerDeviceDeletedLocalStateIntactScenario(recoveryContext());
 
   expect(result.details).toContain("deleted device: RECOVERY");
   expect(result.details).toContain("default status exit code: 1");
