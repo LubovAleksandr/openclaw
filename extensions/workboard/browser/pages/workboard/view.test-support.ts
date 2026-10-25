@@ -137,7 +137,9 @@ export function openCardMenu(card: Element): HTMLElement {
   trigger.click();
   flush();
   const panel = expectDefined(
-    trigger.parentElement?.querySelector<HTMLElement>(".workboard-card__action-menu-panel"),
+    trigger.ownerDocument.getElementById(
+      expectDefined(trigger.getAttribute("popovertarget"), "card menu target"),
+    ),
     "card menu panel",
   );
   // The unit DOM stubs native popover default actions; deliver its public event.

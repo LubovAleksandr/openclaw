@@ -40,7 +40,13 @@ const card = makeCard({
   labels: ["release"],
   metadata: { automation: { boardId: "ops" } },
 });
-const board = makeBoard("ops", { name: "Operations", total: 1, active: 1, byStatus: { todo: 1 } });
+const secondCard = makeCard({
+  id: "second-native-proof",
+  title: "Prepare release checklist",
+  position: 2000,
+  metadata: { automation: { boardId: "ops" } },
+});
+const board = makeBoard("ops", { name: "Operations", total: 2, active: 2, byStatus: { todo: 2 } });
 
 const cardsResponse = (cards: WorkboardCard[]) => ({
   boards: [board],
@@ -84,7 +90,7 @@ suite.define(() => {
               ...workboardUi,
               methodResponses: {
                 "workboard.boards.list": { boards: [board] },
-                "workboard.cards.list": cardsResponse([card]),
+                "workboard.cards.list": cardsResponse([card, secondCard]),
               },
             });
             await page.goto(`${suite.server.baseUrl}workboard/ops`);
@@ -100,7 +106,10 @@ suite.define(() => {
             await tile.focus();
             await gateway.setMethodResponse(
               "workboard.cards.list",
-              cardsResponse([{ ...card, labels: ["reviewed"], updatedAt: card.updatedAt + 1 }]),
+              cardsResponse([
+                { ...card, labels: ["reviewed"], updatedAt: card.updatedAt + 1 },
+                secondCard,
+              ]),
             );
             await gateway.emitGatewayEvent("plugin.workboard.changed", {
               epoch: "native-proof",
@@ -115,8 +124,34 @@ suite.define(() => {
             expect(await focused(tile)).toBe(true);
 
             const rowActions = button(tile, "Card actions");
+            const rowMenu = page.locator(".workboard-main > .workboard-card__action-menu-panel");
+            const retainedMenu = expectDefined(await rowMenu.elementHandle(), "Shared card menu");
             await rowActions.click();
-            const rowMenu = tile.getByRole("dialog", { name: "Card actions", exact: true });
+            await rowMenu.waitFor({ state: "visible" });
+            await rowActions.focus();
+            await page.keyboard.press("Tab");
+            await expectFocus(button(rowMenu, "View details"));
+            expect(await rowActions.evaluate((element) => getComputedStyle(element).opacity)).toBe(
+              "1",
+            );
+
+            const secondTile = page
+              .locator(".workboard-card")
+              .filter({ hasText: secondCard.title });
+            await secondTile.hover();
+            await button(secondTile, "Card actions").click();
+            await rowMenu.waitFor({ state: "visible" });
+            await expect
+              .poll(() => rowMenu.getByRole("combobox").getAttribute("aria-label"))
+              .toBe(`Status: ${secondCard.title}`);
+            expect(
+              await retainedMenu.evaluate(
+                (element) => element.parentElement === document.querySelector(".workboard-main"),
+              ),
+            ).toBe(true);
+
+            await tile.hover();
+            await rowActions.click();
             await rowMenu.waitFor({ state: "visible" });
             await rowActions.click();
             await rowMenu.waitFor({ state: "hidden" });
@@ -133,6 +168,12 @@ suite.define(() => {
             const details = page.getByRole("dialog", { name: card.title, exact: true });
             const detailContent = page.locator(".workboard-detail");
             await details.waitFor();
+            expect(await rowMenu.evaluate((element) => element.matches(":popover-open"))).toBe(
+              false,
+            );
+            expect(await rowMenu.evaluate((element) => element.closest("[inert]") !== null)).toBe(
+              true,
+            );
             await expectFocus(details, true);
             await proof.capture(page, `${prefix}-details`, details, [
               detailContent.getByRole("tab", { name: "Overview", exact: true }),
@@ -154,6 +195,12 @@ suite.define(() => {
             const modal = page.getByRole("dialog", { name: "New card", exact: true });
             const title = modal.getByLabel("Title", { exact: true });
             await title.waitFor();
+            expect(await rowMenu.evaluate((element) => element.matches(":popover-open"))).toBe(
+              false,
+            );
+            expect(await rowMenu.evaluate((element) => element.closest("[inert]") !== null)).toBe(
+              true,
+            );
             await expectFocus(title);
             await proof.capture(page, `${prefix}-create`, modal, [title]);
             await page.keyboard.press("Escape");

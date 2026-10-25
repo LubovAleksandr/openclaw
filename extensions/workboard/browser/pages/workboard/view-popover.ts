@@ -19,8 +19,11 @@ export function workboardPopoverRef(
     const element = panel;
     // Conditional Solid fragments have no sibling anchor until their DOM is committed.
     const trigger = () => {
+      if (activeTrigger) {
+        return activeTrigger();
+      }
       const sibling = element.previousElementSibling;
-      return activeTrigger?.() ?? (sibling instanceof HTMLElement ? sibling : null);
+      return sibling instanceof HTMLElement ? sibling : null;
     };
     let hoverTimer: ReturnType<typeof setTimeout> | undefined;
     const position = () => {

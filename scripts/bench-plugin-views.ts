@@ -36,27 +36,32 @@ const { values } = parseArgs({
     plugins: { type: "string", default: "workboard,memory-core,nostr" },
     profiles: { type: "string", default: "local,remote" },
     pairs: { type: "string", default: "10" },
+    "pair-offset": { type: "string", default: "0" },
     cards: { type: "string", default: "300" },
     output: { type: "string", default: ".artifacts/plugin-views/measure" },
     trace: { type: "boolean", default: false },
     coverage: { type: "boolean", default: false },
     "thread-cpu-time": { type: "boolean", default: false },
+    "loads-only": { type: "boolean", default: false },
   },
 });
 const pairs = Number(values.pairs);
+const pairOffset = Number(values["pair-offset"]);
 const cardCount = Number(values.cards);
 const pluginIds = values.plugins.split(",");
 const profiles = values.profiles.split(",");
 if (
   !Number.isInteger(pairs) ||
   pairs < 1 ||
+  !Number.isInteger(pairOffset) ||
+  pairOffset < 0 ||
   !Number.isInteger(cardCount) ||
   cardCount < 6 ||
   pluginIds.some((id) => !["workboard", "memory-core", "nostr"].includes(id)) ||
   profiles.some((id) => !["local", "remote"].includes(id))
 ) {
   throw new Error(
-    "Use positive --pairs, --cards >= 6, known --plugins and --profiles local,remote",
+    "Use positive --pairs, nonnegative --pair-offset, --cards >= 6, known --plugins and --profiles local,remote",
   );
 }
 const output = path.resolve(values.output);
@@ -91,6 +96,7 @@ type Sample = {
   warmCoverage?: unknown;
   menuReturnFocusAfterRowsChange?: boolean;
   hostPrefetch?: unknown;
+  postGcMemory?: { heapBytes: number; nodes: number; elements: number; menuElements: number };
 };
 const results: Sample[] = [];
 const roots = [values["plugin-root"], values["compare-plugin-root"]].filter(
@@ -306,7 +312,7 @@ const build = await (async () => {
 });
 try {
   for (const profile of profiles) {
-    for (let pair = 0; pair < pairs; pair++) {
+    for (let pair = pairOffset; pair < pairOffset + pairs; pair++) {
       for (const variant of pair % 2 ? [...bundles.keys()].toReversed() : bundles.keys()) {
         for (const plugin of pluginIds) {
           const bundle = bundles[variant]!;
@@ -550,6 +556,9 @@ try {
             const ready = async () => {
               if (plugin === "workboard") {
                 await expect(page.locator(".workboard-card")).toHaveCount(cardCount);
+                await expect(page.locator(".workboard-create")).toBeEnabled();
+                await expect(page.locator(".workboard-card__menu-trigger")).toHaveCount(cardCount);
+                await expect(page.locator(".workboard-card__menu-trigger").nth(1)).toBeVisible();
               } else if (plugin === "memory-core") {
                 await expect(
                   page.getByRole("searchbox", { name: "Search memories" }),
@@ -698,7 +707,7 @@ try {
             if (values.coverage) {
               sample.warmCoverage = await stopCoverage("warm");
             }
-            if (plugin === "workboard") {
+            if (plugin === "workboard" && !values["loads-only"]) {
               const menuTrigger = page.locator(".workboard-card__menu-trigger").nth(1);
               await menuTrigger.focus();
               await step("open-menu", async () => {
@@ -806,7 +815,7 @@ try {
                   page.locator(".workboard-card", { hasText: "Live benchmark update" }),
                 ).toBeVisible();
               });
-            } else if (plugin === "memory-core") {
+            } else if (plugin === "memory-core" && !values["loads-only"]) {
               await step("search-20", async () => {
                 await page.getByRole("searchbox", { name: "Search memories" }).fill("Benchmark");
                 await page.getByRole("button", { name: "Search", exact: true }).click();
@@ -821,7 +830,7 @@ try {
                 await last.scrollIntoViewIfNeeded();
                 await expect(last).toBeInViewport();
               });
-            } else {
+            } else if (!values["loads-only"]) {
               await page.locator(".channels-detail__close").click();
               await step("open-settings", async () => {
                 await page
@@ -839,7 +848,7 @@ try {
                 await expect(page.locator("#nostr-profile-name")).toHaveValue("Benchmark Updated");
               });
             }
-            if (plugin === "workboard") {
+            if (plugin === "workboard" && !values["loads-only"]) {
               const updatedTrigger = page
                 .locator(".workboard-card")
                 .filter({
@@ -953,10 +962,25 @@ try {
                     found.trace = summarizeInteractionTrace(traceEvents, mark);
                   }
                 }
+                await cdp.send("HeapProfiler.collectGarbage");
+                const afterGc = await metrics(cdp);
+                sample.postGcMemory = {
+                  heapBytes: afterGc.JSHeapUsedSize ?? 0,
+                  nodes: afterGc.Nodes ?? 0,
+                  ...(await page.evaluate(() => ({
+                    elements: document.getElementsByTagName("*").length,
+                    menuElements: document.querySelectorAll(".workboard-card__action-menu-panel *")
+                      .length,
+                  }))),
+                };
               }
             } catch (error) {
               sample.status = "failed";
               sample.error = `${sample.error ?? ""}\nCapture: ${String(error)}`.trim();
+            }
+            if (sample.status === "passed" && sample.errors.length) {
+              sample.status = "failed";
+              sample.error = sample.errors.join("\n");
             }
             results.push(sample);
             await writeFile(path.join(output, "samples.json"), JSON.stringify(results, null, 2));
@@ -1046,6 +1070,8 @@ await writeFile(
         trace: values.trace,
         coverage: values.coverage,
         timeDomain: values["thread-cpu-time"] ? "threadTicks" : "timeTicks",
+        loadsOnly: values["loads-only"],
+        pairOffset,
         remote: "100ms delay per HTTP request and synthetic WebSocket response/event delivery",
         warm: "In-document route remount with resident modules; request routing disables HTTP cache",
       },

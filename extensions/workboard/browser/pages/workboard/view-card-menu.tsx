@@ -1,5 +1,5 @@
 /** @jsxImportSource @solidjs/web */
-import { Portal, type JSX } from "@solidjs/web";
+import type { JSX } from "@solidjs/web";
 import {
   createContext,
   createMemo,
@@ -72,11 +72,9 @@ export function WorkboardCardMenuTrigger(props: { cardId: string }) {
 export function WorkboardCardMenus(props: {
   workboard: WorkboardProps;
   cards: WorkboardCard[];
-  children: JSX.Element;
+  // The caller keeps this stable surface inside its existing inert boundary.
+  children: (panel: JSX.Element) => JSX.Element;
 }) {
-  // The Portal's mount is stable: moving its owned panel never recreates controls.
-  const parking = document.createElement("div");
-  parking.style.display = "contents";
   const id = `workboard-card-menu-${createUniqueId()}`;
   let panel!: HTMLDivElement;
   let activeTrigger: HTMLButtonElement | undefined;
@@ -97,8 +95,6 @@ export function WorkboardCardMenus(props: {
       activeTrigger?.setAttribute("aria-expanded", "false");
       activeTrigger = trigger;
       setSelectedId(cardId);
-      // Native button activation toggles the prepared panel after this handler.
-      trigger.parentElement!.append(panel);
     },
     release(trigger) {
       if (activeTrigger !== trigger) {
@@ -108,16 +104,12 @@ export function WorkboardCardMenus(props: {
       trigger.setAttribute("aria-expanded", "false");
       activeTrigger = undefined;
       setSelectedId(undefined);
-      parking.append(panel);
     },
   };
   const popover = workboardPopoverRef("end", false, () => activeTrigger);
-  onSettled(() => () => panel.remove());
   return (
     <CardMenuContext value={menu}>
-      {props.children}
-      {parking}
-      <Portal mount={parking}>
+      {props.children(
         <div
           id={id}
           popover="auto"
@@ -135,8 +127,8 @@ export function WorkboardCardMenus(props: {
           <Show when={card()}>
             {(current) => <CardMenuContent workboard={props.workboard} card={current()} />}
           </Show>
-        </div>
-      </Portal>
+        </div>,
+      )}
     </CardMenuContext>
   );
 }

@@ -32,7 +32,7 @@ it("anchors a popover whose preceding trigger is inserted after its Solid ref ru
   dispose();
 });
 
-it("anchors and returns focus to the pooled menu's current trigger", () => {
+it("anchors and returns focus to the pooled menu's current trigger until released", () => {
   vi.stubGlobal(
     "requestAnimationFrame",
     vi.fn(() => 1),
@@ -40,8 +40,9 @@ it("anchors and returns focus to the pooled menu's current trigger", () => {
   vi.stubGlobal("cancelAnimationFrame", vi.fn());
   const first = document.createElement("button");
   const second = document.createElement("button");
+  const sibling = document.createElement("div");
   const panel = document.createElement("div");
-  let active = first;
+  let active: HTMLButtonElement | undefined = first;
   vi.spyOn(first, "getBoundingClientRect").mockReturnValue(new DOMRect(300, 100, 40, 20));
   vi.spyOn(second, "getBoundingClientRect").mockReturnValue(new DOMRect(700, 200, 40, 20));
   vi.spyOn(panel, "getBoundingClientRect").mockReturnValue(new DOMRect(0, 0, 200, 100));
@@ -52,7 +53,7 @@ it("anchors and returns focus to the pooled menu's current trigger", () => {
   createRoot((cleanup) => {
     dispose = cleanup;
     workboardPopoverRef("end", false, () => active)(panel);
-    document.body.append(first, second, panel);
+    document.body.append(first, second, sibling, panel);
   });
   flush();
   panel.dispatchEvent(new Event("toggle"));
@@ -66,5 +67,8 @@ it("anchors and returns focus to the pooled menu's current trigger", () => {
   expect(hide).toHaveBeenCalledOnce();
   expect(escape.defaultPrevented).toBe(true);
   expect(document.activeElement).toBe(second);
+  active = undefined;
+  panel.dispatchEvent(new Event("toggle"));
+  expect(sibling.hasAttribute("aria-expanded")).toBe(false);
   dispose();
 });

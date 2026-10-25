@@ -20,6 +20,15 @@ overhead makes those timings unsuitable for untraced comparison. `--plugins`
 accepts a comma-separated subset of `workboard,memory-core,nostr`. `--build-host`
 explicitly builds the host with `startProductionControlUiE2eServer`; by default the
 script serves an existing production build and never builds plugins.
+For an interrupted campaign, preserve its output and start a separate directory
+with `--pair-offset N`, where N complete pairs already finished. This preserves
+logical pair IDs and alternating AB/BA order; retain both runs' provenance.
+
+Use `--loads-only` for a focused load-only comparison. Workboard load readiness
+requires all cards, enabled creation, and every card menu trigger; cached read-only
+rows alone do not end the interval. Trace runs also collect a post-GC heap/DOM
+sample after profiling and all measured actions finish; this is retained-view
+evidence, not a leak test.
 
 The workload uses a 300-card, six-status Workboard, the supported default 20-result
 Memory search, and the Nostr settings/profile editor. Nostr has no feed renderer.
