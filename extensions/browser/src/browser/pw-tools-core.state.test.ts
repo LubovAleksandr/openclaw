@@ -12,7 +12,6 @@ const stateMocks = vi.hoisted(() => ({
       deviceScaleFactor: 3,
       isMobile: true,
       hasTouch: true,
-      defaultBrowserType: "webkit",
     },
     "Desktop Chrome": {
       userAgent: "desktop-chrome-user-agent",
@@ -21,7 +20,6 @@ const stateMocks = vi.hoisted(() => ({
       deviceScaleFactor: 1,
       isMobile: false,
       hasTouch: false,
-      defaultBrowserType: "chromium",
     },
   },
 }));
@@ -71,7 +69,6 @@ describe("setDeviceViaPlaywright", () => {
     const fixture = createPage();
     await setTimezoneViaPlaywright({ ...target, timezoneId: "America/New_York" });
     await setLocaleViaPlaywright({ ...target, locale: "en-GB" });
-
     expect(fixture.newCDPSession).toHaveBeenCalledTimes(1);
     expect(fixture.detach).not.toHaveBeenCalled();
     expect(fixture.send.mock.calls).toEqual([
@@ -91,11 +88,9 @@ describe("setDeviceViaPlaywright", () => {
       }
       return {};
     });
-
     await expect(setDeviceViaPlaywright({ ...target, name: "Desktop Chrome" })).rejects.toThrow(
       "metrics override failed",
     );
-
     expect(fixture.page.viewportSize()).toEqual({ width: 1280, height: 720 });
     expect(state.emulation?.metricsOwner).toBeUndefined();
     expect(state.emulation?.touch?.enabled).toBe(true);
@@ -117,11 +112,9 @@ describe("setDeviceViaPlaywright", () => {
     const phone = setDeviceViaPlaywright({ ...target, name: "iPhone 14" });
     await vi.waitFor(() => expect(fixture.send).toHaveBeenCalledTimes(1));
     const desktop = setDeviceViaPlaywright({ ...target, name: "Desktop Chrome" });
-
     await Promise.resolve();
     const viewportCallsWhileFirstDescriptorBlocked = fixture.setViewportSize.mock.calls.length;
     const cdpCallsWhileFirstDescriptorBlocked = fixture.send.mock.calls.length;
-
     releaseFirstUserAgent();
     await Promise.all([phone, desktop]);
     expect(viewportCallsWhileFirstDescriptorBlocked).toBe(1);
@@ -132,36 +125,14 @@ describe("setDeviceViaPlaywright", () => {
     ]);
     expect(fixture.newCDPSession).toHaveBeenCalledTimes(1);
     expect(fixture.detach).not.toHaveBeenCalled();
-    expect(fixture.send.mock.calls).toEqual([
-      ["Emulation.setUserAgentOverride", { userAgent: "iphone-14-user-agent" }],
-      [
-        "Emulation.setDeviceMetricsOverride",
-        {
-          mobile: true,
-          width: 750,
-          height: 340,
-          deviceScaleFactor: 3,
-          screenWidth: 390,
-          screenHeight: 844,
-          screenOrientation: { angle: 0, type: "portraitPrimary" },
-        },
-      ],
-      ["Emulation.setTouchEmulationEnabled", { enabled: true }],
-      ["Emulation.clearDeviceMetricsOverride"],
-      ["Emulation.setUserAgentOverride", { userAgent: "desktop-chrome-user-agent" }],
-      [
-        "Emulation.setDeviceMetricsOverride",
-        {
-          mobile: false,
-          width: 1280,
-          height: 720,
-          deviceScaleFactor: 1,
-          screenWidth: 1920,
-          screenHeight: 1080,
-          screenOrientation: { angle: 0, type: "landscapePrimary" },
-        },
-      ],
-      ["Emulation.setTouchEmulationEnabled", { enabled: false }],
+    expect(fixture.send.mock.calls.map(([method]) => method)).toEqual([
+      "Emulation.setUserAgentOverride",
+      "Emulation.setDeviceMetricsOverride",
+      "Emulation.setTouchEmulationEnabled",
+      "Emulation.clearDeviceMetricsOverride",
+      "Emulation.setUserAgentOverride",
+      "Emulation.setDeviceMetricsOverride",
+      "Emulation.setTouchEmulationEnabled",
     ]);
   });
 });

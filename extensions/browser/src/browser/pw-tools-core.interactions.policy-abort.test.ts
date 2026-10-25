@@ -1,6 +1,7 @@
 import { createDeferred } from "openclaw/plugin-sdk/extension-shared";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { BrowserObservedDialogBlockedError } from "./pw-session-contracts.js";
+import { withFakeTimers } from "./pw-tools-core.guard-test-support.js";
 import {
   getPwToolsCoreSessionMocks,
   installPwToolsCoreTestHooks,
@@ -18,39 +19,22 @@ type NavigationGuardCall = {
   signal?: AbortSignal;
 };
 
-function policyCheckWithSignal(
+async function policyCheckWithSignal(
   policy: Promise<void>,
   signal: AbortSignal | undefined,
 ): Promise<void> {
   if (!signal) {
     return policy;
   }
-  return new Promise<void>((resolve, reject) => {
-    const cleanup = () => signal.removeEventListener("abort", onAbort);
-    const onAbort = () => {
-      cleanup();
-      reject(
-        signal.reason instanceof Error
-          ? signal.reason
-          : new Error(String(signal.reason ?? "aborted")),
-      );
-    };
-    if (signal.aborted) {
-      onAbort();
-      return;
-    }
-    signal.addEventListener("abort", onAbort, { once: true });
-    policy.then(
-      (value) => {
-        cleanup();
-        resolve(value);
-      },
-      (error: unknown) => {
-        cleanup();
-        reject(error instanceof Error ? error : new Error(String(error)));
-      },
-    );
-  });
+  signal.throwIfAborted();
+  const aborted = createDeferred<void>();
+  const onAbort = () => aborted.reject(signal.reason);
+  signal.addEventListener("abort", onAbort, { once: true });
+  try {
+    await Promise.race([policy, aborted.promise]);
+  } finally {
+    signal.removeEventListener("abort", onAbort);
+  }
 }
 
 function interactionFixture({ hover = async () => {}, actionFirst = false, dialog = false } = {}) {
@@ -98,11 +82,6 @@ function interactionFixture({ hover = async () => {}, actionFirst = false, dialo
   };
 }
 
-async function withFakeTimers(run: () => Promise<void>): Promise<void> {
-  vi.useFakeTimers();
-  await run().finally(() => vi.useRealTimers());
-}
-
 installPwToolsCoreTestHooks();
 
 describe("pw-tools-core interaction policy cancellation", () => {
@@ -112,55 +91,38 @@ describe("pw-tools-core interaction policy cancellation", () => {
     );
   });
 
-  it("does not leave caller cancellation pending behind a never-settling policy check", async () => {
+  it.each([true, false])("cancels pending policy work (action finished=%s)", async (finished) => {
     await withFakeTimers(async () => {
-      const fixture = interactionFixture({ actionFirst: true });
+      const hover = createDeferred<void>();
+      const fixture = interactionFixture({
+        actionFirst: finished,
+        hover: finished ? async () => {} : () => hover.promise,
+      });
       const { ctrl, started, policy } = fixture;
-
-      const task = fixture.run();
-      const settled = task.then(
-        () => true,
-        () => true,
+      const outcomes: unknown[] = [];
+      const completion = fixture.run().then(
+        (value) => {
+          outcomes.push(value);
+        },
+        (error: unknown) => {
+          outcomes.push(error);
+        },
       );
-      await started.promise;
-      await vi.advanceTimersByTimeAsync(250);
-
+      const abortError = new Error("aborted while policy pending");
       try {
-        const observeSettlement = async (): Promise<boolean> => {
-          const observed = Promise.race([
-            settled,
-            new Promise<boolean>((resolve) => {
-              setTimeout(() => resolve(false), 1);
-            }),
-          ]);
-          await vi.advanceTimersByTimeAsync(1);
-          return await observed;
-        };
-
-        expect(await observeSettlement()).toBe(false);
-        ctrl.abort(new Error("aborted while policy remained pending"));
+        await started.promise;
+        await vi.advanceTimersByTimeAsync(250);
+        expect(outcomes).toEqual([]);
+        ctrl.abort(abortError);
         expect(fixture.signal()?.aborted).toBe(true);
-        expect(await observeSettlement()).toBe(true);
+        await vi.advanceTimersByTimeAsync(1);
+        expect(outcomes).toEqual([abortError]);
       } finally {
         policy.resolve();
-        await settled;
+        hover.resolve();
+        await completion;
       }
     });
-  });
-
-  it("returns caller abort after an in-flight policy check observes cancellation", async () => {
-    const hover = createDeferred<void>();
-    const fixture = interactionFixture({ hover: () => hover.promise });
-    const { ctrl, started } = fixture;
-    const abortError = new Error("aborted while policy pending");
-
-    const task = fixture.run();
-    await started.promise;
-    ctrl.abort(abortError);
-
-    await expect(task).rejects.toBe(abortError);
-    expect(fixture.signal()?.aborted).toBe(true);
-    hover.resolve();
   });
 
   it("keeps policy work live when an observed dialog interrupts the interaction", async () => {
@@ -173,16 +135,13 @@ describe("pw-tools-core interaction policy cancellation", () => {
       const { ctrl, started, policy } = fixture;
       getPwToolsCoreSessionMocks().isBrowserObservedDialogBlockedError.mockReturnValueOnce(true);
       getPwToolsCoreSessionMocks().isBrowserObservedDialogBlockedError.mockReturnValueOnce(true);
-
       const task = fixture.run();
       await started.promise;
       ctrl.abort(dialogError);
       policy.resolve();
-
       await expect(task).rejects.toBe(dialogError);
       expect(fixture.signal()?.aborted).toBe(false);
       expect(fixture.settled()).toBe(false);
-
       hover.resolve();
       await vi.advanceTimersByTimeAsync(250);
       await Promise.resolve();
