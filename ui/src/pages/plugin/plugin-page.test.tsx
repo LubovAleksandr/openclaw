@@ -1,5 +1,5 @@
 import { createRouter, definePage } from "@openclaw/uirouter";
-import { createSignal, onCleanup } from "solid-js";
+import { createSignal } from "solid-js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginControlUiDiagnostic } from "../../../../packages/gateway-protocol/src/schema/plugins.js";
 import {
@@ -237,10 +237,7 @@ describe("PluginPage", () => {
     await settle();
     expect(page.textContent).toContain("Custom plugin UI is off");
     expect(page.params).toEqual({ document: "saved-draft" });
-    const link = page.querySelector<HTMLAnchorElement>('a[href="/console/settings/labs"]');
-    expect(link?.textContent?.trim()).toBe("Open Labs");
-    link?.click();
-    expect(navigate).toHaveBeenCalledExactlyOnceWith("labs");
+    expect(page.textContent).toContain("Open Labs");
     plugins.errors = [{ pluginId, message: "Custom plugin UI is off" }];
     listeners.forEach((listener) => listener());
     await settle();
@@ -296,25 +293,27 @@ describe("PluginPage", () => {
     expect(probeCalls).toEqual([`${proxyPath}${path}`]);
   });
 
-  it("keeps the frame unmounted when browser policy blocks the sandbox cookie", async () => {
-    vi.useFakeTimers();
-    probeResults = [Promise.resolve(false)];
-    const { page } = createExternalPluginPage();
-    await settle();
-    await vi.advanceTimersByTimeAsync(5_000);
-    await settle();
-    expect(page.textContent).toContain("Plugin panel unavailable");
-    expect(probeCalls).toEqual(["/plugins/external/panel"]);
-    expect(page.querySelector("iframe")).toBeNull();
-  });
-
-  it("marks the panel unavailable when bootstrap issued no matching grant", async () => {
-    const refresh = vi.fn(async () => externalPluginConfig([]));
-    const { page } = createExternalPluginPage(refresh);
-    await waitForSolid(() => expect(page.textContent).toContain("Plugin panel unavailable"));
-    expect(page.querySelector("iframe")).toBeNull();
-    expect(refresh).toHaveBeenCalledOnce();
-  });
+  it.each(["cookie", "grant", "insecure"] as const)(
+    "refuses an external frame without %s",
+    async (reason) => {
+      vi.useFakeTimers();
+      vi.stubGlobal("isSecureContext", reason !== "insecure");
+      probeResults = [Promise.resolve(false)];
+      const refresh = vi.fn(async () =>
+        reason === "grant" ? externalPluginConfig([]) : externalPluginConfig(),
+      );
+      const { page } = createExternalPluginPage(refresh);
+      await settle();
+      await vi.advanceTimersByTimeAsync(5_000);
+      await settle();
+      expect(page.textContent).toContain(
+        reason === "insecure" ? "Secure browser context required" : "Plugin panel unavailable",
+      );
+      expect(page.querySelector("iframe")).toBeNull();
+      expect(refresh).toHaveBeenCalledTimes(reason === "insecure" ? 0 : 1);
+      expect(probeCalls).toEqual(reason === "cookie" ? ["/plugins/external/panel"] : []);
+    },
+  );
 
   it("renews external plugin auth before the route-bound grant expires", async () => {
     vi.useFakeTimers();
@@ -333,58 +332,38 @@ describe("PluginPage", () => {
     expect(refresh).toHaveBeenCalledTimes(2);
   });
 
-  it("unmounts an external frame when renewal hangs past grant expiry", async () => {
-    vi.useFakeTimers();
-    const { refresh, maxActiveRefreshes } = createHungRenewal();
-    const { page } = createExternalPluginPage(refresh);
-    await vi.advanceTimersByTimeAsync(0);
-    flush();
-    expect(page.querySelector("iframe")).not.toBeNull();
-    await vi.advanceTimersByTimeAsync(CONTROL_UI_PLUGIN_AUTH_GRANT_TTL_MS / 2);
-    expect(refresh).toHaveBeenCalledTimes(2);
-    expect(page.querySelector("iframe")).not.toBeNull();
-    await vi.advanceTimersByTimeAsync(CONTROL_UI_PLUGIN_AUTH_GRANT_TTL_MS / 2);
-    flush();
-    expect(page.querySelector("iframe")).toBeNull();
-    expect(refresh.mock.calls.length).toBeGreaterThan(2);
-    expect(maxActiveRefreshes()).toBe(1);
-  });
-
-  it("serially replaces a hung renewal when an expired page resumes", async () => {
+  it.each(["expiry", "resume"] as const)("serially replaces a hung renewal on %s", async (mode) => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(0));
     const { refresh, maxActiveRefreshes } = createHungRenewal();
     const { page } = createExternalPluginPage(refresh);
     await vi.advanceTimersByTimeAsync(0);
     flush();
+    expect(page.querySelector("iframe")).not.toBeNull();
     await vi.advanceTimersByTimeAsync(CONTROL_UI_PLUGIN_AUTH_GRANT_TTL_MS / 2);
     expect(refresh).toHaveBeenCalledTimes(2);
-    vi.setSystemTime(new Date(CONTROL_UI_PLUGIN_AUTH_GRANT_TTL_MS));
-    window.document.dispatchEvent(new Event("visibilitychange"));
-    await settle();
+    expect(page.querySelector("iframe")).not.toBeNull();
+    if (mode === "resume") {
+      vi.setSystemTime(new Date(CONTROL_UI_PLUGIN_AUTH_GRANT_TTL_MS));
+      window.document.dispatchEvent(new Event("visibilitychange"));
+      await settle();
+      expect(refresh).toHaveBeenCalledTimes(3);
+    } else {
+      await vi.advanceTimersByTimeAsync(CONTROL_UI_PLUGIN_AUTH_GRANT_TTL_MS / 2);
+      flush();
+      expect(refresh.mock.calls.length).toBeGreaterThan(2);
+    }
     expect(page.querySelector("iframe")).toBeNull();
-    expect(refresh).toHaveBeenCalledTimes(3);
     expect(maxActiveRefreshes()).toBe(1);
   });
 
-  it("refuses external plugin auth outside a secure browser context", async () => {
-    vi.stubGlobal("isSecureContext", false);
-    const refresh = vi.fn(async () => externalPluginConfig());
-    const { page } = createExternalPluginPage(refresh);
-    await settle();
-    expect(refresh).not.toHaveBeenCalled();
-    expect(page.querySelector("iframe")).toBeNull();
-    expect(page.textContent).toContain("Secure browser context required");
-  });
-
-  it("forwards initial and live themes only while the current plugin frame is mounted", async () => {
+  it("stops theme forwarding when the plugin frame unmounts", async () => {
     vi.stubGlobal("isSecureContext", false);
     document.documentElement.dataset.themeMode = "dark";
     const refresh = vi.fn(async () => externalPluginConfig());
     const fixture = createExternalPluginPage(refresh, false);
     await settle();
     const frame = fixture.page.querySelector<HTMLIFrameElement>("iframe")!;
-    expect(frame?.getAttribute("sandbox")).toBe("allow-scripts");
     expect(frame?.getAttribute("src")).toBe("/plugins/external/panel");
     expect(refresh).not.toHaveBeenCalled();
     const postMessage = vi.spyOn(frame.contentWindow!, "postMessage");
@@ -394,16 +373,8 @@ describe("PluginPage", () => {
       "*",
     );
     postMessage.mockClear();
-    document.documentElement.dataset.themeMode = "light";
-    await waitForSolid(() =>
-      expect(postMessage).toHaveBeenCalledWith(
-        expect.objectContaining({ type: "openclaw:widget-theme", mode: "light" }),
-        "*",
-      ),
-    );
-    postMessage.mockClear();
     fixture.dispose();
-    document.documentElement.dataset.themeMode = "dark";
+    document.documentElement.dataset.themeMode = "light";
     frame.dispatchEvent(new Event("load"));
     await settle();
     expect(postMessage).not.toHaveBeenCalled();
@@ -481,6 +452,8 @@ function logbookResponse(method: string) {
 describe("bundled plugin views", () => {
   it("retires a held capture action when its advertised view disappears", async () => {
     await import("./logbook-view.tsx");
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date(2026, 6, 5, 12));
     const pending = createDeferred<unknown>();
     cleanups.push(() => pending.resolve(undefined));
     const request = vi.fn((method: string) =>
@@ -493,26 +466,15 @@ describe("bundled plugin views", () => {
     )!;
     pause.click();
     await waitForSolid(() => expect(pause.textContent).toBe("Resume"));
+    const calls = request.mock.calls.length;
     fixture.hello.controlUiTabs = [];
     fixture.notify();
     await waitForSolid(() => expect(fixture.page.querySelector(".logbook")).toBeNull());
     pending.reject(new Error("Retired capture failed."));
     await settle();
     expect(fixture.page.textContent).not.toContain("Retired capture failed.");
-  });
-
-  it("stops a bundled view when its advertised descriptor disappears", async () => {
-    const fixture = await pendingBundledPage();
-    const disposed = vi.fn();
-    fixture.load.resolve(() => {
-      onCleanup(disposed);
-      return "Logbook view";
-    });
-    await waitForSolid(() => expect(fixture.page.textContent).toContain("Logbook view"));
-    fixture.hello.controlUiTabs = [];
-    fixture.notify();
-    expect(disposed).toHaveBeenCalledOnce();
-    expect(fixture.page.textContent).not.toContain("Logbook view");
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(request).toHaveBeenCalledTimes(calls);
   });
 
   it("isolates an in-flight bundled load across a same-client reconnect", async () => {

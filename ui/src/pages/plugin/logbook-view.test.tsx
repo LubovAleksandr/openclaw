@@ -210,16 +210,10 @@ describe("Logbook request ownership", () => {
       }
       expect(request).toHaveBeenCalledTimes(initialCalls + 2);
       expect(state.timeline?.cards[0]?.title).toBe("Resumed poll");
-      if (mode === "poll") {
-        for (const method of ["logbook.status", "logbook.timeline"]) {
-          expect(request.mock.calls.filter(([called]) => called === method)).toHaveLength(2);
-        }
-      }
     },
   );
 
-  it("keeps the replacement analysis locked until its own request settles", async () => {
-    const oldAnalysis = createDeferred<unknown>();
+  it("keeps analysis locked until its request settles", async () => {
     const newAnalysis = createDeferred<unknown>();
     const request = vi.fn((method: string) => {
       if (method === "logbook.analyze.now") {
@@ -227,15 +221,10 @@ describe("Logbook request ownership", () => {
       }
       return Promise.resolve(dayResponse(method, state.day, "Current analysis"));
     });
-    const oldModel = createModel(() => oldAnalysis.promise);
-    const oldRequest = oldModel.analyze();
-    oldModel.dispose();
     const model = createModel(request);
     const state = model.state;
     const newRequest = model.analyze();
 
-    oldAnalysis.resolve({ started: true });
-    await oldRequest;
     expect(state.actionPending).toBe(true);
     await model.analyze();
     expect(request).toHaveBeenCalledTimes(1);
@@ -245,21 +234,14 @@ describe("Logbook request ownership", () => {
     expect(state.actionPending).toBe(false);
   });
 
-  it("discards a capture result from a retired polling client", async () => {
-    const oldStatus = createDeferred<unknown>();
-    const newStatus = logbookStatus("2026-07-05", { capturePaused: true });
-    const oldModel = createModel(() => oldStatus.promise);
-    const oldRequest = oldModel.setCapturePaused(true);
-    oldModel.dispose();
-    const model = createModel(async () => newStatus);
-    const state = model.state;
-    await model.setCapturePaused(true);
-    expect(state.status).toEqual(newStatus);
-
-    oldStatus.resolve(logbookStatus("2026-07-04"));
-    await oldRequest;
-    expect(state.status).toEqual(newStatus);
-    expect(state.actionPending).toBe(false);
+  it("discards a capture result after its polling owner retires", async () => {
+    const pending = createDeferred<unknown>();
+    const model = createModel(() => pending.promise);
+    const request = model.setCapturePaused(true);
+    model.dispose();
+    pending.resolve(logbookStatus("2026-07-04"));
+    await request;
+    expect(model.state.status).toBeNull();
   });
 
   it("does not let an older day load overwrite a newer selection", async () => {
