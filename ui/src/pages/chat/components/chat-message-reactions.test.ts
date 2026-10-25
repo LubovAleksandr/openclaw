@@ -177,6 +177,43 @@ describe("transcript message reactions", () => {
     expect(render(new Map([["message-1", []]]))).toEqual(["actions"]);
   });
 
+  it("keeps reactions actionable in the reserved footer through an active continuation", () => {
+    host = document.body.appendChild(document.createElement("div"));
+    const harness = createMessageGroupHarness(host);
+    const group = createMessageGroup(
+      {
+        role: "assistant",
+        content: [{ type: "text", text: "A saved reply" }],
+        timestamp: 1,
+        __openclaw: { id: "message-1" },
+      },
+      "assistant",
+    );
+    const onReact = vi.fn();
+    for (const active of [false, true, false]) {
+      harness.render(group, {
+        showReasoning: false,
+        userId: "self",
+        messageReactions: new Map([["message-1", reactions]]),
+        onReact,
+        activeContinuation: active
+          ? { parts: [], options: { showReasoning: false } }
+          : undefined,
+      });
+      const footer = host.querySelector(".chat-group > .chat-group-footer")!;
+      expect(host.querySelectorAll(".chat-message-reactions")).toHaveLength(1);
+      expect(footer.querySelectorAll("openclaw-message-reaction-picker")).toHaveLength(1);
+      expect(footer.hasAttribute("aria-hidden")).toBe(false);
+      expect(footer.querySelector(".chat-group-footer__meta") !== null).toBe(!active);
+      footer.querySelector<HTMLButtonElement>(".chat-reaction-chip")!.click();
+      expect(onReact).toHaveBeenLastCalledWith("message-1", "👍", true);
+      const picker = footer.querySelector<HTMLElement>("openclaw-message-reaction-picker")!;
+      picker.querySelector<HTMLButtonElement>(".trigger")!.click();
+      pickerButton(picker, "🚀")!.click();
+      expect(onReact).toHaveBeenLastCalledWith("message-1", "🚀", false);
+    }
+  });
+
   it.each(["user", "assistant"])(
     "shares each %s message's existing footer without merging reaction targets",
     (role) => {

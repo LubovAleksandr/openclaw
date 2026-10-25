@@ -518,7 +518,7 @@ function FramedMessageGroup(props: {
       </div>
       <Show when={!frame().isTurnBlock}>
         <Show
-          when={!props.group.isStreaming && !options().activeContinuation}
+          when={!props.group.isStreaming}
           fallback={renderSolidEmptyGroupFooter()}
         >
           <div
@@ -544,40 +544,42 @@ function FramedMessageGroup(props: {
                 options={options()}
               />
             </Show>
-            <Show when={!frame().isPeerGroup}>
-              <UserFooterActions frame={frame()} />
-            </Show>
-            <div class="chat-group-footer__meta">
-              {frame().normalizedRole === "user" &&
-              frame().showAvatar &&
-              frame().avatarPlacement === "footer" ? (
-                <Show
-                  when={options().mediaReadAllowed !== false}
-                  fallback={<span class="chat-author-avatar" aria-hidden="true" />}
-                >
-                  <ChatAuthorAvatar
-                    sender={props.group.sender}
-                    channelAvatar={options().channelAvatar}
-                  />
-                </Show>
-              ) : undefined}
-              <SenderIdentity frame={frame()} />
-              <ChatSendStatus status={frame().sendStatus} actions={options()} />
-              <MessageMeta timestamp={props.group.timestamp} meta={frame().meta} />
-            </div>
-            <Show
-              when={frame().isPeerGroup}
-              fallback={
-                <Show when={frame().normalizedRole !== "user" && frame().footerActionDetails}>
-                  <MessageActionsRow
-                    messageKey={frame().footerActionMessageKey}
-                    details={frame().footerActionDetails}
-                    options={options()}
-                  />
-                </Show>
-              }
-            >
-              <UserFooterActions frame={frame()} />
+            <Show when={!options().activeContinuation}>
+              <Show when={!frame().isPeerGroup}>
+                <UserFooterActions frame={frame()} />
+              </Show>
+              <div class="chat-group-footer__meta">
+                {frame().normalizedRole === "user" &&
+                frame().showAvatar &&
+                frame().avatarPlacement === "footer" ? (
+                  <Show
+                    when={options().mediaReadAllowed !== false}
+                    fallback={<span class="chat-author-avatar" aria-hidden="true" />}
+                  >
+                    <ChatAuthorAvatar
+                      sender={props.group.sender}
+                      channelAvatar={options().channelAvatar}
+                    />
+                  </Show>
+                ) : undefined}
+                <SenderIdentity frame={frame()} />
+                <ChatSendStatus status={frame().sendStatus} actions={options()} />
+                <MessageMeta timestamp={props.group.timestamp} meta={frame().meta} />
+              </div>
+              <Show
+                when={frame().isPeerGroup}
+                fallback={
+                  <Show when={frame().normalizedRole !== "user" && frame().footerActionDetails}>
+                    <MessageActionsRow
+                      messageKey={frame().footerActionMessageKey}
+                      details={frame().footerActionDetails}
+                      options={options()}
+                    />
+                  </Show>
+                }
+              >
+                <UserFooterActions frame={frame()} />
+              </Show>
             </Show>
           </div>
         </Show>
