@@ -548,7 +548,9 @@ suite.define(() => {
     await page.waitForTimeout(300);
     const recording = page.video()!;
     await suite.closeBrowserContext(context);
-    const videoBytes = await readFile(await recording.path());
+    const recordingPath = path.join(proofDir, "finalized-recording.webm");
+    await recording.saveAs(recordingPath);
+    const videoBytes = await readFile(recordingPath);
     // Decode the finalized WebM in a separate, non-recording context. Seeking twice
     // per 25fps recorder frame catches short corruption without depending on host ffmpeg.
     const decoder = await createPageWithoutRecording();

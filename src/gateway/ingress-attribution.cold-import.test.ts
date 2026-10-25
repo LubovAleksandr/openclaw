@@ -1,4 +1,5 @@
-import type { IncomingMessage } from "node:http";
+import { IncomingMessage } from "node:http";
+import { Socket } from "node:net";
 import { expect, it, vi } from "vitest";
 
 const tailscale = vi.hoisted(() => ({
@@ -23,15 +24,14 @@ it("loads the default Tailnet lookup only when Serve identity verification needs
     login?: string,
     tailscaleWhois?: Parameters<typeof prepareGatewayIngressAttribution>[0]["tailscaleWhois"],
   ) => {
-    const req = {
-      socket: { remoteAddress: "127.0.0.1" },
-      headers: {
-        "x-forwarded-for": "100.64.0.10",
-        "x-forwarded-proto": "https",
-        "x-forwarded-host": "gateway.example.test",
-        ...(login ? { "tailscale-user-login": login } : {}),
-      },
-    } as IncomingMessage;
+    const req = new IncomingMessage(new Socket());
+    Object.defineProperty(req.socket, "remoteAddress", { value: "127.0.0.1" });
+    req.headers = {
+      "x-forwarded-for": "100.64.0.10",
+      "x-forwarded-proto": "https",
+      "x-forwarded-host": "gateway.example.test",
+      ...(login ? { "tailscale-user-login": login } : {}),
+    };
     markGatewayIngressTransport(req, { kind: "managed-tailscale", mode: "serve" });
     const attribution = prepareGatewayIngressAttribution({ req, tailscaleWhois });
     if (attribution.kind !== "tailscale-serve") {

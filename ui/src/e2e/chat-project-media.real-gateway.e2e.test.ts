@@ -15,6 +15,7 @@ import {
   type OpenClawTestInstance,
 } from "../../../test/helpers/openclaw-test-instance.ts";
 import { runQaGatewayFixture } from "../../../test/helpers/qa-gateway-cleanup.ts";
+import { readControlUiE2eDownload } from "../test-helpers/control-ui-e2e-download.ts";
 import { waitForControlUiGatewayReady } from "../test-helpers/control-ui-e2e-readiness.ts";
 import { controlUiSessionUrl } from "../test-helpers/control-ui-e2e.ts";
 import { enterControlUiSession } from "../test-helpers/control-ui-session-entry.ts";
@@ -218,9 +219,7 @@ suite.define(() => {
           // Focus keeps the action exposed while reloaded images move the card.
           await link.focus();
           const [download] = await Promise.all([page.waitForEvent("download"), link.click()]);
-          const downloadedPath = await download.path();
-          expect(downloadedPath).not.toBeNull();
-          expect(await readFile(downloadedPath!)).toEqual(bytes);
+          expect(await readControlUiE2eDownload(download)).toEqual(bytes);
           expect(download.suggestedFilename()).toBe(filename);
         };
         await downloadFile(

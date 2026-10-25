@@ -223,9 +223,7 @@ describe("TSX discovery", () => {
               ).length,
           )
           .map((test) => test.name),
-      ).toEqual(
-        expected === "browser" ? [] : [expected === "unit-mock-registry" ? "ui-isolated" : "ui"],
-      );
+      ).toEqual(expected === "browser" ? [] : ["ui"]);
     }
   });
 

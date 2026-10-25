@@ -141,7 +141,11 @@ describe.runIf("__vitest_browser__" in globalThis)("navigation rail menus", () =
       try {
         // Escape belongs to an active tooltip first; test menu dismissal without one.
         await page.elementLocator(surface).hover({ position: { x: 4, y: 4 } });
+        if (document.querySelector("openclaw-tooltip[open]")) {
+          await userEvent.keyboard("{Escape}");
+        }
         await expect.poll(() => document.querySelector("openclaw-tooltip[open]")).toBeNull();
+        escape = undefined;
         record("before-keyboard");
         await userEvent.keyboard("{Escape}");
         record("after-keyboard", {

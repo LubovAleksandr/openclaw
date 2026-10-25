@@ -1,4 +1,4 @@
-import { mkdir, rename } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { chromium, webkit, type Browser } from "playwright";
 import { expect, it } from "vitest";
@@ -67,7 +67,8 @@ it("replaces a silent suspended socket when its tab returns to the foreground", 
     const video = page.video();
     await context.close();
     if (proofDir && video) {
-      await rename(await video.path(), path.join(proofDir, "gateway-foreground-recovery.webm"));
+      await video.saveAs(path.join(proofDir, "gateway-foreground-recovery.webm"));
+      await video.delete();
     }
   } finally {
     await browser?.close();

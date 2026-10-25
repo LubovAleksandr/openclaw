@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { Locator, Page } from "playwright";
 import { expect, it } from "vitest";
@@ -447,7 +447,8 @@ suite.define(() => {
     } finally {
       await context.close();
       if (proofDir && video) {
-        await rename(await video.path(), path.join(proofDir, `background-${label}.webm`));
+        await video.saveAs(path.join(proofDir, `background-${label}.webm`));
+        await video.delete();
       }
     }
   });

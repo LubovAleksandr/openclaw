@@ -123,6 +123,13 @@ function probeOwnership(
     import fs from "node:fs";
     export const resolvePlaywrightChromiumExecutablePath = () => "/fixture/chromium";
     export const canRunPlaywrightChromium = () => ${options.available !== false};
+    export const chromium = {
+      executablePath: () => "/fixture/chromium",
+      launchServer: async () => {
+        if (!canRunPlaywrightChromium()) throw new Error("fixture Chromium is unavailable");
+        return { wsEndpoint: () => "ws://fixture/chromium", close: async () => {} };
+      },
+    };
     export const assertUiE2ePreflight = async () => {
       if (${JSON.stringify(options.failure)} === "preflight") throw new Error("fixture preflight failed");
     };
@@ -163,6 +170,8 @@ function probeOwnership(
     import config from ${JSON.stringify(path.join(repoRoot, `test/vitest/vitest.ui-e2e${options.prebuilt ? "-prebuilt" : ""}.config.ts`))};
     function instrument(config) {
       return { ...config, resolve: { ...config.resolve, alias: [
+        { find: /^playwright$/, replacement: ${JSON.stringify(resourceFile)} },
+        { find: /^.*\\/playwright-chromium[.]ts$/, replacement: ${JSON.stringify(resourceFile)} },
         { find: /^.*\\/control-ui-plugin-fixture[.]ts$/, replacement: ${JSON.stringify(resourceFile)} },
         { find: /^.*\\/control-ui-e2e\\.ts$/, replacement: ${JSON.stringify(resourceFile)} },
         { find: /^.*\\/vitest\\.ui-e2e-prebuilt\\.global-setup\\.ts$/, replacement: ${JSON.stringify(resourceFile)} },
