@@ -43,6 +43,8 @@ describe("ClawRouter managed gateway contract", () => {
       },
     });
     instances.push(instance);
+    // Test Gateways skip process locks; target this listener instead of offline catalog fallback.
+    instance.env.OPENCLAW_GATEWAY_PORT = String(instance.port);
     const logFile = path.join(instance.stateDir, "clawrouter.log");
     const cliOutput: string[] = [];
     const cli = async (args: string[]) => {

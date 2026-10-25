@@ -695,9 +695,10 @@ suite.define(() => {
   );
 
   it("navigates and persists one tabbed side panel with light and dark presentations", async () => {
-    await withPage(exerciseTabbedPanel, {
-      ...(videoDir ? { recordVideo: { dir: videoDir, size: { height: 900, width: 1600 } } } : {}),
-    });
+    await withPage(
+      exerciseTabbedPanel,
+      videoDir ? { recordVideo: { dir: videoDir, size: { height: 900, width: 1600 } } } : {},
+    );
   });
 
   it("keeps navigation usable on a mobile viewport", async () => {

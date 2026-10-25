@@ -72,7 +72,10 @@ beforeEach(() => {
   prepareWorkers.mockClear();
   vi.mocked(getVitestWorkerDescriptor).mockReset();
   createWorkers.mockReset().mockImplementation((_env, parent, preset) => ({
-    descriptor: parent ?? { directory: "/fixture/workers", preset },
+    descriptor: {
+      directory: parent?.directory ?? "/fixture/workers",
+      preset: parent ? (parent.preset ?? "full") : (preset ?? "full"),
+    },
     prepare: prepareWorkers,
     async borrow<T>(child: ChildProcess, completion: Promise<T>) {
       const joined = borrowWorkers(child);

@@ -31,7 +31,7 @@ export async function expectComposerSurface(composer: Locator, accessible = fals
   });
 }
 
-export async function readArtwork(shell: Locator, detail?: "fingerprint" | "color-spread") {
+export async function readArtwork(shell: Locator, artworkDetail?: "fingerprint" | "color-spread") {
   await shell.evaluate(finishElementAnimations);
   return shell.evaluate(async (element, detail) => {
     const style = getComputedStyle(element);
@@ -255,7 +255,7 @@ export async function readArtwork(shell: Locator, detail?: "fingerprint" | "colo
         ...opaqueAncestors.map((name) => `opaque ancestor: ${name}`),
       ],
     };
-  }, detail);
+  }, artworkDetail);
 }
 
 export function expectAppArtwork(artwork: Awaited<ReturnType<typeof readArtwork>>, label: string) {

@@ -37,10 +37,11 @@ function expectActivityEdges(margin: Margin, label: string) {
 }
 
 suite.define(() => {
-  // The chat owner bounds parked panes while these cases share one app boot.
+  // Retain four-case media isolation while sharing each app boot within the batch.
+  const casesPerPage = 4;
   let context: BrowserContext;
   let page: Page;
-  let booted = false;
+  let pageBatch = -1;
   let images: Map<number, Buffer>;
   let video: Buffer;
   const sessionKey = (testCase: MarginCase) => `agent:main:margin-${testCase.id}`;
@@ -79,17 +80,21 @@ suite.define(() => {
   it.each(marginCases)(
     "preserves $id gutters across viewports and themes, restoring desktop geometry",
     async (testCase) => {
+      const batch = Math.floor(marginCases.indexOf(testCase) / casesPerPage);
       await page.setViewportSize({ width: 1440, height: 1200 });
       await page.emulateMedia({ colorScheme: "light", reducedMotion: "reduce" });
-      if (!booted) {
-        booted = true;
+      if (batch !== pageBatch) {
+        if (pageBatch !== -1) {
+          await page.close();
+          page = await context.newPage();
+        }
+        pageBatch = batch;
+        const cases = marginCases.slice(batch * casesPerPage, (batch + 1) * casesPerPage);
         await installMockGateway(page, {
           ...marginScenario(testCase),
-          sessions: marginCases.map((entry) =>
-            createControlUiSessionRow(sessionKey(entry), entry.id, 1),
-          ),
+          sessions: cases.map((entry) => createControlUiSessionRow(sessionKey(entry), entry.id, 1)),
           sessionTranscripts: Object.fromEntries(
-            marginCases.map((entry) => [sessionKey(entry), { messages: [...entry.messages] }]),
+            cases.map((entry) => [sessionKey(entry), { messages: [...entry.messages] }]),
           ),
           sessionKey: sessionKey(testCase),
         });

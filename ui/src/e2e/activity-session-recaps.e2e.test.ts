@@ -8,6 +8,7 @@ import { chatSessionListResponse, installMockGateway } from "./chat-flow.test-su
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
 const suite = createControlUiE2eSuite({ name: "Rolling Activity recaps" });
+const captureUiProof = process.env.OPENCLAW_CAPTURE_UI_PROOF === "1";
 const ensureMethod = "sessions.activitySummary.ensure";
 const key = "agent:main:activity-recap";
 const oldText = "Duplicate notification repair needs verification.";
@@ -47,7 +48,11 @@ suite.define(() => {
         async ({ page }) => {
           const { gateway, recap } = await openRecap(page);
           await page.locator(`[data-activity-session="${key}"]`).waitFor();
-          await page.screenshot({ path: path.join(suite.artifactDir, `01-initial-${width}.png`) });
+          if (captureUiProof) {
+            await page.screenshot({
+              path: path.join(suite.artifactDir, `01-initial-${width}.png`),
+            });
+          }
           const publishRecap = async (state: "current" | "unavailable") => {
             await gateway.setSessionsListResponse(
               chatSessionListResponse([session(state, newText)]),
@@ -70,7 +75,11 @@ suite.define(() => {
               (request) => asNullableRecord(request.params)?.includeActivitySummary === true,
             ),
           ).toBe(true);
-          await page.screenshot({ path: path.join(suite.artifactDir, `02-updating-${width}.png`) });
+          if (captureUiProof) {
+            await page.screenshot({
+              path: path.join(suite.artifactDir, `02-updating-${width}.png`),
+            });
+          }
           const ordinaryListRequests = async () =>
             (await gateway.getRequests("sessions.list")).filter(
               (request) => asNullableRecord(request.params)?.includeActivitySummary !== true,
@@ -85,9 +94,11 @@ suite.define(() => {
           expect(
             await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth),
           ).toBe(true);
-          await page.screenshot({
-            path: path.join(suite.artifactDir, `03-completed-${width}.png`),
-          });
+          if (captureUiProof) {
+            await page.screenshot({
+              path: path.join(suite.artifactDir, `03-completed-${width}.png`),
+            });
+          }
           expect(await ordinaryListRequests()).toBe(ordinaryListCount);
 
           await publishRecap("unavailable");
