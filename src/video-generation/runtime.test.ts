@@ -22,6 +22,12 @@ const runtimeDeps = {
   getProviderEnvVars: () => [],
   log: { debug: () => {}, warn: () => {} },
 } satisfies NonNullable<Parameters<typeof generateVideo>[1]>;
+const inputImages = [
+  { url: "https://example.com/first.png" },
+  { url: "https://example.com/second.png" },
+];
+const inputVideos = [{ url: "https://example.com/reference.mp4" }];
+const inputAudios = [{ url: "https://example.com/reference.mp3", role: "reference_audio" }];
 
 function runGenerateVideo(params: Partial<GenerateVideoParams> = {}) {
   return generateVideo(
@@ -97,15 +103,6 @@ function useCapturingProvider(
   return requests;
 }
 
-function useFallbackProvider(
-  primary: VideoGenerationProvider,
-  fallback: Omit<Partial<VideoGenerationProvider>, "generateVideo">,
-) {
-  const requests = useCapturingProvider(fallback);
-  providers.unshift(primary);
-  return requests;
-}
-
 describe("video-generation runtime", () => {
   it("falls through when a video provider returns an empty buffer", async () => {
     providers = [
@@ -123,13 +120,8 @@ describe("video-generation runtime", () => {
     });
     expect(result.provider).toBe("valid");
     expect(result.videos[0]?.buffer).toEqual(Buffer.from("mp4-bytes"));
-    expect(result.attempts).toEqual([
-      {
-        provider: "empty",
-        model: "vid-v1",
-        error: "Video generation provider returned an empty video buffer at index 1.",
-      },
-    ]);
+    expectSkipped(result, "empty", /empty video buffer at index 1/);
+    expect(result.attempts[0]?.model).toBe("vid-v1");
   });
 
   it("uses a provider URL when the same video asset has an empty buffer", async () => {
@@ -152,38 +144,20 @@ describe("video-generation runtime", () => {
     });
   });
 
-  it("forwards providerOptions to providers that declare the matching schema", async () => {
-    const requests = useCapturingProvider({
-      capabilities: {
-        providerOptions: { seed: "number", draft: "boolean", camera_fixed: "boolean" },
-      },
-    });
-    await runGenerateVideo({
-      prompt: "test",
-      providerOptions: { seed: 42, draft: true, camera_fixed: false },
-    });
-    expect(requests[0]?.providerOptions).toEqual({ seed: 42, draft: true, camera_fixed: false });
-  });
-
-  it.each<{
-    name: string;
-    declaration: VideoGenerationProviderCapabilities["providerOptions"];
-    providerOptions: Record<string, unknown>;
-    error: RegExp;
-  }>([
-    {
-      name: "unknown key",
-      declaration: { draft: "boolean" } as const,
-      providerOptions: { seed: 42 },
-      error: /does not accept providerOptions keys: seed \(accepted: draft\)/,
-    },
-    {
-      name: "wrong type",
-      declaration: { seed: "number" } as const,
-      providerOptions: { seed: "forty-two" },
-      error: /expects providerOptions\.seed to be a finite number, got string/,
-    },
-  ])("rejects providerOptions with $name", async ({ declaration, providerOptions, error }) => {
+  it.each<
+    [VideoGenerationProviderCapabilities["providerOptions"], Record<string, unknown>, RegExp]
+  >([
+    [
+      { draft: "boolean" },
+      { seed: 42 },
+      /does not accept providerOptions keys: seed \(accepted: draft\)/,
+    ],
+    [
+      { seed: "number" },
+      { seed: "forty-two" },
+      /expects providerOptions\.seed to be a finite number, got string/,
+    ],
+  ])("rejects providerOptions (%#)", async (declaration, providerOptions, error) => {
     providers = [
       rejectingProvider("video-plugin", { capabilities: { providerOptions: declaration } }),
     ];
@@ -206,11 +180,11 @@ describe("video-generation runtime", () => {
       resolveModelCapabilities: async (ctx) => {
         seenCapabilityLookupTimeoutMs = ctx.timeoutMs;
         return {
-          providerOptions: { seed: "number" },
+          providerOptions: { seed: "number", draft: "boolean", camera_fixed: "boolean" },
           generate: {
             supportsResolution: true,
             resolutions: ["720P"],
-            supportedDurationSeconds: [5],
+            supportedDurationSeconds: [4, 6, 8],
             supportsAudio: false,
           },
         };
@@ -218,26 +192,31 @@ describe("video-generation runtime", () => {
     });
     const result = await runGenerateVideo({
       cfg: videoConfig({ primary: "openrouter/google/veo-3.1" }),
-      durationSeconds: 6,
-      providerOptions: { seed: 42 },
+      durationSeconds: 5,
+      providerOptions: { seed: 42, draft: true, camera_fixed: false },
       resolution: "720P",
       audio: true,
       timeoutMs: 120_000,
     });
     expect(result.attempts).toEqual([]);
     expect(requests[0]).toMatchObject({
-      durationSeconds: 5,
-      providerOptions: { seed: 42 },
+      durationSeconds: 6,
+      providerOptions: { seed: 42, draft: true, camera_fixed: false },
       resolution: "720P",
       audio: undefined,
     });
     expect(seenCapabilityLookupTimeoutMs).toBe(5_000);
     expect(
       Reflect.get(requests[0]!, Symbol.for("openclaw.videoGeneration.supportedDurations")),
-    ).toEqual([5]);
+    ).toEqual([4, 6, 8]);
     expect(result.ignoredOverrides).toEqual([{ key: "audio", value: true }]);
     expect(result.normalization).toEqual({
-      durationSeconds: { requested: 6, applied: 5, supportedValues: [5] },
+      durationSeconds: { requested: 5, applied: 6, supportedValues: [4, 6, 8] },
+    });
+    expect(result.metadata).toMatchObject({
+      requestedDurationSeconds: 5,
+      normalizedDurationSeconds: 6,
+      supportedDurationSeconds: [4, 6, 8],
     });
   });
 
@@ -247,7 +226,6 @@ describe("video-generation runtime", () => {
     live?: VideoGenerationProviderCapabilities;
     fallback: VideoGenerationProviderCapabilities;
     request: Partial<GenerateVideoParams>;
-    expected: Partial<VideoGenerationRequest>;
     error: RegExp;
     explicit?: boolean;
   }>([
@@ -257,7 +235,6 @@ describe("video-generation runtime", () => {
       live: { providerOptions: {} },
       fallback: { providerOptions: { seed: "number" } },
       request: { providerOptions: { seed: 42 } },
-      expected: { providerOptions: { seed: 42 } },
       error: /does not accept providerOptions/,
       explicit: true,
     },
@@ -265,12 +242,7 @@ describe("video-generation runtime", () => {
       name: "unsupported reference audio",
       base: {},
       fallback: { maxInputAudios: 1 },
-      request: {
-        inputAudios: [{ url: "https://example.com/reference-audio.mp3", role: "reference_audio" }],
-      },
-      expected: {
-        inputAudios: [{ url: "https://example.com/reference-audio.mp3", role: "reference_audio" }],
-      },
+      request: { inputAudios },
       error: /does not support reference audio inputs/,
     },
     {
@@ -278,18 +250,7 @@ describe("video-generation runtime", () => {
       base: { imageToVideo: { enabled: true, maxInputImages: 4 } },
       live: { imageToVideo: { enabled: true, maxInputImages: 1 } },
       fallback: { imageToVideo: { enabled: true, maxInputImages: 2 } },
-      request: {
-        inputImages: [
-          { url: "https://example.com/first.png" },
-          { url: "https://example.com/second.png" },
-        ],
-      },
-      expected: {
-        inputImages: [
-          { url: "https://example.com/first.png" },
-          { url: "https://example.com/second.png" },
-        ],
-      },
+      request: { inputImages },
       error: /supports at most 1 reference image\(s\), 2 requested/,
     },
     {
@@ -297,34 +258,35 @@ describe("video-generation runtime", () => {
       base: { generate: { maxDurationSeconds: 4 } },
       fallback: { generate: { maxDurationSeconds: 8 } },
       request: { durationSeconds: 6 },
-      expected: { durationSeconds: 6 },
       error: /supports at most 4s per video, 6s requested/,
     },
-  ])(
-    "falls back for $name",
-    async ({ base, live, fallback, request, expected, error, explicit }) => {
-      const requests = useFallbackProvider(
-        rejectingProvider("primary", {
-          defaultModel: "video",
-          capabilities: base,
-          isConfigured: () => true,
-          ...(live ? { resolveModelCapabilities: async () => live } : {}),
-        }),
-        { id: "fallback", defaultModel: "video", capabilities: fallback, isConfigured: () => true },
-      );
-      const result = await runGenerateVideo({
-        cfg: videoConfig({
-          primary: "primary/video",
-          ...(explicit ? { fallbacks: ["fallback/video"] } : {}),
-        }),
-        ...request,
-      });
-      expect(result.provider).toBe("fallback");
-      expect(requests).toHaveLength(1);
-      expect(requests[0]).toMatchObject(expected);
-      expectSkipped(result, "primary", error);
-    },
-  );
+  ])("falls back for $name", async ({ base, live, fallback, request, error, explicit }) => {
+    const requests = useCapturingProvider({
+      id: "fallback",
+      defaultModel: "video",
+      capabilities: fallback,
+      isConfigured: () => true,
+    });
+    providers.unshift(
+      rejectingProvider("primary", {
+        defaultModel: "video",
+        capabilities: base,
+        isConfigured: () => true,
+        ...(live ? { resolveModelCapabilities: async () => live } : {}),
+      }),
+    );
+    const result = await runGenerateVideo({
+      cfg: videoConfig({
+        primary: "primary/video",
+        ...(explicit ? { fallbacks: ["fallback/video"] } : {}),
+      }),
+      ...request,
+    });
+    expect(result.provider).toBe("fallback");
+    expect(requests).toHaveLength(1);
+    expect(requests[0]).toMatchObject(request);
+    expectSkipped(result, "primary", error);
+  });
 
   it("falls back when the primary model catalog rejects the requested mode", async () => {
     const requests = useCapturingProvider({ ...wanProvider, isConfigured: () => true });
@@ -334,7 +296,7 @@ describe("video-generation runtime", () => {
         fallbacks: ["qwen/wan2.6-r2v"],
       }),
       prompt: "animate the reference",
-      inputVideos: [{ url: "https://example.com/reference.mp4" }],
+      inputVideos,
     });
     expect(requests.map((req) => req.model)).toEqual(["wan2.6-r2v"]);
     expect(result.model).toBe("wan2.6-r2v");
@@ -395,7 +357,7 @@ describe("video-generation runtime", () => {
       runGenerateVideo({
         cfg: videoConfig({ primary: "openrouter/minimax/hailuo-2.3" }),
         prompt: "restyle this clip",
-        inputVideos: [{ url: "https://example.com/reference.mp4" }],
+        inputVideos,
       }),
     ).rejects.toThrow(/does not support reference video inputs/);
   });
@@ -407,20 +369,15 @@ describe("video-generation runtime", () => {
         videoToVideo: { enabled: true, maxInputImages: 9, maxInputVideos: 3, maxInputAudios: 3 },
       },
     });
+    const references = { inputImages: inputImages.slice(0, 1), inputVideos, inputAudios };
     const result = await runGenerateVideo({
       cfg: videoConfig({ primary: "fal/bytedance/seedance-2.0/fast/reference-to-video" }),
       prompt: "Blend all references",
-      inputImages: [{ url: "https://example.com/reference.png" }],
-      inputVideos: [{ url: "https://example.com/reference.mp4" }],
-      inputAudios: [{ url: "https://example.com/reference.mp3" }],
+      ...references,
     });
     expect(result.provider).toBe("fal");
     expect(result.attempts).toStrictEqual([]);
-    expect(requests[0]).toMatchObject({
-      inputImages: [{ url: "https://example.com/reference.png" }],
-      inputVideos: [{ url: "https://example.com/reference.mp4" }],
-      inputAudios: [{ url: "https://example.com/reference.mp3" }],
-    });
+    expect(requests[0]).toMatchObject(references);
   });
 
   it("rejects provider results that contain undeliverable assets", async () => {
@@ -449,25 +406,6 @@ describe("video-generation runtime", () => {
     const requests = useCapturingProvider();
     await runGenerateVideo({ durationSeconds });
     expect(requests[0]?.durationSeconds).toBe(expected);
-  });
-
-  it("normalizes requested durations to supported provider values", async () => {
-    const requests = useCapturingProvider({
-      capabilities: { generate: { supportedDurationSeconds: [4, 6, 8] } },
-    });
-    const result = await runGenerateVideo({ durationSeconds: 5 });
-    expect(requests[0]?.durationSeconds).toBe(6);
-    expect(result.normalization?.durationSeconds).toEqual({
-      requested: 5,
-      applied: 6,
-      supportedValues: [4, 6, 8],
-    });
-    expect(result.metadata).toMatchObject({
-      requestedDurationSeconds: 5,
-      normalizedDurationSeconds: 6,
-      supportedDurationSeconds: [4, 6, 8],
-    });
-    expect(result.ignoredOverrides).toStrictEqual([]);
   });
 
   it("ignores unsupported optional overrides per provider", async () => {

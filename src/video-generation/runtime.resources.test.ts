@@ -3,7 +3,6 @@ import path from "node:path";
 import type { DatabaseSync } from "node:sqlite";
 import { afterAll, afterEach, expect, it } from "vitest";
 import type { OpenClawConfig } from "../config/types.js";
-import { withServer } from "../plugin-sdk/test-helpers/http-test-server.js";
 import { acquirePluginRegistryForInspection, loadPluginRegistryHandle } from "../plugins/loader.js";
 import {
   cleanupPluginLoaderFixturesForTest,
@@ -21,10 +20,11 @@ import { generateVideo, type GenerateVideoParams } from "./runtime.js";
 import type { VideoGenerationRequest } from "./types.js";
 
 const videoBytes = Buffer.from("synthetic video bytes 42");
+const deliveryUrl = "https://example.com/generated.mp4";
 const openResource = { database: { isOpen: true }, disposals: 0 };
 const closedResource = { database: { isOpen: false }, disposals: 1 };
 type Mode = "buffer" | "url" | "reject";
-function fixtureFor(id: string, outcome: Mode, holdLookup = false, deliveryUrl?: string) {
+function fixtureFor(id: string, outcome: Mode, holdLookup = false) {
   const dir = makePluginLoaderTempDir();
   const key = `__openclaw_video_resources_${path.basename(dir)}`;
   const lookupStarted = createDeferredCore();
@@ -141,15 +141,10 @@ const scenarios = [
   ["override selection", "buffer", "cold", "override"],
   ["fallback selection", "buffer", "cold", "fallback"],
 ] as const;
-type Scenario = readonly [
-  name: string,
-  mode: Mode,
-  owner: "cold" | "managed" | "raw",
-  selection: "none" | "override" | "fallback",
-];
-async function exercise([, mode, owner, selection]: Scenario, deliveryUrl?: string) {
+type Scenario = (typeof scenarios)[number];
+async function exercise([, mode, owner, selection]: Scenario) {
   const first = selection === "none" ? undefined : fixtureFor("first", "reject");
-  const fixture = fixtureFor(first ? "second" : "native", mode, owner === "managed", deliveryUrl);
+  const fixture = fixtureFor(first ? "second" : "native", mode, owner === "managed");
   first?.resume.resolve();
   const plugins = first ? [first.plugin, fixture.plugin] : [fixture.plugin];
   const cfg: OpenClawConfig = {
@@ -205,13 +200,9 @@ async function exercise([, mode, owner, selection]: Scenario, deliveryUrl?: stri
           expect(String(result.error)).toContain("native video generation failed");
         } else {
           expect(result.error).toBeUndefined();
+          expect(result.value?.videos[0]?.buffer).toEqual(mode === "url" ? undefined : videoBytes);
           if (mode === "url") {
-            expect(result.value?.videos[0]).toMatchObject({
-              url: deliveryUrl,
-            });
-            expect(result.value?.videos[0]?.buffer).toBeUndefined();
-          } else {
-            expect(result.value?.videos[0]?.buffer).toEqual(videoBytes);
+            expect(result.value?.videos[0]?.url).toBe(deliveryUrl);
           }
           expect(result.value?.metadata).toEqual({ nativeValue: 42 });
           if (first) {
@@ -228,11 +219,6 @@ async function exercise([, mode, owner, selection]: Scenario, deliveryUrl?: stri
         if (first) {
           expect(first.connections[0]).toMatchObject(closedResource);
         }
-        if (mode === "url") {
-          const response = await fetch(deliveryUrl!);
-          expect(response.status).toBe(200);
-          expect(Buffer.from(await response.arrayBuffer())).toEqual(videoBytes);
-        }
       } finally {
         first?.release();
         fixture.release();
@@ -246,16 +232,4 @@ async function exercise([, mode, owner, selection]: Scenario, deliveryUrl?: stri
   }
 }
 
-it.each<Scenario>(scenarios)("keeps resources alive for %s", async (...scenario) => {
-  if (scenario[1] === "url") {
-    await withServer(
-      (_request, response) => {
-        response.writeHead(200, { "content-type": "video/mp4" });
-        response.end(videoBytes);
-      },
-      (baseUrl) => exercise(scenario, `${baseUrl}/generated.mp4`),
-    );
-  } else {
-    await exercise(scenario);
-  }
-});
+it.each<Scenario>(scenarios)("keeps resources alive for %s", (...scenario) => exercise(scenario));

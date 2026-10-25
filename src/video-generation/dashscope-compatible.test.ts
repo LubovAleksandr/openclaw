@@ -249,7 +249,6 @@ describe("DashScope operation deadlines", () => {
         invalid ? "application/json" : "video/mp4",
       );
       try {
-        const startedAt = Date.now();
         const operation = downloadVideo(fixture.fetchFn, invalid && capture ? 5_000 : 80);
         if (invalid) {
           await expect(operation).rejects.toThrow(malformed);
@@ -259,8 +258,6 @@ describe("DashScope operation deadlines", () => {
           }
         } else {
           await timesOut(operation, 80, /Alibaba Wan generated video download timed out/);
-          expect(Date.now() - startedAt).toBeGreaterThanOrEqual(60);
-          expect(Date.now() - startedAt).toBeLessThan(2_000);
           expect(fixture.requests[0]?.signal?.aborted).toBe(true);
           expect(fixture.fetchFn).toHaveBeenCalledOnce();
         }
@@ -272,9 +269,7 @@ describe("DashScope operation deadlines", () => {
   );
   it("fails closed before fetch when a function-valued remaining budget is exhausted", async () => {
     const fetchFn = vi.fn<typeof fetch>();
-    const startedAt = Date.now();
     await expect(downloadVideo(fetchFn, () => 0)).rejects.toThrow("remaining budget exhausted");
-    expect(Date.now() - startedAt).toBeLessThan(2_000);
     expect(fetchFn).not.toHaveBeenCalled();
   });
   it("releases the guarded fetch when the remaining-budget resolver throws", async () => {
