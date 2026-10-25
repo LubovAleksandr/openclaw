@@ -10,6 +10,7 @@ export class TranscriptRowRefs {
     private readonly virtualizer: Virtualizer<HTMLDivElement, HTMLElement>,
     private readonly callbacks: {
       isCurrentRow: (element: HTMLElement, key: string) => boolean;
+      beforeMeasure: () => void;
       onMount: (key: string) => void;
     },
   ) {}
@@ -28,6 +29,7 @@ export class TranscriptRowRefs {
     // commit must wait too, or it can unobserve newly registered sibling rows.
     queueMicrotask(() => {
       this.updateQueued = false;
+      this.callbacks.beforeMeasure();
       for (const [row, rowKey] of this.pendingRows) {
         if (
           row.isConnected &&

@@ -49,6 +49,7 @@ it.each([
   Object.defineProperty(viewport, "clientHeight", { configurable: true, get: readViewport });
   const refs = new TranscriptRowRefs(virtualizer, {
     isCurrentRow: (row) => viewport.contains(row),
+    beforeMeasure: () => {},
     onMount: () => {},
   });
   const mounted = indexes.map((index) => expectDefined(rows[index], "mounted row"));

@@ -249,15 +249,17 @@ export class ChatSessionVirtualizerHost implements ChatTranscriptSession {
     });
     // Initial placement owns compensation; an estimated end is not a native scroll target.
     this.virtualizer.shouldAdjustScrollPositionOnItemSizeChange = () => false;
+    const beforeMeasure = () => !this.initialRange.pending && this.offsetState.syncNativeOffset?.();
     this.presentation = createTranscriptPresentation(
       () => this.scrollElement,
       this.virtualizer,
       () => this.rowRefs.elements,
-      () => !this.initialRange.pending && this.offsetState.syncNativeOffset?.(),
+      beforeMeasure,
     );
     this.rowRefs = new TranscriptRowRefs(this.virtualizer, {
       isCurrentRow: (element, key) =>
         this.threadInnerElement?.contains(element) === true && this.rowIndexesByKey.has(key),
+      beforeMeasure,
       onMount: () => this.queueLayout(),
     });
     this.scrollRestoreHost = {
@@ -684,7 +686,6 @@ export class ChatSessionVirtualizerHost implements ChatTranscriptSession {
   }
 
   handleFocusIn(event: FocusEvent): void {
-    this.initialRange.finish();
     this.focusedRowKey = focusedTranscriptRowKey(this.scrollElement, event.target);
   }
 
@@ -761,7 +762,8 @@ export class ChatSessionVirtualizerHost implements ChatTranscriptSession {
       !this.offsetState.pendingInteractionAnchor &&
       !this.offsetState.touchActive
     ) {
-      this.scrollToEnd({ source: "auto", behavior: "instant" });
+      const behavior = this.offsetState.scrollCommand?.behavior ?? "instant";
+      this.scrollToEnd({ source: "auto", behavior });
       this.offsetState.syncNativeOffset?.();
     }
     if (isTranscriptRangeCommitted(this.threadInnerElement, this.virtualizer)) {
