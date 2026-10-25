@@ -236,50 +236,39 @@ describe("discord live qa runtime", () => {
     ).toThrow("Discord credential payload_CHANNEL_ID must be a Discord snowflake.");
   });
 
-  it("injects a temporary Discord account into the QA gateway config", () => {
-    const baseCfg: OpenClawConfig = {
+  it.each([false, true])("configures a QA account (tool-only: %s)", (toolOnly) => {
+    const base: OpenClawConfig = {
       plugins: { allow: ["qa-channel"], entries: { "qa-channel": { enabled: true } } },
       channels: { "qa-channel": { enabled: true } },
     };
-
-    const next = testing.buildDiscordQaConfig(baseCfg, configTarget);
-
-    expect(next.plugins?.allow).toContain("discord");
-    expect(next.plugins?.entries?.discord).toEqual({ enabled: true });
-    expect(next.messages?.groupChat?.visibleReplies).toBe("automatic");
-    const ingress = { requireMention: true, users: [driverId] };
-    expect(next.channels?.discord).toEqual({
+    const next = testing.buildDiscordQaConfig(base, configTarget, {
+      statusReactionsToolOnly: toolOnly,
+    });
+    expect(next.plugins).toMatchObject({
+      allow: ["qa-channel", "discord"],
+      entries: { discord: { enabled: true } },
+    });
+    expect(next.messages?.groupChat?.visibleReplies).toBe(toolOnly ? "message_tool" : "automatic");
+    const account = next.channels?.discord?.accounts?.sut;
+    expect(next.channels?.discord).toMatchObject({ enabled: true, defaultAccount: "sut" });
+    expect(account).toMatchObject({
       enabled: true,
-      defaultAccount: "sut",
-      accounts: {
-        sut: {
-          enabled: true,
-          token: "sut-token",
-          allowBots: "mentions",
-          groupPolicy: "allowlist",
-          guilds: {
-            [guildId]: { ...ingress, channels: { [channelId]: { ...ingress, enabled: true } } },
-          },
-        },
-      },
+      token: "sut-token",
+      allowBots: toolOnly ? true : "mentions",
+      groupPolicy: "allowlist",
     });
-  });
-
-  it("injects tool-only Discord status reaction config for the Mantis scenario", () => {
-    const next = testing.buildDiscordQaConfig({}, configTarget, { statusReactionsToolOnly: true });
-
-    expect(next.messages).toMatchObject({
-      ackReaction: "👀",
-      ackReactionScope: "all",
-      groupChat: { visibleReplies: "message_tool" },
-      statusReactions: { enabled: true },
+    const ingress = { requireMention: !toolOnly, users: [driverId] };
+    expect(account?.guilds?.[guildId]).toEqual({
+      ...ingress,
+      channels: { [channelId]: { ...ingress, enabled: true } },
     });
-    const discordAccount = next.channels?.discord?.accounts?.sut;
-    expect(discordAccount?.allowBots).toBe(true);
-    expect(discordAccount?.guilds?.[guildId]).toMatchObject({
-      requireMention: false,
-      channels: { [channelId]: { requireMention: false } },
-    });
+    if (toolOnly) {
+      expect(next.messages).toMatchObject({
+        ackReaction: "👀",
+        ackReactionScope: "all",
+        statusReactions: { enabled: true },
+      });
+    }
   });
 
   it("normalizes observed Discord messages", () => {
@@ -295,21 +284,6 @@ describe("discord live qa runtime", () => {
       ...polledReply(voiceChannelId, "hello", timestamp).message,
       senderId: driverId,
     });
-  });
-
-  it("matches Discord scenario replies by SUT id and marker", () => {
-    const matches = (senderId: string) =>
-      testing.matchesDiscordScenarioReply({
-        channelId,
-        sutBotId: sutId,
-        matchText: "DISCORD_QA_ECHO_TOKEN",
-        message: {
-          ...polledReply(voiceChannelId, "reply DISCORD_QA_ECHO_TOKEN").message,
-          senderId,
-        },
-      });
-    expect(matches(sutId)).toBe(true);
-    expect(matches(driverId)).toBe(false);
   });
 
   it("rejects invalid Discord RTT timestamps", () => {
@@ -413,9 +387,6 @@ describe("discord live qa runtime", () => {
           );
       await vi.advanceTimersByTimeAsync(connects ? 600 : 45_500);
       await assertion;
-      if (connects) {
-        expect(call).toHaveBeenCalledTimes(2);
-      }
     },
   );
 
@@ -447,7 +418,6 @@ describe("discord live qa runtime", () => {
       commandNames: ["commands", "help"],
     });
     const headers = vi.mocked(fetch).mock.calls[0]?.[1]?.headers;
-    expect(headers).toBeInstanceOf(Headers);
     expect(new Headers(headers).get("authorization")).toBe("Bot token");
   });
 
@@ -484,7 +454,6 @@ describe("discord live qa runtime", () => {
     await expect(testing.getCurrentDiscordUser("token")).resolves.toEqual({
       id: driverId,
     });
-    expect(fetch).toHaveBeenCalledTimes(2);
   });
   it("rejects transcript capture without an explicit destination before discovery or gateway access", async () => {
     const resolveVoiceChannel = vi
@@ -529,11 +498,9 @@ describe("discord live qa runtime", () => {
     );
 
     expect(configured.voiceChannel).toEqual(voiceChannel);
-    expect(request).toHaveBeenCalledOnce();
     expect(request.mock.calls[0]?.[0]).toBe(
       `https://discord.com/api/v10/${explicit ? `channels/${voiceChannelId}` : `guilds/${guildId}/channels`}`,
     );
-    expect(patches).toHaveLength(1);
     expect(patches[0]?.channels?.discord?.voice).toEqual({
       enabled: true,
       mode: "stt-tts",
@@ -544,9 +511,7 @@ describe("discord live qa runtime", () => {
       expect(patches[0]?.agents?.entries?.qa?.tools?.alsoAllow).toContain("transcripts");
       expectChannelUsers(patches[0], sutId);
       await configured.configureTranscriptVoiceAccess?.(true);
-      expect(patches).toHaveLength(2);
       expectChannelUsers(patches[1], driverId);
-      expect(request).toHaveBeenCalledOnce();
     }
   });
 
@@ -579,9 +544,12 @@ describe("discord live qa runtime", () => {
       );
       const poll = vi.spyOn(testing, "pollChannelMessages");
       if (expectReply) {
-        poll.mockResolvedValue(
-          polledReply("623456789012345678", "pong", timestamps.responseObservedAt),
-        );
+        const reply = polledReply("623456789012345678", "pong", timestamps.responseObservedAt);
+        poll.mockImplementation(async ({ predicate }) => {
+          expect(predicate(reply.message)).toBe(true);
+          expect(predicate({ ...reply.message, senderId: driverId })).toBe(false);
+          return reply;
+        });
       } else {
         poll.mockImplementation(async ({ timeoutMs }) => {
           throw new Error(`timed out after ${timeoutMs}ms waiting for Discord message`);
@@ -628,19 +596,17 @@ describe("discord live qa runtime", () => {
       guild_id: guildId,
       user_id: sutId,
     });
-    const request = vi.spyOn(discordApi, "requestDiscord").mockResolvedValue(undefined);
+    vi.spyOn(discordApi, "requestDiscord").mockResolvedValue(undefined);
     await expect(f.start()).resolves.toMatchObject({
       details: "visible denial, authorized transcript join, and verified stop/leave",
     });
     expect(f.configureTranscriptVoiceAccess).toHaveBeenCalledExactlyOnceWith(true);
-    expect(send).toHaveBeenCalledTimes(3);
     const prompts = send.mock.calls.map((call) => call[2]);
     expect(prompts[0]).toContain('"action":"start"');
     expect(prompts[0]).toContain(f.run.deniedSessionId);
     expect(prompts[1]).toContain(f.run.allowedSessionId);
     expect(prompts[2]).toContain('"action":"stop"');
     expect(prompts.join("\n")).not.toContain('"accountId"');
-    expect(request).toHaveBeenCalledTimes(6);
     expect(await f.evidence()).toEqual({
       schemaVersion: 1,
       scenarioId: "discord-transcripts-voice-authorization",

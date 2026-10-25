@@ -131,13 +131,11 @@ function fixture(options: { manageThreads?: boolean; missingPermissions?: boolea
             message_reference: z.object({ message_id: z.string() }).optional(),
           })
           .parse(JSON.parse(z.string().parse(init?.body)));
-        const message = {
-          id: String(nextId++),
+        const message = nativeMessage(String(nextId++), body.content, {
           channel_id: target,
           author: { id: driverId },
-          content: body.content,
           message_reference: body.message_reference,
-        };
+        });
         messages.set(message.id, message);
         return Response.json(message);
       }
@@ -190,17 +188,13 @@ function fixture(options: { manageThreads?: boolean; missingPermissions?: boolea
       leaseActive = false;
     },
     emit(kind: string, data: Record<string, unknown>) {
-      socketHarness.current!.emit(
-        "message",
-        Buffer.from(
-          JSON.stringify({
-            op: 0,
-            s: ++sequence,
-            t: kind,
-            d: { channel_id: channelId, guild_id: guildId, ...data },
-          }),
-        ),
-      );
+      const packet = {
+        op: 0,
+        s: ++sequence,
+        t: kind,
+        d: { channel_id: channelId, guild_id: guildId, ...data },
+      };
+      socketHarness.current!.emit("message", Buffer.from(JSON.stringify(packet)));
     },
     async evidence() {
       const [directory] = await readdir(outputDir);
@@ -219,10 +213,8 @@ describe("Discord agent E2E authority and evidence", () => {
   it("reading an unrelated message does not grant mutation or cleanup ownership", async () => {
     const f = fixture();
     const unrelated = "623456789012345678";
-    f.messages.set(
-      unrelated,
-      nativeMessage(unrelated, "preexisting", { author: { id: driverId } }),
-    );
+    const preexisting = nativeMessage(unrelated, "preexisting", { author: { id: driverId } });
+    f.messages.set(unrelated, preexisting);
     await f.driver.doctor();
     await f.driver.read({ messageId: unrelated });
     await expect(f.driver.edit({ messageId: unrelated, text: "changed" })).rejects.toThrow(
@@ -245,11 +237,12 @@ describe("Discord agent E2E authority and evidence", () => {
 
   it("reports missing native permissions as failures instead of skipping lifecycle operations", async () => {
     const f = fixture({ missingPermissions: true });
-    const result = await f.driver.doctor();
-    expect(result.ok).toBe(false);
-    expect(result.capabilities.unavailable).toEqual([
-      expect.objectContaining({ reason: expect.stringContaining("missing ViewChannel") }),
-    ]);
+    expect(await f.driver.doctor()).toMatchObject({
+      ok: false,
+      capabilities: {
+        unavailable: [{ reason: expect.stringContaining("missing ViewChannel") }],
+      },
+    });
     expect(f.mutations).toEqual([]);
   });
 
@@ -361,19 +354,16 @@ describe("Discord agent E2E authority and evidence", () => {
     });
   });
 
-  it("matches SUT identity, cursor and reference while preserving authorless revisions and reaction actors", async () => {
+  it("preserves authorless revisions and reaction actors while excluding foreign channels", async () => {
     const f = fixture();
     const trigger = await f.driver.send({ text: "reply with UNIQUE_MARKER", mention: true });
-    for (const candidate of [
-      nativeMessage("523456789012345677", "UNIQUE_MARKER"),
-      nativeMessage("523456789012345679", "UNIQUE_MARKER", { author: { id: driverId } }),
-      nativeMessage("523456789012345680", "UNIQUE_MARKER", { channel_id: "923456789012345678" }),
-      nativeMessage("523456789012345681", "UNIQUE_MARKER", {
-        message_reference: { message_id: "923456789012345678" },
+    // Cursor, author and reference rejection are covered by recorder-failure cleanup above.
+    f.emit(
+      "MESSAGE_CREATE",
+      nativeMessage("523456789012345680", "UNIQUE_MARKER", {
+        channel_id: "923456789012345678",
       }),
-    ]) {
-      f.emit("MESSAGE_CREATE", candidate);
-    }
+    );
     const sutReplyId = "523456789012345682";
     f.emit(
       "MESSAGE_CREATE",
@@ -409,18 +399,8 @@ describe("Discord agent E2E authority and evidence", () => {
         triggerMessageId: trigger.id,
         text: "UNIQUE_MARKER",
       },
-      {
-        kind: "MESSAGE_DELETE",
-        actor: "sut",
-        messageId: sutReplyId,
-        deletedText: "UNIQUE_MARKER",
-      },
-      {
-        kind: "MESSAGE_REACTION_ADD",
-        actor: "sut",
-        isDrivenMessage: true,
-        messageId: trigger.id,
-      },
+      { kind: "MESSAGE_DELETE", actor: "sut", messageId: sutReplyId, deletedText: "UNIQUE_MARKER" },
+      { kind: "MESSAGE_REACTION_ADD", actor: "sut", isDrivenMessage: true, messageId: trigger.id },
       { kind: "TYPING_START", actor: "sut" },
       { source: "recorder", continuous: false },
     );
@@ -441,16 +421,12 @@ describe("Discord agent E2E authority and evidence", () => {
       await f.session.stop();
       await f.session.cleanup();
       const cleanup = (await f.evidence()).find((row) => row.source === "cleanup");
-      expect(cleanup).toMatchObject({
-        ok: true,
-        threadDispositions: [
-          {
-            threadId: thread.threadId,
-            action: manageThreads ? "delete" : "archive",
-            result: "removed",
-          },
-        ],
-      });
+      const disposition = {
+        threadId: thread.threadId,
+        action: manageThreads ? "delete" : "archive",
+        result: "removed",
+      };
+      expect(cleanup).toMatchObject({ ok: true, threadDispositions: [disposition] });
       expect(
         f.mutations
           .filter((row) => row.method === "DELETE")
