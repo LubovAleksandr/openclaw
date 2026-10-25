@@ -75,8 +75,7 @@ async function fireTimers() {
   vi.runOnlyPendingTimers();
   await setImmediate();
 }
-const fenceError = () =>
-  new SessionTranscriptReadFenceError("Session transcript changed during context read");
+const fenceError = () => new SessionTranscriptReadFenceError("Transcript changed");
 
 it("backs off all sessions after a TPM rejection without replaying the failed review", async () => {
   runReview.mockRejectedValue(new Error("429 Rate limit reached: tokens per min (TPM)"));
@@ -118,20 +117,12 @@ it("defers queued reviews when a foreground turn hits the shared rate limit", as
 });
 
 it.each([
-  ["Gateway shutdown", new GatewayDrainingError(), "debug"],
-  ["source transcript change", fenceError(), "debug"],
-  [
-    "wrapped source authority revocation",
-    new Error("admitted run authority is no longer active", { cause: fenceError() }),
-    "debug",
-  ],
-  [
-    "cancellation with cleanup failure",
-    new AggregateError([new GatewayDrainingError(), new Error("database close failed")]),
-    "warn",
-  ],
-  ["provider failure", new Error("provider request failed"), "warn"],
-] as const)("reports %s with the appropriate log level", async (_reason, error, level) => {
+  [new GatewayDrainingError(), "debug"],
+  [fenceError(), "debug"],
+  [new Error("admitted run authority is no longer active", { cause: fenceError() }), "debug"],
+  [new AggregateError([new GatewayDrainingError(), new Error("database close failed")]), "warn"],
+  [new Error("provider request failed"), "warn"],
+] as const)("reports %s at %s level", async (error, level) => {
   runReview.mockRejectedValue(error);
   turn(10);
   log.debug.mockClear();
@@ -142,16 +133,6 @@ it.each([
     ),
   );
   expect(log[level === "debug" ? "warn" : "debug"]).not.toHaveBeenCalled();
-});
-
-it("accumulates model iterations across turns and reviews once the session reaches ten", async () => {
-  turn(4);
-  countedTurn(4, 0);
-  countedTurn(3, 1);
-  await fireTimers();
-  expect(runReview).toHaveBeenCalledTimes(1);
-  expect(runReview.mock.calls[0]?.[0]).toMatchObject({ source, ctx: { runId: "run-3" } });
-  countedTurn(9, 0);
 });
 
 it("counts only assistant messages after the last user when the harness reports zero iterations", () => {
@@ -195,9 +176,12 @@ it("waits for ten accumulated iterations even when turns use a learned skill", a
   countedTurn(1, 1, { usedSkills });
   await fireTimers();
   expect(runReview).toHaveBeenCalledTimes(1);
-  expect(runReview.mock.calls[0]?.[0].usedSkills).toEqual([
-    expect.objectContaining({ name: "deploy" }),
-  ]);
+  expect(runReview.mock.calls[0]?.[0]).toMatchObject({
+    source,
+    ctx: { runId: "run-1" },
+    usedSkills: [{ name: "deploy" }],
+  });
+  countedTurn(9, 0);
   countedTurn(1, 0, { workshopMutated: true, usedSkills });
 });
 

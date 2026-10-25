@@ -70,13 +70,15 @@ vi.mock("./review-outcome.js", async (importOriginal) => ({
 
 let state: OpenClawTestState;
 let candidate: Awaited<ReturnType<typeof createExperienceReviewCandidate>>;
+const prompt = "Remember the verified procedure.";
+const makeCandidate = (runId: string, modelId: string) =>
+  createExperienceReviewCandidate(runId, [{ role: "user", content: prompt, timestamp: 1 }], {
+    workspaceDir: state.workspaceDir,
+    modelId,
+  });
 beforeEach(async () => {
   state = await createOpenClawTestState({ layout: "state-only" });
-  candidate = await createExperienceReviewCandidate(
-    "review",
-    [{ role: "user", content: "Remember the verified procedure.", timestamp: 1 }],
-    { workspaceDir: state.workspaceDir, modelId: "gpt-test" },
-  );
+  candidate = await makeCandidate("review", "gpt-test");
   setRuntimeConfigSnapshot(candidate.config);
   mocks.runSkillWorkshopReview.mockReset();
   mocks.runEmbeddedAgent.mockReset();
@@ -93,6 +95,10 @@ afterEach(async () => {
 
 type ReviewParams = Parameters<typeof runSkillWorkshopReview>[0];
 const completedReview = { meta: { durationMs: 1 } };
+function observe(sessionId: string) {
+  beginOpenAIObservation({ sessionId });
+  completePromptCacheObservation({ sessionId, usage: { cacheRead: 8_000 } });
+}
 async function useRealReview() {
   const review = await vi.importActual<{ runSkillWorkshopReview: typeof runSkillWorkshopReview }>(
     "./review-run.js",
@@ -113,20 +119,15 @@ function withAdmission(run: (assertCurrent: ReturnType<typeof activeAssertion>) 
   });
 }
 it.each(["success", "failure"])(
-  "releases a detached review's prompt diagnostics after %s while preserving its source session",
+  "releases review diagnostics after %s but preserves source diagnostics",
   async (outcome) => {
     await useRealReview();
     const foreground = { sessionId: candidate.source.sessionId };
-    beginOpenAIObservation(foreground);
-    completePromptCacheObservation({ ...foreground, usage: { cacheRead: 8_000 } });
+    observe(foreground.sessionId);
     let reviewSessionId = "";
     mocks.runEmbeddedAgent.mockImplementation(async (params: ReviewParams) => {
       reviewSessionId = params.sessionId;
-      beginOpenAIObservation({ sessionId: reviewSessionId });
-      completePromptCacheObservation({
-        sessionId: reviewSessionId,
-        usage: { cacheRead: 8_000 },
-      });
+      observe(reviewSessionId);
       if (outcome === "failure") {
         throw new Error("review provider failed");
       }
@@ -179,7 +180,7 @@ it("does not dispatch user reply hooks for a detached experience review", async 
     runBeforeAgentReplyForTurn({
       runId: "review-user-reply-hook",
       trigger: candidate.ctx.foregroundPromptContext.trigger,
-      event: { cleanedBody: "Remember the verified procedure." },
+      event: { cleanedBody: prompt },
       context: { sessionKey: candidate.source.sessionKey },
     }),
   ).resolves.toEqual({ handled: true });
@@ -341,11 +342,7 @@ it.each([
 ])(
   "settles review usage without foreground attribution: %j",
   async ({ enabled, hasUsage, failed, unpriced }) => {
-    const usageCandidate = await createExperienceReviewCandidate(
-      "usage-review",
-      [{ role: "user", content: "Remember the verified procedure.", timestamp: 1 }],
-      { workspaceDir: state.workspaceDir, modelId: "usage-fixture" },
-    );
+    const usageCandidate = await makeCandidate("usage-review", "usage-fixture");
     usageCandidate.config.diagnostics = { enabled };
     const provider = expectDefined(
       usageCandidate.config.models?.providers?.openai,
@@ -370,28 +367,26 @@ it.each([
         events.push(event);
       }
     });
-    mocks.runSkillWorkshopReview.mockImplementation(
-      async (params: Parameters<typeof runSkillWorkshopReview>[0]) => ({
-        meta: {
-          durationMs: 123,
-          ...(failed ? { error: { kind: "timeout", message: "synthetic review failed" } } : {}),
-          agentMeta: {
-            sessionId: params.sessionId,
-            provider: "openai",
-            model: "usage-fixture",
-            ...(hasUsage
-              ? {
-                  usage: { input: 10, output: 5 },
-                  diagnosticUsage: { input: 100, output: 40, cacheRead: 20, cacheWrite: 10 },
-                }
-              : {}),
-            lastCallUsage: { input: 10, output: 5 },
-            contextTokens: 100_000,
-            promptTokens: 10,
-          },
+    mocks.runSkillWorkshopReview.mockImplementation(async (params: ReviewParams) => ({
+      meta: {
+        durationMs: 123,
+        ...(failed ? { error: { kind: "timeout", message: "synthetic review failed" } } : {}),
+        agentMeta: {
+          sessionId: params.sessionId,
+          provider: "openai",
+          model: "usage-fixture",
+          ...(hasUsage
+            ? {
+                usage: { input: 10, output: 5 },
+                diagnosticUsage: { input: 100, output: 40, cacheRead: 20, cacheWrite: 10 },
+              }
+            : {}),
+          lastCallUsage: { input: 10, output: 5 },
+          contextTokens: 100_000,
+          promptTokens: 10,
         },
-      }),
-    );
+      },
+    }));
     try {
       const pending = runSkillExperienceReview(usageCandidate);
       if (failed) {
