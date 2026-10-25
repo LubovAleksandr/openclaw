@@ -16,15 +16,8 @@ function buildTestInboundEventContext(
     messageId: "msg-1",
     from: "test:user:u1",
     sender: { id: "u1" },
-    conversation: {
-      kind: "group",
-      id: "room-1",
-      routePeer: { kind: "group", id: "route-room-1" },
-    },
-    route: {
-      agentId: "main",
-      routeSessionKey: "agent:main:test:group:room-1",
-    },
+    conversation: { kind: "group", id: "room-1", routePeer: { kind: "group", id: "route-room-1" } },
+    route: { agentId: "main", routeSessionKey: "agent:main:test:group:room-1" },
     reply: { to: "test:room:room-1" },
     message: { rawBody: "hello" },
     ...overrides,
@@ -103,6 +96,21 @@ describe("buildChannelInboundEventContext", () => {
   });
 
   it("maps normalized inbound facts into a finalized message context", async () => {
+    const commandTurn = {
+      kind: "text-slash",
+      source: "text",
+      authorized: true,
+      body: "/status",
+    } as const;
+    const media = [
+      { path: "/tmp/image.png", contentType: "image/png", kind: "image" },
+      {
+        url: "https://example.test/audio.mp3",
+        contentType: "audio/mpeg",
+        kind: "audio",
+        transcribed: true,
+      },
+    ] satisfies NonNullable<BuildChannelInboundEventContextParams["media"]>;
     const ctx = buildTestInboundEventContext({
       provider: "test-provider",
       surface: "test-surface",
@@ -113,6 +121,7 @@ describe("buildChannelInboundEventContext", () => {
         username: "userone",
         tag: "User#0001",
         isBot: true,
+        isSelf: true,
         roles: ["admin"],
       },
       conversation: {
@@ -157,21 +166,8 @@ describe("buildChannelInboundEventContext", () => {
           implicitMentionKinds: ["reply_to_bot"],
         },
       },
-      commandTurn: {
-        kind: "text-slash",
-        source: "text",
-        authorized: true,
-        body: "/status",
-      },
-      media: [
-        { path: "/tmp/image.png", contentType: "image/png", kind: "image" },
-        {
-          url: "https://example.test/audio.mp3",
-          contentType: "audio/mpeg",
-          kind: "audio",
-          transcribed: true,
-        },
-      ],
+      commandTurn,
+      media,
       supplemental: {
         quote: supplemental().quote,
         thread: { ...supplemental().thread, label: "thread label" },
@@ -179,92 +175,63 @@ describe("buildChannelInboundEventContext", () => {
       },
     });
 
-    expect(ctx).toEqual(
-      expect.objectContaining({
-        InboundAccessAuthorized: true,
-        ConversationRouteContextObserved: true,
-        ConversationRoutePeerId: "route-room-1",
-        Body: "[User One] hello",
-        InboundEventKind: "user_request",
-        BodyForAgent: "hello",
-        RawBody: "hello",
-        CommandBody: "/status",
-        BodyForCommands: "/status",
-        From: "test:user:u1",
-        To: "test:room:room-1",
-        SessionKey: "agent:main:test:group:room-1",
-        AgentId: "main",
-        DmScope: "main",
-        AccountId: "acct",
-        ParentSessionKey: "agent:main:test:group",
-        ModelParentSessionKey: "agent:main:test:model",
-        MessageSid: "msg-1",
-        ReplyToId: "root-1",
-        ReplyToBody: "quoted",
-        ReplyToSender: "Quoted User",
-        media: [
-          expect.objectContaining({
-            path: "/tmp/image.png",
-            contentType: "image/png",
-            kind: "image",
-            transcribed: false,
-          }),
-          expect.objectContaining({
-            url: "https://example.test/audio.mp3",
-            contentType: "audio/mpeg",
-            kind: "audio",
-            transcribed: true,
-          }),
-        ],
-        ChatType: "group",
-        ChatId: "room-1",
-        ConversationLabel: "Room One",
-        GroupSubject: "Room One",
-        GroupSpace: "workspace",
-        GroupSystemPrompt: "group prompt",
-        SenderName: "User One",
-        SenderId: "u1",
-        SenderUsername: "userone",
-        SenderTag: "User#0001",
-        SenderIsBot: true,
-        SenderIsSelf: undefined,
-        MemberRoleIds: ["admin"],
-        Timestamp: 123,
-        Provider: "test-provider",
-        Surface: "test-surface",
-        WasMentioned: true,
-        GroupRequireMention: false,
-        ExplicitlyMentionedBot: true,
-        MentionedUserIds: ["bot-1"],
-        ImplicitMentionKinds: ["reply_to_bot"],
-        MentionSource: "explicit_bot",
-        CommandAuthorized: true,
-        CommandSource: "text",
-        CommandTurn: {
-          kind: "text-slash",
-          source: "text",
-          authorized: true,
-          commandName: "status",
-          body: "/status",
-        },
-        MessageThreadId: "thread-1",
-        NativeChannelId: "native-room-1",
-        ConversationAvatar: "/media/inbound/conversation-avatar.png",
-        OriginatingChannel: "test",
-        OriginatingTo: "test:room:room-1",
-        ThreadStarterBody: "thread starter",
-        ThreadHistoryBody: "thread history",
-        ThreadLabel: "thread label",
-      }),
-    );
-  });
-
-  it("projects the ingress from-me sender fact as SenderIsSelf", () => {
-    const ctx = buildTestInboundEventContext({
-      sender: { id: "u1", name: "User One", isSelf: true },
+    expect(ctx).toMatchObject({
+      InboundAccessAuthorized: true,
+      ConversationRouteContextObserved: true,
+      ConversationRoutePeerId: "route-room-1",
+      Body: "[User One] hello",
+      InboundEventKind: "user_request",
+      BodyForAgent: "hello",
+      RawBody: "hello",
+      CommandBody: "/status",
+      BodyForCommands: "/status",
+      From: "test:user:u1",
+      To: "test:room:room-1",
+      SessionKey: "agent:main:test:group:room-1",
+      AgentId: "main",
+      DmScope: "main",
+      AccountId: "acct",
+      ParentSessionKey: "agent:main:test:group",
+      ModelParentSessionKey: "agent:main:test:model",
+      MessageSid: "msg-1",
+      ReplyToId: "root-1",
+      ReplyToBody: "quoted",
+      ReplyToSender: "Quoted User",
+      media: [{ ...media[0], transcribed: false }, media[1]],
+      ChatType: "group",
+      ChatId: "room-1",
+      ConversationLabel: "Room One",
+      GroupSubject: "Room One",
+      GroupSpace: "workspace",
+      GroupSystemPrompt: "group prompt",
+      SenderName: "User One",
+      SenderId: "u1",
+      SenderUsername: "userone",
+      SenderTag: "User#0001",
+      SenderIsBot: true,
+      SenderIsSelf: true,
+      MemberRoleIds: ["admin"],
+      Timestamp: 123,
+      Provider: "test-provider",
+      Surface: "test-surface",
+      WasMentioned: true,
+      GroupRequireMention: false,
+      ExplicitlyMentionedBot: true,
+      MentionedUserIds: ["bot-1"],
+      ImplicitMentionKinds: ["reply_to_bot"],
+      MentionSource: "explicit_bot",
+      CommandAuthorized: true,
+      CommandSource: "text",
+      CommandTurn: { ...commandTurn, commandName: "status" },
+      MessageThreadId: "thread-1",
+      NativeChannelId: "native-room-1",
+      ConversationAvatar: "/media/inbound/conversation-avatar.png",
+      OriginatingChannel: "test",
+      OriginatingTo: "test:room:room-1",
+      ThreadStarterBody: "thread starter",
+      ThreadHistoryBody: "thread history",
+      ThreadLabel: "thread label",
     });
-
-    expect(ctx.SenderIsSelf).toBe(true);
   });
 
   it("routes untrusted supplemental group prompt context outside GroupSystemPrompt", async () => {
@@ -297,45 +264,43 @@ describe("buildChannelInboundEventContext", () => {
     expect(Object.hasOwn(ctx, "UntrustedStructuredContext")).toBe(false);
   });
 
-  it("derives command turns from normalized command facts", async () => {
-    const ctx = buildTestInboundEventContext({
-      message: { rawBody: "/status", commandBody: "/status" },
-      command: { kind: "text-slash", name: "status" },
-      access: { commands: { authorized: true } },
-    });
-
-    expect(ctx.CommandTurn).toEqual({
-      kind: "text-slash",
-      source: "text",
-      authorized: true,
-      commandName: "status",
-      body: "/status",
-    });
-    expect(ctx.CommandSource).toBe("text");
-    expect(ctx.CommandAuthorized).toBe(true);
-  });
-
-  it("keeps explicit command turns ahead of normalized command facts", async () => {
-    const ctx = buildTestInboundEventContext({
-      message: { rawBody: "/status", commandBody: "/status" },
-      command: { kind: "native", authorized: true },
-      commandTurn: {
+  it.each([
+    [
+      "derives turns from normalized facts",
+      { kind: "text-slash", name: "status" },
+      undefined,
+      {
+        kind: "text-slash",
+        source: "text",
+        authorized: true,
+        commandName: "status",
+        body: "/status",
+      },
+      "text",
+    ],
+    [
+      "keeps explicit turns ahead of normalized facts",
+      { kind: "native", authorized: true },
+      { kind: "normal", source: "message", authorized: false, body: "hello" },
+      {
         kind: "normal",
         source: "message",
         authorized: false,
+        commandName: undefined,
         body: "hello",
       },
+      undefined,
+    ],
+  ] as const)("%s", (_name, command, commandTurn, expected, source) => {
+    const ctx = buildTestInboundEventContext({
+      message: { rawBody: "/status", commandBody: "/status" },
+      access: { commands: { authorized: true } },
+      command,
+      commandTurn,
     });
-
-    expect(ctx.CommandTurn).toEqual({
-      kind: "normal",
-      source: "message",
-      authorized: false,
-      commandName: undefined,
-      body: "hello",
-    });
-    expect(ctx.CommandSource).toBeUndefined();
-    expect(ctx.CommandAuthorized).toBe(false);
+    expect(ctx.CommandTurn).toEqual(expected);
+    expect(ctx.CommandSource).toBe(source);
+    expect(ctx.CommandAuthorized).toBe(expected.authorized);
   });
 
   it.each([
@@ -370,9 +335,7 @@ describe("finalizeChannelInboundContext supplemental media resolution", () => {
     const result = await finalizeQuote({
       media: [{ path: "/tmp/current.png", contentType: "image/png" }],
       contextVisibility: "all",
-      supplemental: {
-        quote: { ...selfQuote, media },
-      },
+      supplemental: { quote: { ...selfQuote, media } },
     });
 
     expect(media).not.toHaveBeenCalled();
@@ -409,13 +372,7 @@ describe("finalizeChannelInboundContext supplemental media resolution", () => {
     const media = vi.fn(async () => [{ path: "/tmp/hidden.png", contentType: "image/png" }]);
     const result = await finalizeQuote({
       contextVisibility: "allowlist",
-      supplemental: {
-        quote: {
-          body: "hidden",
-          senderAllowed: false,
-          media,
-        },
-      },
+      supplemental: { quote: { body: "hidden", senderAllowed: false, media } },
     });
 
     expect(media).not.toHaveBeenCalled();
