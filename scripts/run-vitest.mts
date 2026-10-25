@@ -885,6 +885,7 @@ export function spawnWatchedVitestProcess({
       0,
       path.join(resolveRepoRoot(import.meta.url), "scripts/lib/vitest-worker-bootstrap.mts"),
       workerRun.descriptor.directory,
+      ...(workerRun.descriptor.preset === "runtime" ? ["--worker-preset=runtime"] : []),
     );
   }
   const childSpawnParams: PnpmRunnerParams = workerRun
@@ -1127,7 +1128,13 @@ export async function runVitest(
   }
   const workers = sourceMode
     ? undefined
-    : createVitestWorkerRun(resolveVitestProcessEnv(invocationEnv), getVitestWorkerDescriptor());
+    : createVitestWorkerRun(
+        resolveVitestProcessEnv(invocationEnv),
+        getVitestWorkerDescriptor(),
+        canonicalSelection && relativeConfig === "test/vitest/vitest.ui-e2e.config.ts"
+          ? "runtime"
+          : "full",
+      );
   const withCacheSlot = createVitestCacheSlots();
   let interrupted: NodeJS.Signals | undefined;
   let preparingWorkers = false;
