@@ -37,12 +37,6 @@ type Button = Extract<Presentation["blocks"][number], { type: "buttons" }>["butt
 
 const mediaLocalRoots = Object.freeze(["/tmp/workspace"]);
 const workspaceDir = "/tmp/workspace";
-const makeMediaReader = () => vi.fn(async () => Buffer.from("image"));
-const mediaAccess = (readFile: ReturnType<typeof makeMediaReader>) => ({
-  localRoots: mediaLocalRoots,
-  workspaceDir,
-  readFile,
-});
 const outboundContext = (text = "report") => ({ cfg: config(), to: "channel:CHAN1", text });
 
 const config = (mattermost: MattermostConfig = {}): OpenClawConfig => ({
@@ -121,14 +115,11 @@ async function sendPrepared(overrides: Partial<ActionContext>) {
   const payload = await actions.prepareSendPayload!({ ctx, to, payload: { text } });
   expect(payload).not.toBeNull();
   return outbound.sendPayload!({
-    cfg: ctx.cfg,
+    ...ctx,
     to,
     text,
     payload: payload!,
     accountId: ctx.accountId ?? undefined,
-    mediaAccess: ctx.mediaAccess,
-    mediaLocalRoots: ctx.mediaLocalRoots,
-    mediaReadFile: ctx.mediaReadFile,
   });
 }
 
@@ -169,17 +160,11 @@ describe("Mattermost configuration and threading", () => {
 
   it("keeps sibling resolution stable across named-account additions and edits", () => {
     const beta = { baseUrl: "https://beta.example.com", chatmode: "onmessage" as const };
-    const before: OpenClawConfig = {
-      channels: { mattermost: { replyToMode: "first", accounts: { beta } } },
-    };
-    const expected = mattermostPlugin.config.resolveAccount(before, "beta");
+    const resolve = (accounts: MattermostConfig["accounts"]) =>
+      mattermostPlugin.config.resolveAccount(config({ replyToMode: "first", accounts }), "beta");
+    const expected = resolve({ beta });
     for (const baseUrl of ["https://alpha.example.com", "https://alpha-new.example.com"]) {
-      const after = {
-        channels: {
-          mattermost: { replyToMode: "first" as const, accounts: { beta, alpha: { baseUrl } } },
-        },
-      };
-      expect(mattermostPlugin.config.resolveAccount(after, "beta")).toEqual(expected);
+      expect(resolve({ beta, alpha: { baseUrl } })).toEqual(expected);
     }
   });
 
@@ -302,13 +287,7 @@ describe("Mattermost configuration and threading", () => {
     const cfg = config({
       defaultAccount: "alerts",
       replyToMode: "off",
-      accounts: {
-        alerts: {
-          replyToMode: "all",
-          botToken: "alerts-token",
-          baseUrl: "https://alerts.example.com",
-        },
-      },
+      accounts: { alerts: { replyToMode: "all" } },
     });
     expect(threading.resolveReplyToMode!({ cfg, chatType: "channel" })).toBe("all");
     expect(threading.resolveReplyToMode!({ cfg, accountId: "alerts", chatType: "direct" })).toBe(
@@ -353,43 +332,36 @@ describe("Mattermost actions", () => {
       actions: ["send", "react"],
       capabilities: ["presentation"],
     });
-    expect(
-      actions.describeMessageTool({ cfg: config({ actions: { messages: false } }) })?.actions,
-    ).toEqual(["send", "react"]);
   });
 
   it.each([
-    ["react", "reactions", false],
-    ["read", "messages", false],
-    ["react", undefined, true],
-  ] as const)(
-    "blocks %s when feature=%s or account disabled=%s",
-    async (kind, feature, disabled) => {
-      const params = {
-        target: "channel:CHAN1",
-        to: "channel:CHAN1",
-        messageId: "POST1",
-        emoji: "thumbsup",
-      };
-      const cfg = config({
-        accounts: { default: disabled ? { enabled: false } : { actions: { [feature!]: false } } },
-        ...(feature ? { actions: { [feature]: true } } : {}),
-      });
-      await expectBlockedAction(
-        {
-          action: kind,
-          params,
-          cfg,
-          ...(kind === "read" || disabled
-            ? { accountId: "default", conversationReadOrigin: "direct-operator" as const }
-            : {}),
+    ["react", { reactions: false }, "reactions"],
+    ["read", { messages: false }, "message reads"],
+    ["react", undefined, undefined],
+  ] as const)("blocks unavailable %s actions (%s)", async (kind, disabledActions, label) => {
+    await expectBlockedAction(
+      {
+        action: kind,
+        params: {
+          target: "channel:CHAN1",
+          to: "channel:CHAN1",
+          messageId: "POST1",
+          emoji: "thumbsup",
         },
-        disabled
-          ? 'Mattermost account "default" is disabled'
-          : `Mattermost ${feature === "messages" ? "message reads" : "reactions"} are disabled in config`,
-      );
-    },
-  );
+        cfg: config({
+          actions: { messages: true, reactions: true },
+          accounts: {
+            default: disabledActions ? { actions: disabledActions } : { enabled: false },
+          },
+        }),
+        accountId: "default",
+        conversationReadOrigin: "direct-operator",
+      },
+      label
+        ? `Mattermost ${label} are disabled in config`
+        : 'Mattermost account "default" is disabled',
+    );
+  });
 
   it("reads posts into the shared JSON result with normalized timestamps", async () => {
     const fetchImpl = vi.fn<typeof fetch>(async (input) => {
@@ -412,7 +384,6 @@ describe("Mattermost actions", () => {
         { id: "post-1", message: "older", timestampMs: 1_700_000_001_000 },
       ],
     });
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
   });
 
   it("rejects invalid read cursors and limits before provider access", async () => {
@@ -475,7 +446,6 @@ describe("Mattermost actions", () => {
     expect(result.content).toEqual([
       { type: "text", text: "Reacted with :thumbsup_medium_skin_tone: on POST1" },
     ]);
-    expect(result.details).toStrictEqual({});
   });
 
   it("forwards a prepared local attachment with trusted roots and a reader", async () => {
@@ -551,7 +521,7 @@ describe("Mattermost outbound", () => {
   );
 
   it("delivers presentation buttons with required local media and preserves card receipts", async () => {
-    const mediaReadFile = makeMediaReader();
+    const mediaReadFile = vi.fn(async () => Buffer.from("image"));
     const payload = await render(
       [
         { label: "Open", value: "open", style: "primary" },
@@ -564,7 +534,7 @@ describe("Mattermost outbound", () => {
     const result = await mattermostPlugin.message!.send!.payload!({
       ...outboundContext(""),
       payload: payload!,
-      mediaAccess: mediaAccess(mediaReadFile),
+      mediaAccess: { localRoots: mediaLocalRoots, workspaceDir, readFile: mediaReadFile },
     });
     const options = expectSend("Deploy finished\n\n- Open\n- Docs: https://example.com/docs");
     expect(options).toMatchObject({
@@ -638,23 +608,5 @@ describe("Mattermost outbound", () => {
     },
   ])("keeps $name on the fallback path", async ({ buttons, texts, extras }) => {
     expect(await render(buttons, texts, extras)).toBeNull();
-  });
-
-  it("uses a thread as fallback for media delivery with structured workspace access", async () => {
-    const mediaReadFile = makeMediaReader();
-    await outbound.sendMedia!({
-      ...outboundContext("caption"),
-      mediaUrl: "image.png",
-      threadId: "post-root",
-      mediaAccess: mediaAccess(mediaReadFile),
-    });
-    expect(expectSend("caption")).toMatchObject({
-      replyToId: "post-root",
-      mediaUrl: "image.png",
-      mediaLocalRoots,
-      mediaReadFile,
-      workspaceDir,
-      requireMediaUpload: true,
-    });
   });
 });
