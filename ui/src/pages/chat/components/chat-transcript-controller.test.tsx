@@ -642,13 +642,15 @@ it.each([0, 252])(
 );
 
 it("keeps smooth latest through settlement and idle until the target", async () => {
+  const flushFrames = stubAnimationFrames();
   transcriptDomState.measuredRowHeight = 120;
   const rows = numberedContentRows(40);
   const { container, transcript } = await mountTestTranscript("idle-latest", rows);
   geometry(container, { clientHeight: 600, scrollHeight: 4800 });
   const scrollTo = vi.fn();
   container.scrollTo = scrollTo;
-  vi.useFakeTimers();
+  // Keep mount-time reconciliation on the same frame queue while faking native idle.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   scroll(container, 1000);
   transcript.update();
   transcript.scrollToEnd({ behavior: "smooth" });
@@ -656,7 +658,7 @@ it("keeps smooth latest through settlement and idle until the target", async () 
   expect(scrollTo).toHaveBeenLastCalledWith({ top: 4200, behavior: "smooth" });
   scroll(container, 1500);
   geometry(container, { scrollHeight: 4900 });
-  vi.advanceTimersByTime(16);
+  flushFrames();
   expect(scrollTo).toHaveBeenLastCalledWith({ top: 4300, behavior: "smooth" });
   scrollTo.mockClear();
 

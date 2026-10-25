@@ -5,6 +5,7 @@ import { flush, waitForSolid } from "../../../test-helpers/solid-settle.ts";
 import { ToolPreview } from "./chat-message-deferred.tsx";
 
 const moduleReady = vi.hoisted(() => Promise.withResolvers<void>());
+// mock-isolation: Control lazy module readiness independently of the widget renderer and catalog setup.
 vi.mock("./widget-card-view.tsx", async () => {
   await moduleReady.promise;
   return { ToolPreview: () => <span>Widget renderer ready</span> };

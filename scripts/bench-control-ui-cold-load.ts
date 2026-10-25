@@ -1108,7 +1108,7 @@ try {
       if (window !== window.top || location.protocol === "about:") {
         return;
       }
-      if (fixtureUrl) {
+      if (fixtureUrl && location.pathname === "/chat") {
         history.replaceState(null, "", fixtureUrl);
       }
       if (bootstrap) {
@@ -1143,9 +1143,7 @@ try {
     {
       key: controlUiBundledSettingsStorageKey(baseUrl),
       fixtureUrl: usesGatewayHttp
-        ? bootRoute === "new"
-          ? new URL("/new", baseUrl).href
-          : controlUiSessionUrl(baseUrl, fixture.selectedSessionKey, face)
+        ? controlUiSessionUrl(baseUrl, fixture.selectedSessionKey, face)
         : null,
       bootstrap: usesGatewayHttp
         ? JSON.stringify(createControlUiMockBootstrapConfig(prepared.scenario))
@@ -1914,7 +1912,16 @@ try {
         JSON.stringify((await cdp.send("Performance.getMetrics")).metrics),
       );
     }
-    await writeFile(path.join(artifactDir, `run-${run + 1}.metrics.json`), JSON.stringify(metrics));
+    await writeFile(
+      path.join(artifactDir, `run-${run + 1}.metrics.json`),
+      JSON.stringify({
+        ...metrics,
+        layoutCell,
+        variant: ["base", "candidate", "candidate-2"][bundleIndex],
+        hostLoadAverage,
+        threadCpu,
+      }),
+    );
     const profile = !traced && !cpuProfile ? undefined : await cdp.send("Profiler.stop");
     if (captureTrace) {
       const complete = new Promise<void>((resolve) => {
