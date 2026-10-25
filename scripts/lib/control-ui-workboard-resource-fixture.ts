@@ -186,7 +186,7 @@ export async function prepareWorkboardResourceFixture(
   await page.locator(".workboard-page-title", { hasText: "Resource cards" }).waitFor();
   await loadAllCards(page, totalCards);
   await page.locator(".workboard-card").first().scrollIntoViewIfNeeded();
-  await page.locator(".workboard-page-title").hover();
+  await page.locator(".workboard-page-title > span").hover();
   await settle(page);
 }
 
@@ -360,7 +360,7 @@ async function exerciseNativePendingHover(page: Page, cancellationKind: "scroll"
   const first = page.locator(".workboard-card").first();
   const triggerLocator = first.locator(".workboard-session-status__trigger");
   await triggerLocator.scrollIntoViewIfNeeded();
-  await page.locator(".workboard-page-title").hover();
+  await page.locator(".workboard-page-title > span").hover();
   const recorder = await triggerLocator.evaluateHandle((trigger, kind) => {
     const host = trigger.closest("openclaw-workboard-session-status");
     const panel = host?.querySelector(".workboard-session-status__popover");
@@ -406,7 +406,7 @@ async function exerciseNativePendingHover(page: Page, cancellationKind: "scroll"
     if (cancellationKind === "scroll") {
       await page.mouse.wheel(0, 120);
     } else {
-      await page.locator(".workboard-page-title").click();
+      await page.locator(".workboard-page-title > span").click();
     }
     await page.waitForFunction(({ state }) => state.cancelledAt >= 0, recorder);
     const cancellation = await recorder.evaluate(({ state }) => ({ ...state }));
@@ -649,7 +649,7 @@ export async function exerciseWorkboardResourceFixture(
       .locator(".workboard-session-status__popover:popover-open")
       .waitFor({ state: "hidden" });
     // Park pointer/focus and wait for the existing 150ms leave deadline through native counts.
-    await page.locator(".workboard-page-title").click();
+    await page.locator(".workboard-page-title > span").click();
     try {
       await page.waitForFunction((expected) => {
         const read = Reflect.get(window, "openclawResourceCounts");
