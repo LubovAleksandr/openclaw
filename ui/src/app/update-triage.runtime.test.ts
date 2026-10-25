@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { buildSystemAgentSessionInvalidatedErrorDetails } from "@openclaw/gateway-protocol";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { buildSystemAgentSessionInvalidatedErrorDetails } from "../../../packages/gateway-protocol/src/system-agent-error-details.ts";
 import { GatewayRequestError } from "../api/gateway.ts";
 import { CUSTODIAN_PANEL_TOGGLE_EVENT } from "../components/panel-toggle-contract.ts";
 import { custodianAlertStore } from "../pages/custodian/custodian-alert-store.ts";
