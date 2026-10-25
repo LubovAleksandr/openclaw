@@ -277,7 +277,7 @@ describe("portal HTTP proxy", () => {
           res.write("hello ");
           res.end("portal");
         },
-        (error: Error) => res.destroy(error),
+        (error: unknown) => res.destroy(error instanceof Error ? error : new Error(String(error))),
       );
     };
     const dial = createDeferredCore();
