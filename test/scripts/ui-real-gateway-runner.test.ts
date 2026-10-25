@@ -71,8 +71,8 @@ beforeEach(() => {
   disposeWorkers.mockReset().mockResolvedValue(undefined);
   prepareWorkers.mockClear();
   vi.mocked(getVitestWorkerDescriptor).mockReset();
-  createWorkers.mockReset().mockImplementation((_env, parent) => ({
-    descriptor: parent ?? { directory: "/fixture/workers" },
+  createWorkers.mockReset().mockImplementation((_env, parent, preset) => ({
+    descriptor: parent ?? { directory: "/fixture/workers", preset },
     prepare: prepareWorkers,
     async borrow<T>(child: ChildProcess, completion: Promise<T>) {
       const joined = borrowWorkers(child);
@@ -91,7 +91,11 @@ afterEach(() => vi.restoreAllMocks());
 
 it.each([
   { ownership: "local", parent: undefined },
-  { ownership: "inherited", parent: { directory: "/fixture/upstream" } },
+  { ownership: "inherited full", parent: { directory: "/fixture/upstream" } },
+  {
+    ownership: "inherited runtime",
+    parent: { directory: "/fixture/upstream", preset: "runtime" as const },
+  },
 ])("reuses $ownership workers after both initial branches join", async ({ parent }) => {
   vi.mocked(getVitestWorkerDescriptor).mockReturnValue(parent);
   const serial = createDeferred<number>();
@@ -139,15 +143,17 @@ it.each([
   expect(managed).toHaveBeenCalledTimes(2);
   serial.resolve(0);
   await qualifiedStarted.promise;
-  expect(createWorkers).toHaveBeenCalledExactlyOnceWith(expect.any(Object), parent);
+  expect(createWorkers).toHaveBeenCalledExactlyOnceWith(expect.any(Object), parent, "runtime");
   expect(prepareWorkers).not.toHaveBeenCalled();
   expect(borrowWorkers).toHaveBeenCalledTimes(2);
   const qualifiedCall = managed.mock.calls[2]?.[0];
   const generation = parent?.directory ?? "/fixture/workers";
+  const runtime = !parent || parent.preset === "runtime";
   for (const call of [serialCall, qualifiedCall]) {
-    expect(call?.args?.slice(0, 3)).toEqual([
+    expect(call?.args?.slice(0, runtime ? 4 : 3)).toEqual([
       expect.stringMatching(/vitest-worker-bootstrap\.mts$/u),
       generation,
+      ...(runtime ? ["--worker-preset=runtime"] : []),
       "scripts/run-vitest.mjs",
     ]);
     expect(call?.stdio).toEqual(["inherit", "inherit", "inherit", "ipc"]);

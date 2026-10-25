@@ -54,6 +54,7 @@ export async function runRealGatewayUiTests(
               ? [
                   fileURLToPath(new URL("./lib/vitest-worker-bootstrap.mts", import.meta.url)),
                   workerRun.descriptor.directory,
+                  ...(workerRun.descriptor.preset === "runtime" ? ["--worker-preset=runtime"] : []),
                   ...args,
                 ]
               : args,
@@ -154,6 +155,7 @@ export async function runRealGatewayUiTests(
     compiledWorkers = createVitestWorkerRun(
       resolveVitestProcessEnv(env),
       getVitestWorkerDescriptor(),
+      "runtime",
     );
   }
   process.on("SIGINT", onSignal);
