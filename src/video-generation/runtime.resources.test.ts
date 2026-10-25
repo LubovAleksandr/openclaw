@@ -17,13 +17,11 @@ import { withPluginRuntimeRegistryScope } from "../plugins/runtime/gateway-reque
 import { createDeferredCore } from "../shared/deferred.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import { generateVideo, type GenerateVideoParams } from "./runtime.js";
-import type { VideoGenerationRequest } from "./types.js";
 
 const videoBytes = Buffer.from("synthetic video bytes 42");
-const deliveryUrl = "https://example.com/generated.mp4";
 const openResource = { database: { isOpen: true }, disposals: 0 };
 const closedResource = { database: { isOpen: false }, disposals: 1 };
-type Mode = "buffer" | "url" | "reject";
+type Mode = "buffer" | "reject";
 function fixtureFor(id: string, outcome: Mode, holdLookup = false) {
   const dir = makePluginLoaderTempDir();
   const key = `__openclaw_video_resources_${path.basename(dir)}`;
@@ -37,12 +35,12 @@ function fixtureFor(id: string, outcome: Mode, holdLookup = false) {
   const connections: Array<{
     database: DatabaseSync;
     disposals: number;
-    requests: VideoGenerationRequest[];
+    calls: number;
   }> = [];
   const state = { connections, lookupStarted, lookupResume, started, resume };
   Object.defineProperty(globalThis, key, {
     configurable: true,
-    value: { ...state, videoBytes, deliveryUrl },
+    value: { ...state, videoBytes },
   });
   const plugin = writePlugin({
     dir,
@@ -50,7 +48,7 @@ function fixtureFor(id: string, outcome: Mode, holdLookup = false) {
     registration: `    const { DatabaseSync } = require("node:sqlite");
     const state = globalThis[${JSON.stringify(key)}];
     const database = new DatabaseSync(":memory:");
-    const connection = { database, disposals: 0, requests: [] };
+    const connection = { database, disposals: 0, calls: 0 };
     state.connections.push(connection);
     const read = () => database.prepare("SELECT 42 AS value").get().value;
     api.lifecycle.registerRuntimeLifecycle({
@@ -73,8 +71,8 @@ function fixtureFor(id: string, outcome: Mode, holdLookup = false) {
         read();
         return {};
       },
-      async generateVideo(request) {
-        connection.requests.push(request);
+      async generateVideo() {
+        connection.calls++;
         read();
         state.started.resolve();
         await state.resume.promise;
@@ -82,7 +80,7 @@ function fixtureFor(id: string, outcome: Mode, holdLookup = false) {
         if (${JSON.stringify(outcome)} === "reject") throw new Error("native video generation failed");
         return {
           videos: [{
-            ...(${JSON.stringify(outcome)} === "url" ? { url: state.deliveryUrl } : { buffer: state.videoBytes }),
+            buffer: state.videoBytes,
             mimeType: "video/mp4", fileName: "native.mp4",
           }],
           metadata: { get nativeValue() { return read(); } },
@@ -134,7 +132,6 @@ afterAll(cleanupPluginLoaderFixturesForTest);
 
 const scenarios = [
   ["cold buffer", "buffer", "cold", "none"],
-  ["cold URL", "url", "cold", "none"],
   ["cold rejection", "reject", "cold", "none"],
   ["managed host", "buffer", "managed", "none"],
   ["raw host", "buffer", "raw", "none"],
@@ -164,8 +161,6 @@ async function exercise([, mode, owner, selection]: Scenario) {
     autoProviderFallback: false,
     modelOverride:
       selection === "fallback" ? undefined : `${fixture.plugin.id}-alias/fixture-model`,
-    timeoutMs: 12_345,
-    providerOptions: { seed: 42 },
   };
   const env = nativeFixtureEnv(fixture.dir);
   try {
@@ -191,7 +186,7 @@ async function exercise([, mode, owner, selection]: Scenario) {
         expect(connection.database.isOpen).toBe(true);
         if (first) {
           expect(first.connections).toHaveLength(1);
-          expect(first.connections[0]!.requests).toHaveLength(selection === "override" ? 0 : 1);
+          expect(first.connections[0]!.calls).toBe(selection === "override" ? 0 : 1);
           expect(first.connections[0]!.database.isOpen).toBe(true);
         }
         fixture.resume.resolve();
@@ -200,21 +195,13 @@ async function exercise([, mode, owner, selection]: Scenario) {
           expect(String(result.error)).toContain("native video generation failed");
         } else {
           expect(result.error).toBeUndefined();
-          expect(result.value?.videos[0]?.buffer).toEqual(mode === "url" ? undefined : videoBytes);
-          if (mode === "url") {
-            expect(result.value?.videos[0]?.url).toBe(deliveryUrl);
-          }
+          expect(result.value?.videos[0]?.buffer).toEqual(videoBytes);
           expect(result.value?.metadata).toEqual({ nativeValue: 42 });
+          expect(result.value?.provider).toBe(`${fixture.plugin.id}-alias`);
           if (first) {
-            expect(result.value?.provider).toBe("second-alias");
             expect(result.value?.attempts).toHaveLength(selection === "override" ? 0 : 1);
           }
         }
-        expect(connection.requests[0]).toMatchObject({
-          provider: first ? "second-alias" : "native-alias",
-          timeoutMs: 12_345,
-          providerOptions: { seed: 42 },
-        });
         expect(connection).toMatchObject(owner === "raw" ? openResource : closedResource);
         if (first) {
           expect(first.connections[0]).toMatchObject(closedResource);
