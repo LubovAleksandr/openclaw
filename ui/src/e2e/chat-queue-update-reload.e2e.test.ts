@@ -1,7 +1,6 @@
 import type { Locator, Page } from "playwright";
 import { expect, it } from "vitest";
 import { selectChatLayoutAction } from "../test-helpers/chat-layout-menu.ts";
-import { evaluateControlUiContext } from "../test-helpers/control-ui-e2e-context.ts";
 import {
   waitForControlUiGatewayReady,
   waitForControlUiGatewayReconnecting,
@@ -41,18 +40,14 @@ async function installQueueGateway(page: Page, names = ["original", "second"]) {
 async function disconnectGateway(page: Page, gateway: Gateway) {
   await pauseVirtualClock(page);
   await gateway.setOnline(false);
+  // Show the offline status after its grace window and start the first retry socket.
+  await page.clock.fastForward(2_000);
   await waitForControlUiGatewayReconnecting(page);
 }
 
 async function resumeGateway(page: Page, gateway: Gateway) {
-  const retryDelay = await evaluateControlUiContext(
-    page,
-    ({ gateway: source }) => (source.snapshot.reconnectAt ?? Number.NaN) - Date.now(),
-  );
-  expect(retryDelay).toBeGreaterThan(0);
+  // Disconnect advanced the retry; taking the mock online opens its waiting socket.
   await gateway.setOnline(true);
-  // Keep the production retry and handshake; advance only its published deadline.
-  await page.clock.fastForward(retryDelay);
   await page.clock.resume();
 }
 

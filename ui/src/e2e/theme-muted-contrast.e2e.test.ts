@@ -39,15 +39,21 @@ const textTokens = [
 
 const surfaceTokens = ["--bg", "--bg-elevated", "--bg-muted", "--card", "--panel"] as const;
 
-function themeConfigResponse(mode: "dark" | "light") {
+function themeConfigResponse(
+  family: (typeof themeCases)[number][0],
+  mode: "dark" | "light",
+  accent?: string,
+) {
   const config = {
     ui: {
       prefs: {
+        ...(family === "claw" ? {} : { theme: family }),
         themeMode: mode,
+        ...(accent === undefined ? {} : { accent }),
       },
     },
   };
-  const hash = `theme-contrast-${mode}`;
+  const hash = `theme-contrast-${family}-${mode}-${accent ?? "default"}`;
   return configSnapshot(config, hash, true);
 }
 
@@ -117,8 +123,8 @@ suite.define(() => {
             key: "openclaw.control.settings.v1:" + gatewayUrl,
             value: JSON.stringify({ gatewayUrl, theme: "claw", themeMode: mode }),
           });
-          await installMockGateway(page, {
-            methodResponses: { "config.get": themeConfigResponse(mode) },
+          const gateway = await installMockGateway(page, {
+            methodResponses: { "config.get": themeConfigResponse("claw", mode) },
           });
           await page.goto(suite.server.baseUrl + "settings/appearance");
           await waitForControlUiSettingsTakeover(page);
@@ -131,6 +137,11 @@ suite.define(() => {
             );
           for (const { family, resolved, accent } of cases) {
             const label = `${resolved} appearance (accent ${accent ?? "default"})`;
+            // Preference writes reread config; retain the appearance being measured.
+            await gateway.setMethodResponse(
+              "config.get",
+              themeConfigResponse(family, mode, accent),
+            );
             await page.locator(`.settings-theme-card[data-theme-id="${family}"]`).click();
             if (accent) {
               await page.locator("[data-accent-custom]").fill(accent);

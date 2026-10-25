@@ -4,7 +4,11 @@ import { expect as expectBrowser } from "playwright/test";
 import { afterAll, afterEach, beforeAll, expect, it } from "vitest";
 import { createPlaybackMediaFixture } from "../../../test/fixtures/media-playback.js";
 import { captureControlUiE2eFailureDiagnostics } from "../test-helpers/control-ui-e2e-diagnostics.ts";
-import { controlUiSessionUrl, installMockGateway } from "../test-helpers/control-ui-e2e.ts";
+import {
+  controlUiSessionUrl,
+  installMockGateway,
+  navigateToControlUiSession,
+} from "../test-helpers/control-ui-e2e.ts";
 import { createControlUiSessionRow } from "../test-helpers/control-ui-session-fixtures.ts";
 import {
   createMarginImage,
@@ -118,11 +122,7 @@ suite.define(() => {
           waitUntil: "domcontentloaded",
         });
       } else {
-        await page
-          .locator(
-            `.sidebar-recent-session[data-session-key="${sessionKey(testCase)}"] a.sidebar-recent-session__link`,
-          )
-          .click();
+        await navigateToControlUiSession(page, sessionKey(testCase));
       }
       await page.mouse.move(0, 0);
       const activePane = page.locator(".chat-pane-cache__pane--active");

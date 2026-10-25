@@ -130,23 +130,24 @@ async function chooseCustomFolder(page: Page, gateway: MockGateway) {
     .toEqual({ repoRoot: TARGET_REPO, includeRepositoryStatus: true });
 }
 
-async function reconnectForBranchRediscovery(page: Page, gateway: MockGateway) {
-  const branchRequests = await requestCount(gateway, "worktrees.branches");
+async function disconnectGateway(page: Page, gateway: MockGateway) {
   await pauseVirtualClock(page);
   await gateway.setOnline(false);
+  // Show the offline status after its grace window and start the first retry socket.
+  await page.clock.fastForward(2_000);
   await waitForControlUiGatewayReconnecting(page);
+}
+
+async function reconnectForBranchRediscovery(page: Page, gateway: MockGateway) {
+  const branchRequests = await requestCount(gateway, "worktrees.branches");
+  await disconnectGateway(page, gateway);
   await resumeGateway(page, gateway);
   await expectRequests(gateway, "worktrees.branches", branchRequests + 1);
 }
 
 async function resumeGateway(page: Page, gateway: MockGateway) {
-  const retryDelay = await evaluateControlUiContext(
-    page,
-    ({ gateway: source }) => (source.snapshot.reconnectAt ?? Number.NaN) - Date.now(),
-  );
-  expect(retryDelay).toBeGreaterThan(0);
+  // Disconnect advanced the retry; taking the mock online opens its waiting socket.
   await gateway.setOnline(true);
-  await page.clock.fastForward(retryDelay);
   await page.clock.resume();
   await waitForControlUiGatewayReady(page);
 }
@@ -687,9 +688,7 @@ suite.define(() => {
           await expect.poll(() => gateway.getSocketCount()).toBe(socketsBefore + 1);
           await waitForControlUiGatewayReady(page);
         } else {
-          await pauseVirtualClock(page);
-          await gateway.setOnline(false);
-          await waitForControlUiGatewayReconnecting(page);
+          await disconnectGateway(page, gateway);
           // Transport loss keeps the submitted display while execution waits for reconnection.
           expect(await page.getByText(submittedMessage, { exact: true }).isVisible()).toBe(true);
           await expect
@@ -749,9 +748,7 @@ suite.define(() => {
             },
           });
         }
-        await pauseVirtualClock(page);
-        await gateway.setOnline(false);
-        await waitForControlUiGatewayReconnecting(page);
+        await disconnectGateway(page, gateway);
         await resumeGateway(page, gateway);
         await waitForGatewayRecoveryScope(page);
 
