@@ -151,6 +151,9 @@ function mixColors(first: Color, firstWeight: number, second: Color): Color {
 
 function resolveColor(value: string, tokens: TokenMap, resolving = new Set<string>()): Color {
   const color = value.trim();
+  if (color === "white") {
+    return { rgb: [255, 255, 255], alpha: 1 };
+  }
   if (color.startsWith("#")) {
     return { rgb: parseHex(color), alpha: 1 };
   }
@@ -193,7 +196,7 @@ function resolveColor(value: string, tokens: TokenMap, resolving = new Set<strin
   }
 
   const mix = color.match(
-    /^color-mix\(in srgb,\s*(var\(--[\w-]+\))\s+([\d.]+)%,\s*(var\(--[\w-]+\))\s*\)$/u,
+    /^color-mix\(in srgb,\s*(var\(--[\w-]+\))\s+([\d.]+)%,\s*(var\(--[\w-]+\)|white)\s*\)$/u,
   );
   if (mix) {
     return mixColors(
@@ -431,17 +434,14 @@ describe("Control UI theme contrast", () => {
     ] as const) {
       const name = readColorToken(readPaint(rule, property));
       for (const [theme, tokens] of themes) {
-        const color = tokens.get(name);
-        expect(color, `${theme}: ${name} is not a hex token`).toMatch(/^#/u);
+        const color = resolveColor(`var(${name})`, tokens);
         for (const hostToken of CODE_CHIP_HOST_SURFACES) {
-          const host = tokens.get(hostToken);
-          if (host?.startsWith("#")) {
-            expectFloor(
-              contrastRatio(parseHex(color ?? ""), parseHex(host)),
-              minimum,
-              `${theme}/${hostToken} chip ${property}`,
-            );
-          }
+          const host = resolveOpaqueColor(`var(${hostToken})`, tokens);
+          expectFloor(
+            contrastRatio(composite(color, host), host),
+            minimum,
+            `${theme}/${hostToken} chip ${property}`,
+          );
         }
       }
     }
