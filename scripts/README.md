@@ -117,7 +117,9 @@ Heavy-content steps use `heavy-<fixture>-<action>` IDs. Fixtures are `code`
 (5,000 TypeScript lines), `auto-code` (5,000 language-free lines), `diff`
 (5,000 changed lines across ten files), `oversized-code` (the existing Markdown
 parse-limit fallback), `table` (300 rows × 12 columns), `tool-diff` (5,000 native
-input patch rows, existing 400-line preview cap), `terminal` (5,000 output lines), `json` (5,000 values, above the JSON formatter cap), `json-format` (1,900
+input patch rows, existing 400-line preview cap), `tool-diff-error` (the same
+patch rejected with a complete error message and Raw selected initially),
+`terminal` (5,000 output lines), `json` (5,000 values, above the JSON formatter cap), `json-format` (1,900
 values, within that cap), and `images`
 (40 synthetic PNGs). Actions include `arrival`, `stream` (20 frame-separated
 updates), `expand`, `collapse`, `scroll`, `copy`, `output-open`, and JSON
@@ -129,7 +131,7 @@ the exact copied string; it does not measure operating-system clipboard latency.
 NODE_DISABLE_COMPILE_CACHE=1 node --import ./scripts/tsx.mjs scripts/bench-control-ui-interactions.ts \
   --bundle-dir <baseline> --compare-bundle-dir <candidate> --pairs 10 \
   --viewport desktop --thread-cpu-time --first-pair-screenshots \
-  --steps heavy-tool-diff-expand,heavy-json-output-open,heavy-json-raw-toggle
+  --steps heavy-tool-diff-expand,heavy-tool-diff-error-expand,heavy-json-format-output-open,heavy-json-format-raw-toggle
 ```
 
 Record a baseline/baseline control on a loaded host. Compare renderer CPU,

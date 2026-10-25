@@ -41,6 +41,7 @@ const heavyContentFixtures = [
     kind: "table",
   },
   { id: "tool-diff", text: "@@\n" + "-old\n+new\n".repeat(2_500), kind: "tool" },
+  { id: "tool-diff-error", text: "@@\n" + "-old\n+new\n".repeat(2_500), kind: "tool" },
   { id: "terminal", text: "ok\n".repeat(5_000), kind: "tool" },
   {
     id: "json",
@@ -64,6 +65,9 @@ const heavyContentFixtures = [
 type Fixture = (typeof heavyContentFixtures)[number];
 
 function rawToolOutput(fixture: Fixture) {
+  if (fixture.id === "tool-diff-error") {
+    return "Patch context did not match";
+  }
   return fixture.id === "terminal" || fixture.id.startsWith("json")
     ? JSON.stringify([{ type: "input_text", text: fixture.text }])
     : fixture.text;
@@ -98,9 +102,11 @@ async function deliver(
 ) {
   const runId = runs.get(page)!;
   if (fixture.kind === "tool") {
-    const name = fixture.id === "tool-diff" ? "apply_patch" : "exec";
+    const isPatch = fixture.id.startsWith("tool-diff");
+    const isError = fixture.id === "tool-diff-error";
+    const name = isPatch ? "apply_patch" : "exec";
     const args =
-      fixture.id === "tool-diff"
+      isPatch
         ? { changes: [{ path: "synthetic.ts", kind: { type: "update" }, diff: fixture.text }] }
         : { input: "text(await tools.exec_command({cmd: 'synthetic-fixture'}));" };
     await gateway.emitGatewayEvent("agent", {
@@ -125,6 +131,7 @@ async function deliver(
           toolCallId: "heavy-output",
           name,
           args,
+          ...(isError ? { isError } : {}),
           result: {
             content: [
               {
@@ -148,8 +155,8 @@ async function deliver(
           id: "heavy-output",
           name,
           text: output,
-          isError: false,
-          ...(fixture.id === "tool-diff"
+          isError,
+          ...(isPatch
             ? {}
             : {
                 __openclaw: {
@@ -319,6 +326,16 @@ export const heavyContentScenarios: InteractionScenario[] = heavyContentFixtures
         run: async (page) => {
           if (fixture.kind === "tool") {
             await openTool(page);
+            if (fixture.id === "tool-diff-error") {
+              const raw = page.getByRole("tab", { name: "Raw", exact: true });
+              if ((await raw.getAttribute("aria-selected")) !== "true") {
+                throw new Error("Rejected patch did not default to its Raw output");
+              }
+              const output = page.locator(`${pane} [id$="-raw-panel"] code`);
+              if ((await output.textContent()) !== rawToolOutput(fixture)) {
+                throw new Error("Rejected patch did not show its complete error output");
+              }
+            }
           } else {
             await page.locator(`${pane} .code-block-expand`).last().click();
             await page.locator(`${pane} .code-block-wrapper.is-expanded`).last().waitFor();
@@ -428,7 +445,7 @@ export const heavyContentScenarios: InteractionScenario[] = heavyContentFixtures
         },
       });
     }
-    if (fixture.kind === "tool" && fixture.id !== "tool-diff") {
+    if (fixture.kind === "tool" && !fixture.id.startsWith("tool-diff")) {
       const openOutput = async (page: Page) => {
         await openTool(page);
         await page.locator(`${pane} .chat-tool-card__action-btn`).last().click();
