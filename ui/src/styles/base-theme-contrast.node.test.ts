@@ -158,12 +158,12 @@ function resolveColor(value: string, tokens: TokenMap, resolving = new Set<strin
     return { rgb: parseHex(color), alpha: 1 };
   }
 
-  const variable = color.match(/^var\((--[\w-]+)\)$/u)?.[1];
+  const [, variable, fallback] = color.match(/^var\((--[\w-]+)(?:,\s*(.+))?\)$/u) ?? [];
   if (variable) {
     if (resolving.has(variable)) {
       throw new Error(`circular color token "${variable}"`);
     }
-    const resolved = required(tokens.get(variable), variable);
+    const resolved = required(tokens.get(variable) ?? fallback, variable);
     return resolveColor(resolved, tokens, new Set(resolving).add(variable));
   }
 
@@ -432,9 +432,9 @@ describe("Control UI theme contrast", () => {
       ["background", CHIP_SURFACE_MIN_STEP],
       ["border", CHIP_BORDER_MIN_STEP],
     ] as const) {
-      const name = readColorToken(readPaint(rule, property));
+      const paint = required(readPaint(rule, property).match(/var\(.+\)/u)?.[0], property);
       for (const [theme, tokens] of themes) {
-        const color = resolveColor(`var(${name})`, tokens);
+        const color = resolveColor(paint, tokens);
         for (const hostToken of CODE_CHIP_HOST_SURFACES) {
           const host = resolveOpaqueColor(`var(${hostToken})`, tokens);
           expectFloor(

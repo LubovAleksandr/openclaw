@@ -8,6 +8,7 @@
   --sidebar-rail-surface: color-mix(in srgb, var(--text) 4%, var(--bg-content));
   --bg: color-mix(in srgb, var(--text) 2%, var(--bg-content));
   --bg-muted: color-mix(in srgb, var(--text) 4%, var(--bg-content));
+  --inline-code-bg: color-mix(in srgb, var(--text) 5%, var(--bg-content));
   --card: var(--bg-elevated);
   --popover: var(--bg-elevated);
   --panel-strong: var(--bg-content);
@@ -35,6 +36,7 @@
   --primary: #d97757;
   --primary-hover: #e68b6b;
   --primary-foreground: #241f1b;
+  --selection-bg: #5b7694;
 
   /* Deepen only the text-bearing destructive fill; keep danger accents vivid. */
   --destructive: #d32f2f;
@@ -94,7 +96,7 @@
   --primary: #a5654b;
   --primary-hover: #995d45;
   --primary-foreground: #ffffff;
-  --link: color-mix(in srgb, var(--accent) 65%, var(--text));
+  --link: color-mix(in srgb, var(--accent) 50%, var(--text));
 
   /* Navigation recedes; the reading canvas and elevated controls stay distinct. */
   --bg-accent: var(--bg);
@@ -121,6 +123,7 @@
 
   --border: color-mix(in srgb, var(--text) 7%, var(--bg-content));
   --border-strong: rgba(45, 45, 43, 0.111);
+  --inline-code-border: rgba(45, 45, 43, 0.13);
   --border-hover: color-mix(in srgb, var(--text) 18%, var(--bg-content));
 
   --secondary-foreground: #353531;
