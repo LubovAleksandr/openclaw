@@ -252,8 +252,7 @@ it("detaches only decoder-owned listeners after the kill fallback", async () => 
   const error = new Error("queued output error");
   child.stderr!.destroy(error);
   adapter.dispose();
-  expect(child.stdout).toMatchObject({ destroyed: true });
-  expect(child.stderr).toMatchObject({ destroyed: true });
+  expect([child.stdout?.destroyed, child.stderr?.destroyed]).toEqual([true, true]);
   expect(child.stderr!.errored).toBe(error);
   child.stdout!.emit("data", Buffer.from("late stdout"));
   child.stderr!.emit("data", Buffer.from("late stderr"));
@@ -303,15 +302,13 @@ it.each(["open", "closed"] as const)(
       emitClose(null, "SIGKILL");
     }
     await advancePending(settled, 1_000);
-    expect(child.stdout?.destroyed).toBe(false);
-    expect(child.stderr?.destroyed).toBe(false);
+    expect([child.stdout?.destroyed, child.stderr?.destroyed]).toEqual([false, false]);
     complete?.();
     await vi.advanceTimersByTimeAsync(0);
     if (streams === "open") {
       await advancePending(settled, 249);
       await vi.advanceTimersByTimeAsync(1);
-      expect(child.stdout?.destroyed).toBe(true);
-      expect(child.stderr?.destroyed).toBe(true);
+      expect([child.stdout?.destroyed, child.stderr?.destroyed]).toEqual([true, true]);
     }
     expect(settled).toHaveBeenCalledWith({ code: null, signal: "SIGKILL" });
   },
@@ -323,8 +320,7 @@ it("preserves descendant output after ordinary Windows exit", async () => {
   const settled = watch(adapter.wait());
   emitExit(0);
   await advancePending(settled, 1_000);
-  expect(child.stdout?.destroyed).toBe(false);
-  expect(child.stderr?.destroyed).toBe(false);
+  expect([child.stdout?.destroyed, child.stderr?.destroyed]).toEqual([false, false]);
   child.stdout?.emit("data", Buffer.from("late stdout"));
   child.stderr?.emit("data", Buffer.from("late stderr"));
   child.stdout?.emit("end");

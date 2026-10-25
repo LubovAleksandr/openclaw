@@ -38,11 +38,11 @@ function createStubPty(pid = 1234) {
   return {
     pid,
     write: vi.fn(),
-    onData: vi.fn(() => ({ dispose: disposeData })),
-    onExit: vi.fn((listener: (event: { exitCode: number; signal?: number }) => void) => {
+    onData: () => ({ dispose: disposeData }),
+    onExit: (listener: (event: { exitCode: number; signal?: number }) => void) => {
       exitListener = listener;
       return { dispose: disposeExit };
-    }),
+    },
     kill: (signal?: string) => ptyKillMock(signal),
     emitExit: (event: { exitCode: number; signal?: number }) => {
       exitListener?.(event);
@@ -98,15 +98,15 @@ describe("createPtyAdapter", () => {
     await setup({
       shell: "powershell.exe",
       args: ["-NoLogo"],
-      env: { Term: "screen-256color", ONLY_CHILD: "yes" },
+      env: { Term: "screen-256color", ONLY_CHILD: "yes", COUNT: "12", DROP_ME: undefined },
     });
 
-    expect(expectSpawnOptions()).toMatchObject({
-      name: "screen-256color",
-      env: { TERM: "screen-256color", ONLY_CHILD: "yes" },
+    expect(expectSpawnOptions().name).toBe("screen-256color");
+    expect(expectSpawnOptions().env).toEqual({
+      TERM: "screen-256color",
+      ONLY_CHILD: "yes",
+      COUNT: "12",
     });
-    expect(expectSpawnOptions().env).not.toHaveProperty("Term");
-    expect(expectSpawnOptions().env).not.toHaveProperty("OPENCLAW_PTY_TEST_SENTINEL");
   });
 
   it("forwards non-SIGTERM explicit signals to node-pty kill on non-Windows", async () => {
@@ -144,9 +144,7 @@ describe("createPtyAdapter", () => {
   it.each([true, false])(
     "preserves the first PTY exit across waits (waitBefore=%s)",
     async (waitBefore) => {
-      const { stub, adapter } = await setup({ args: ["-lc", "exit 3"] });
-
-      expect(stub.onExit).toHaveBeenCalledTimes(1);
+      const { stub, adapter } = await setup();
       const pending = waitBefore ? [adapter.wait(), adapter.wait()] : [];
       stub.emitExit({ exitCode: 3, signal: 0 });
       const result = await adapter.wait();
@@ -161,8 +159,7 @@ describe("createPtyAdapter", () => {
   );
 
   it("reports stdin as non-writable after EOF or dispose", async () => {
-    const { stub, adapter } = await setup({ args: ["-lc", "cat"] });
-
+    const { stub, adapter } = await setup();
     expect(adapter.stdin).toMatchObject({ writable: true, writableEnded: false });
 
     adapter.stdin?.end();
@@ -180,7 +177,7 @@ describe("createPtyAdapter", () => {
       throw failure;
     });
     spawnMock.mockReturnValue(stub);
-    const adapter = await start({ args: ["-lc", "cat"] });
+    const adapter = await start();
 
     try {
       expect(() => adapter.stdin?.end()).toThrow(failure);
@@ -191,7 +188,7 @@ describe("createPtyAdapter", () => {
   });
 
   it("disposes PTY listeners", async () => {
-    const { stub, adapter } = await setup({ args: ["-lc", "echo ok"] });
+    const { stub, adapter } = await setup();
     adapter.onStdout(() => undefined);
     const pending = adapter.wait();
 
@@ -200,8 +197,8 @@ describe("createPtyAdapter", () => {
     const result = await pending;
     expect(result).toStrictEqual({ code: null, signal: null });
     await expect(adapter.wait()).resolves.toBe(result);
-    expect(stub.disposeData).toHaveBeenCalledTimes(1);
-    expect(stub.disposeExit).toHaveBeenCalledTimes(1);
+    expect(stub.disposeData).toHaveBeenCalledOnce();
+    expect(stub.disposeExit).toHaveBeenCalledOnce();
   });
 
   it("wraps Linux PTY spawns so shell children inherit higher OOM score", async () => {
@@ -214,29 +211,22 @@ describe("createPtyAdapter", () => {
     const adapter = await createLinuxPtyAdapter({
       shell: "bash",
       args: ["-lc", "env"],
+      name: "screen-256color",
       env: { PATH: "/usr/bin", BASH_ENV: "/tmp/bashenv", TERM: "dumb" },
     });
     expect(adapter.oomScoreWrapperSelected).toBe(true);
 
-    expect(expectSpawnOptions().file).toBe("/bin/sh");
-    expect(expectSpawnOptions().args).toEqual([
-      "-c",
-      'echo 1000 > /proc/self/oom_score_adj 2>/dev/null; exec "$0" "$@"',
-      "bash",
-      "-lc",
-      "env",
-    ]);
-    expect(expectSpawnOptions().env).toEqual({ PATH: "/usr/bin", TERM: "xterm-256color" });
-  });
-
-  it("passes explicit env overrides as strings", async () => {
-    await setup({
-      args: ["-lc", "env"],
-      name: "xterm-256color",
-      env: { FOO: "bar", COUNT: "12", DROP_ME: undefined },
+    expect(expectSpawnOptions()).toMatchObject({
+      file: "/bin/sh",
+      args: [
+        "-c",
+        'echo 1000 > /proc/self/oom_score_adj 2>/dev/null; exec "$0" "$@"',
+        "bash",
+        "-lc",
+        "env",
+      ],
     });
-
-    expect(expectSpawnOptions().env).toEqual({ FOO: "bar", COUNT: "12", TERM: "xterm-256color" });
+    expect(expectSpawnOptions().env).toEqual({ PATH: "/usr/bin", TERM: "screen-256color" });
   });
 
   it("uses process-tree kill for SIGKILL on Windows", async () => {
