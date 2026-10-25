@@ -42,12 +42,10 @@ export function createControlUiMockSessionSubscriptions(
         sessionKey: key,
         agentId: params.agentId,
       });
+      const error = isRecord(payload) ? payload["__mockError"] : undefined;
       return {
         key,
-        initialHistory:
-          isRecord(payload) && isRecord(payload.__mockError)
-            ? { ok: false, error: payload.__mockError }
-            : { ok: true, payload },
+        initialHistory: isRecord(error) ? { ok: false, error } : { ok: true, payload },
       };
     },
     createClient(lifecycle?: {

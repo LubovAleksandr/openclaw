@@ -24,7 +24,7 @@ it("serves requested initial history through the startup response owner", async 
       payload: { messages, sessionId: notes.sessionId, sessionInfo: notes },
     },
   });
-  const delta = { kind: "not-modified", deltaCursor: "next", messages: [] };
+  const delta = { kind: "delta", deltaCursor: "next", messages: [] };
   client.controls.setMethodResponse("chat.startup", {
     cases: [{ match: { sessionKey: notes.key, cursor: "cached" }, response: delta }],
   });

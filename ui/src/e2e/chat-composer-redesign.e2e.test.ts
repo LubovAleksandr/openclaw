@@ -101,6 +101,15 @@ suite.define(() => {
       const message =
         "Your refresh token has already been used to generate a new access token. Please try signing in again.";
       const gateway = await installMockGateway(page, {
+        sessions: [
+          {
+            key: "agent:main:main",
+            sessionId: "auth-failed-session",
+            status: "running",
+            hasActiveRun: true,
+            activeRunIds: ["auth-failed-run"],
+          },
+        ],
         inFlightRun: { runId: "auth-failed-run", text: "" },
         models: [modelFixture({ available: false, unavailableReason: "auth-failed" })],
       });

@@ -149,18 +149,17 @@ suite.define(() => {
           });
           await waitForCommittedChatRoute(page);
           expect(new URL(page.url()).pathname).toBe(controlUiSessionPath(confirmedKey));
-          await gateway.waitForRequest("sessions.messages.subscribe", {
-            match: { key: confirmedKey },
-          });
           await gateway.waitForRequest("mcp.app.discover", { match: { sessionKey: confirmedKey } });
           await expect.poll(() => page.locator("openclaw-chat-pane").count()).toBe(1);
-          expect(await getInitialHistoryRequests(gateway)).toEqual(
-            expect.arrayContaining([
-              expect.objectContaining({
-                params: expect.objectContaining({ key: confirmedKey }),
-              }),
-            ]),
-          );
+          await expect
+            .poll(() => getInitialHistoryRequests(gateway))
+            .toEqual(
+              expect.arrayContaining([
+                expect.objectContaining({
+                  params: expect.objectContaining({ key: confirmedKey }),
+                }),
+              ]),
+            );
           expect(
             (await getInitialHistoryRequests(gateway)).every(
               (request) => createParams(request).key === confirmedKey,

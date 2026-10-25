@@ -21,6 +21,9 @@ suite.define(() => {
       const fullText = `# Museum inventory\n\nThe restored exhibit is ${keyword}.`;
       const gateway = await installMockGateway(page, {
         sessionKey,
+        sessions: [
+          { key: sessionKey, sessionId: "recovered-search-session", lifecycleRevision: 1 },
+        ],
         deferredMethods: ["chat.message.get"],
         historyMessages: [
           {
