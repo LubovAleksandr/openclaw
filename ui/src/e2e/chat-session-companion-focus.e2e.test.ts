@@ -237,8 +237,7 @@ suite.define(() => {
       holdRail,
       url: shared ? controlUiSessionUrl(suite.server.baseUrl, sessionKeys[0]!) : undefined,
       scenario: {
-        ...pendingAsk,
-        ...(shared ? { sessionKey: sessionKeys[0] } : {}),
+        ...(shared ? { sessionKey: sessionKeys[0] } : pendingAsk),
         sessions: split
           ? undefined
           : shared
@@ -267,6 +266,10 @@ suite.define(() => {
           : page;
       const main = mainInput(scope);
       const side = split ? sideInput(scope) : scope.locator(".chat-session-rail__input");
+      if (shared) {
+        // Method deferrals are one-shot, so each shared-page case arms its own request.
+        await gateway.deferNext("sessions.companion.ask", { sessionKey });
+      }
       await enterSideCommand(scope);
       await gateway.waitForRequest(
         "sessions.companion.ask",

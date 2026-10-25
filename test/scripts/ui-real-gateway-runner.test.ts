@@ -30,7 +30,8 @@ vi.mock("../../scripts/lib/managed-child-process.mts", async (original) => ({
   ...(await original<typeof import("../../scripts/lib/managed-child-process.mts")>()),
   runManagedCommand: vi.fn(),
 }));
-vi.mock("../../scripts/lib/vitest-worker-run.mts", () => ({
+vi.mock("../../scripts/lib/vitest-worker-run.mts", async (original) => ({
+  ...(await original<typeof import("../../scripts/lib/vitest-worker-run.mts")>()),
   createVitestWorkerRun: vi.fn(),
 }));
 vi.mock("../../scripts/lib/vitest-worker-descriptor.mts", async (original) => ({
