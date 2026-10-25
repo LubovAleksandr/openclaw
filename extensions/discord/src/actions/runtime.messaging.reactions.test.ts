@@ -1,5 +1,5 @@
 import { ChannelType } from "discord-api-types/v10";
-import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
+import type { DiscordConfig, OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { GatewayPlugin } from "../internal/gateway.js";
 import * as discordRest from "../internal/rest.js";
@@ -10,14 +10,11 @@ import { handleDiscordAction } from "./runtime.js";
 
 type DiscordActionContext = Parameters<typeof handleDiscordMessageAction>[0];
 
-const cfg: OpenClawConfig = {
-  channels: {
-    discord: {
-      defaultAccount: "work",
-      accounts: { work: { token: "test-token", groupPolicy: "allowlist" } },
-    },
-  },
-};
+const config = (discord: DiscordConfig): OpenClawConfig => ({ channels: { discord } });
+const cfg = config({
+  defaultAccount: "work",
+  accounts: { work: { token: "test-token", groupPolicy: "allowlist" } },
+});
 const currentDmContext = {
   currentChannelProvider: "discord",
   currentChannelId: "111",
@@ -44,6 +41,10 @@ function readReactions(overrides: Partial<DiscordActionContext> = {}) {
 
 describe("Discord reaction read target resolution", () => {
   let loopback: Awaited<ReturnType<typeof createDiscordLoopbackRest>>;
+  const expectRequests = (requests: [string, string][]) =>
+    expect(loopback.requests.map(({ method, path }) => [method, path])).toEqual(requests);
+  const channelRequest: [string, string] = ["GET", "/v10/channels/111"];
+  const messageRequest: [string, string] = ["GET", "/v10/channels/111/messages/444"];
 
   beforeEach(async () => {
     loopback = await createDiscordLoopbackRest({
@@ -72,10 +73,7 @@ describe("Discord reaction read target resolution", () => {
     const result = await readReactions({ params: { to: "<@222>", messageId: "444" } });
 
     expect(result.details).toEqual({ ok: true, reactions: [] });
-    expect(loopback.requests.map(({ method, path }) => [method, path])).toEqual([
-      ["GET", "/v10/channels/111"],
-      ["GET", "/v10/channels/111/messages/444"],
-    ]);
+    expectRequests([channelRequest, messageRequest]);
   });
 
   it.each<[string, Partial<DiscordActionContext>]>([
@@ -99,17 +97,11 @@ describe("Discord reaction read target resolution", () => {
   it("applies disabled-DM policy after resolving the current user target", async () => {
     await expect(
       readReactions({
-        cfg: {
-          channels: {
-            discord: { accounts: { work: { token: "test-token", dmPolicy: "disabled" } } },
-          },
-        },
+        cfg: config({ accounts: { work: { token: "test-token", dmPolicy: "disabled" } } }),
       }),
     ).rejects.toThrow("Discord read target channel is not allowed.");
 
-    expect(loopback.requests.map(({ method, path }) => [method, path])).toEqual([
-      ["GET", "/v10/channels/111"],
-    ]);
+    expectRequests([channelRequest]);
   });
 
   it("retains direct-operator DM resolution for reaction reads", async () => {
@@ -120,20 +112,14 @@ describe("Discord reaction read target resolution", () => {
     });
 
     expect(result.details).toEqual({ ok: true, reactions: [] });
-    expect(loopback.requests.map(({ method, path }) => [method, path])).toEqual([
-      ["POST", "/v10/users/@me/channels"],
-      ["GET", "/v10/channels/111"],
-      ["GET", "/v10/channels/111/messages/444"],
-    ]);
+    expectRequests([["POST", "/v10/users/@me/channels"], channelRequest, messageRequest]);
     expect(loopback.requests[0]).toMatchObject({ body: JSON.stringify({ recipient_id: "222" }) });
   });
 });
 
 describe("handleDiscordAction presence", () => {
   const mockUpdatePresence = vi.fn();
-  const defaultDiscordConfig: OpenClawConfig = {
-    channels: { discord: { token: "test-token", actions: { presence: true } } },
-  };
+  const defaultDiscordConfig = config({ token: "test-token", actions: { presence: true } });
   function createMockGateway(connected = true): GatewayPlugin {
     return {
       isConnected: connected,
@@ -142,6 +128,14 @@ describe("handleDiscordAction presence", () => {
   }
   function setActionPresence(params: Record<string, unknown>) {
     return handleDiscordAction({ ...params, action: "setPresence" }, defaultDiscordConfig);
+  }
+  function expectPresence(activities: unknown[], status = "online") {
+    expect(mockUpdatePresence).toHaveBeenCalledWith({
+      since: null,
+      activities,
+      status,
+      afk: false,
+    });
   }
 
   afterEach(() => clearGateways());
@@ -152,28 +146,23 @@ describe("handleDiscordAction presence", () => {
   });
 
   it.each([
-    {
-      name: "mixed-case streaming activity with URL",
-      params: {
+    [
+      "mixed-case streaming activity with URL",
+      {
         activityType: "StReAmInG",
         activityName: "My Stream",
         activityUrl: "https://twitch.tv/example",
       },
-      activities: [{ name: "My Stream", type: 1, url: "https://twitch.tv/example" }],
-    },
-    {
-      name: "custom activity using state",
-      params: { activityType: "custom", activityState: "Vibing" },
-      activities: [{ name: "", type: 4, state: "Vibing" }],
-    },
-  ])("sets $name", async ({ params, activities }) => {
+      [{ name: "My Stream", type: 1, url: "https://twitch.tv/example" }],
+    ],
+    [
+      "custom activity using state",
+      { activityType: "custom", activityState: "Vibing" },
+      [{ name: "", type: 4, state: "Vibing" }],
+    ],
+  ] as const)("sets %s", async (_name, params, activities) => {
     const result = await setActionPresence(params);
-    expect(mockUpdatePresence).toHaveBeenCalledWith({
-      since: null,
-      activities,
-      status: "online",
-      afk: false,
-    });
+    expectPresence([...activities]);
     expect(result.details).toEqual({ ok: true, status: "online", activities });
   });
 
@@ -194,7 +183,7 @@ describe("handleDiscordAction presence", () => {
     await expect(
       handleDiscordAction(
         { action: "setPresence", status: "online" },
-        { channels: { discord: { actions: { presence: false } } } },
+        config({ actions: { presence: false } }),
       ),
     ).rejects.toThrow(/disabled/);
   });
@@ -214,22 +203,13 @@ describe("handleDiscordAction presence", () => {
     registerGateway("ops", createMockGateway());
     await handleDiscordAction(
       { action: "setPresence", status: "idle" },
-      {
-        channels: {
-          discord: {
-            actions: { presence: true },
-            defaultAccount: "ops",
-            accounts: { ops: { token: "ops-token" } },
-          },
-        },
-      },
+      config({
+        actions: { presence: true },
+        defaultAccount: "ops",
+        accounts: { ops: { token: "ops-token" } },
+      }),
     );
-    expect(mockUpdatePresence).toHaveBeenCalledWith({
-      since: null,
-      activities: [],
-      status: "idle",
-      afk: false,
-    });
+    expectPresence([], "idle");
   });
 
   it("rejects unknown actions", async () => {

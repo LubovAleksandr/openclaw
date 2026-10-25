@@ -146,11 +146,7 @@ function expectPost(body: Record<string, unknown>) {
 
 function expectEdit(target: string, content: unknown, fields: Record<string, unknown> = {}) {
   expect(writes()).toEqual([
-    {
-      method: "PATCH",
-      path: `${messagePath(target)}/${messageId}`,
-      body: { content, ...fields },
-    },
+    { method: "PATCH", path: `${messagePath(target)}/${messageId}`, body: { content, ...fields } },
   ]);
 }
 
@@ -299,18 +295,14 @@ describe("Discord action message bodies", () => {
     expect(writes()).toHaveLength(1);
   });
 
-  it("clears content while retaining attachments", async () => {
-    await edit("");
-    expectEdit(channelId, "");
-    expect(current).toEqual({ content: "", attachments: [attachment] });
-  });
-
-  it("normalizes identifiers without normalizing the message body", async () => {
-    const content = "  Changed caption\n";
-    await edit(content, cfg, ` ${messageId} `);
-    expectEdit(channelId, content);
-    expect(current).toEqual({ content, attachments: [attachment] });
-  });
+  it.each(["", "  Changed caption\n"])(
+    "preserves body %j and attachments while normalizing IDs",
+    async (content) => {
+      await edit(content, cfg, ` ${messageId} `);
+      expectEdit(channelId, content);
+      expect(current).toEqual({ content, attachments: [attachment] });
+    },
+  );
 
   it.each([
     ["absent edit content", () => edit(undefined), /required/],
