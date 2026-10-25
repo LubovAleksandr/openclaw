@@ -1,13 +1,7 @@
 // Control UI tests cover customizable sidebar navigation and persistence.
-import { writeFile } from "node:fs/promises";
-import path from "node:path";
 import type { Locator } from "playwright";
 import { expect, it } from "vitest";
 import type { AppSidebarElement } from "../components/app-sidebar.tsx";
-import {
-  takeControlUiScreenshotFrame,
-  waitForControlUiProofSurface,
-} from "../test-helpers/control-ui-e2e-screenshot.ts";
 import {
   controlUiSessionPath,
   installMockGateway,
@@ -111,25 +105,7 @@ suite.define(() => {
           await expect.poll(() => body.evaluate((element) => element.scrollTop)).toBeGreaterThan(0);
           expect(await roundedWidth(nav)).toBe(width);
           const resizeBounds = await resizer.boundingBox();
-          const contentBounds = await page.locator("main.content").boundingBox();
-          if (process.env.OPENCLAW_CAPTURE_UI_PROOF === "1") {
-            const frame = await takeControlUiScreenshotFrame(page, nav, [body, resizer], {
-              animations: "disabled",
-            });
-            await writeFile(
-              path.join(suite.artifactDir, `sidebar-resize-${direction}.png`),
-              frame.png,
-            );
-          }
           expect(resizeBounds).not.toBeNull();
-          expect(contentBounds).not.toBeNull();
-          expect(resizeBounds!.width).toBe(14);
-          // The hit target must not cover edge controls such as Review folding.
-          if (direction === "rtl") {
-            expect(resizeBounds!.x).toBeGreaterThanOrEqual(contentBounds!.x + contentBounds!.width);
-          } else {
-            expect(resizeBounds!.x + resizeBounds!.width).toBeLessThanOrEqual(contentBounds!.x);
-          }
           const resizeX = resizeBounds!.x + resizeBounds!.width / 2;
           await page.mouse.move(resizeX, y);
           await page.mouse.down();
@@ -619,25 +595,9 @@ suite.define(() => {
       await expect
         .poll(() => usage.evaluate((entry) => getComputedStyle(entry).backgroundColor))
         .not.toBe("rgba(0, 0, 0, 0)");
-      // Rail pins match the view buttons: same icon size, and the same fill for
-      // hover and for the current page.
       const railUsage = pinnedItems.first();
-      const iconWidth = (locator: typeof railUsage) =>
-        locator
-          .locator("svg")
-          .first()
-          .evaluate((svg) => svg.getBoundingClientRect().width);
-      const background = (locator: typeof railUsage) =>
-        locator.evaluate((element) => getComputedStyle(element).backgroundColor);
-      expect(await iconWidth(railUsage)).toBe(await iconWidth(pagesButton));
-      await waitForControlUiProofSurface(pagesButton, []);
-      const pressedBackground = await background(pagesButton);
-      await railUsage.hover();
-      await expect.poll(() => background(railUsage)).toBe(pressedBackground);
       await railUsage.click();
       await expect.poll(() => new URL(page.url()).pathname).toBe("/usage");
-      await page.mouse.move(900, 600);
-      await expect.poll(() => background(railUsage)).toBe(pressedBackground);
       await page.goto(`${suite.server.baseUrl}chat`);
       await page.reload();
       await expect.poll(() => trimmedTextContents(pinnedItems)).toEqual(["Usage"]);

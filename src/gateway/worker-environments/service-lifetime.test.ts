@@ -744,7 +744,7 @@ describe("worker environment service", () => {
     expect(provision).toHaveBeenCalledTimes(1);
   });
 
-  it("retains a destroy accepted before shutdown while it waits for the lock", async () => {
+  it("retains a destroy queued behind bootstrap when shutdown interrupts it", async () => {
     const { promise: bootstrapPending, resolve: finishBootstrap } = createDeferred();
     support.testState.bootstrapWorker = vi.fn(async () => {
       await bootstrapPending;
@@ -762,23 +762,23 @@ describe("worker environment service", () => {
     const environmentId = support.testState.store.list()[0]?.environmentId;
     expect(environmentId).toBeTruthy();
     const teardown = workerService.destroy(environmentId!);
-    const teardownResult = expect(teardown).rejects.toMatchObject({
-      code: "provider_failure",
-      message: "Worker reconciliation paused",
-    } satisfies Partial<WorkerEnvironmentServiceError>);
+    const teardownResult = expect(teardown).rejects.toThrow("Worker reconciliation paused");
 
     const stopping = workerService.stop();
     finishBootstrap?.();
 
     await expect(creation).resolves.toMatchObject({ state: "ready" });
-    await Promise.all([teardownResult, stopping]);
+    await teardownResult;
+    await stopping;
     expect(destroy).not.toHaveBeenCalled();
-    expect(support.testState.store.get(environmentId!)).toMatchObject({
+    expect(workerService.get(environmentId!)).toMatchObject({
       state: "destroying",
-      leaseId: "lease-1",
-      destroyRequestedAtMs: expect.any(Number),
       lastError: "Worker reconciliation paused",
     });
+    const restarted = support.createService(support.createProvider({ destroy }));
+    await restarted.reconcileOnce();
+    expect(restarted.get(environmentId!)?.state).toBe("destroyed");
+    expect(destroy).toHaveBeenCalledTimes(1);
   });
 
   it.each([false, true])(
