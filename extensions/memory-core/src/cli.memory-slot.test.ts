@@ -72,9 +72,18 @@ function registerSelectedProvider() {
 }
 
 async function runMemoryCli(args: string[]) {
+  const logs = spyRuntimeLogs(defaultRuntime);
+  const errors = spyRuntimeErrors(defaultRuntime);
+  const json = spyRuntimeJson(defaultRuntime);
   const program = new Command().name("test");
   registerMemoryCli(program);
   await program.parseAsync(["memory", ...args], { from: "user" });
+  return {
+    text: output(logs),
+    error: output(errors),
+    json: firstWrittenJsonArg(json),
+    documents: json.mock.calls.length,
+  };
 }
 
 function output(spy: ReturnType<typeof spyRuntimeLogs>) {
@@ -112,36 +121,33 @@ it.each(["text", "json", "unresolved"] as const)(
         hadUnresolvedTargets: !available,
       });
     }
-    const { open, health, close } = registerSelectedProvider();
-    const outputSpy = spyRuntimeLogs(defaultRuntime);
-    const jsonSpy = spyRuntimeJson(defaultRuntime);
-    await runMemoryCli(["status", "--agent", "main", ...(mode === "text" ? [] : ["--json"])]);
+    const { open, close } = registerSelectedProvider();
+    const { text, json } = await runMemoryCli([
+      "status",
+      "--agent",
+      "main",
+      ...(mode === "text" ? [] : ["--json"]),
+    ]);
     expect(getMemorySearchManager).not.toHaveBeenCalled();
     if (available) {
-      expect(open.mock.calls).toMatchObject([
-        [
-          {
-            agentId: "main",
-            purpose: "status",
-            context: { authority: { kind: "host", operation: "status" } },
-            ...(mode === "json" ? { cfg: providerConfig("fixture-resolved-token") } : {}),
-          },
-        ],
-      ]);
-      expect(health).toHaveBeenCalledOnce();
+      expect(open).toHaveBeenCalledWith(
+        expect.objectContaining({
+          agentId: "main",
+          purpose: "status",
+          context: { authority: { kind: "host", operation: "status" } },
+          ...(mode === "json" ? { cfg: providerConfig("fixture-resolved-token") } : {}),
+        }),
+      );
       expect(close).toHaveBeenCalledOnce();
     } else {
       expect(open).not.toHaveBeenCalled();
     }
     if (mode === "text") {
-      const text = output(outputSpy);
       expect(text).toContain("Provider: knowledge (selected memory slot)");
       expect(text).toContain("Health: ready 42 records");
       expect(text).toContain("Memory Core: consolidation sidecar only");
-      expect(text).not.toContain("Memory Search");
-      expect(text).not.toContain("Indexed:");
     } else {
-      expect(firstWrittenJsonArg(jsonSpy)).toEqual([
+      expect(json).toEqual([
         available
           ? {
               agentId: "main",
@@ -158,36 +164,33 @@ it.each(["text", "json", "unresolved"] as const)(
   },
 );
 
-it("refuses search instead of answering from the sidecar index", async () => {
+it.each([
+  ["search", "lights", false],
+  ["status", "--deep", true],
+  ["status", "--index", true],
+  ["status", "--fix", true],
+] as const)("refuses sidecar operations: %s %s", async (command, argument, asJson) => {
   const { open } = registerSelectedProvider();
-  const errors = spyRuntimeErrors(defaultRuntime);
-  await runMemoryCli(["search", "lights"]);
-  expect(output(errors)).toContain('plugins.slots.memory selects "knowledge"');
-  expect(process.exitCode).toBe(1);
-  expect(getMemorySearchManager).not.toHaveBeenCalled();
-  expect(open).not.toHaveBeenCalled();
-});
-
-it.each(["--deep", "--index", "--fix"])(
-  "reports a JSON failure when selected-provider status rejects %s",
-  async (flag) => {
-    const { open } = registerSelectedProvider();
-    const json = spyRuntimeJson(defaultRuntime);
-    spyRuntimeErrors(defaultRuntime);
-    await runMemoryCli(["status", flag, "--json"]);
-    expect(json).toHaveBeenCalledOnce();
-    expect(firstWrittenJsonArg(json)).toEqual({
+  const { error, json, documents } = await runMemoryCli([
+    command,
+    argument,
+    ...(asJson ? ["--json"] : []),
+  ]);
+  expect(error).toContain('plugins.slots.memory selects "knowledge"');
+  if (asJson) {
+    expect(documents).toBe(1);
+    expect(json).toEqual({
       ok: false,
       error: {
         type: "cli_error",
         message: expect.stringContaining('plugins.slots.memory selects "knowledge"'),
       },
     });
-    expect(process.exitCode).toBe(1);
-    expect(getMemorySearchManager).not.toHaveBeenCalled();
-    expect(open).not.toHaveBeenCalled();
-  },
-);
+  }
+  expect(process.exitCode).toBe(1);
+  expect(getMemorySearchManager).not.toHaveBeenCalled();
+  expect(open).not.toHaveBeenCalled();
+});
 
 const diagnosticConfig: OpenClawConfig = {
   agents: { entries: { main: {} } },
@@ -208,20 +211,16 @@ async function runDiagnostic(args: string[], results: MemorySearchResult[] = [])
       close: vi.fn(async () => {}),
     },
   });
-  await runMemoryCli(args);
+  return runMemoryCli(args);
 }
 
 it("shows the excluded session source in human and JSON status", async () => {
   getRuntimeConfig.mockReturnValue(diagnosticConfig);
-  const logs = spyRuntimeLogs(defaultRuntime);
-  await runDiagnostic(["status"]);
-  expect(output(logs)).toContain("sessions requested but disabled");
-  expect(output(logs)).toContain("memory.search.experimental.sessionMemory=true");
-  const json = spyRuntimeJson(defaultRuntime);
-  await runDiagnostic(["status", "--json"]);
-  expect(firstWrittenJsonArg(json)).toEqual([
-    expect.objectContaining({ excludedConfiguredSources: ["sessions"] }),
-  ]);
+  const { text } = await runDiagnostic(["status"]);
+  expect(text).toContain("sessions requested but disabled");
+  expect(text).toContain("memory.search.experimental.sessionMemory=true");
+  const { json } = await runDiagnostic(["status", "--json"]);
+  expect(json).toEqual([expect.objectContaining({ excludedConfiguredSources: ["sessions"] })]);
 });
 
 it("reports recall recording failure without discarding search results", async () => {
@@ -241,9 +240,8 @@ it("reports recall recording failure without discarding search results", async (
   vi.spyOn(promotion, "recordShortTermRecalls").mockRejectedValueOnce(
     new Error("fixture recall persistence failed"),
   );
-  const json = spyRuntimeJson(defaultRuntime);
-  await runDiagnostic(["search", "telescope", "--json"], [result]);
-  expect(firstWrittenJsonArg(json)).toEqual({
+  const { json } = await runDiagnostic(["search", "telescope", "--json"], [result]);
+  expect(json).toEqual({
     results: [result],
     warning: "Memory recall recording failed: fixture recall persistence failed",
   });

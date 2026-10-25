@@ -21,6 +21,22 @@ function recordLine(...args: Parameters<typeof messageRecord>) {
   return JSON.stringify(messageRecord(...args)) + "\n";
 }
 
+function corpusSource(
+  overrides: Partial<Parameters<typeof sessionIngestionSourceFromCorpus>[0]> = {},
+) {
+  return sessionIngestionSourceFromCorpus(
+    {
+      agentId: "main",
+      artifactKind: "active-session",
+      sessionFile: path.join(os.tmpdir(), "foo.jsonl.jsonl"),
+      sessionId: "foo.jsonl",
+      sessionKind: "interactive",
+      ...overrides,
+    },
+    "backfill",
+  );
+}
+
 async function createArchive() {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-session-ingestion-"));
   tempDirs.push(dir);
@@ -45,37 +61,16 @@ function checkpoint(scan: Awaited<ReturnType<typeof scanSessionIngestionSource>>
 }
 
 describe("session ingestion", () => {
-  it.each(["unknown"] as const)("excludes %s sessions from memory ingestion", (sessionKind) => {
-    expect(
-      sessionIngestionSourceFromCorpus(
-        {
-          agentId: "main",
-          artifactKind: "active-session",
-          transcriptSource: "sqlite",
-          sessionFile: "synthetic-session",
-          sessionId: "synthetic-session",
-          sessionKind,
-        },
-        "backfill",
-      ),
-    ).toBeNull();
+  it("excludes unknown sessions from memory ingestion", () => {
+    expect(corpusSource({ sessionKind: "unknown", transcriptSource: "sqlite" })).toBeNull();
   });
 
   it("preserves file-backed scope identity for a session id ending in .jsonl", () => {
-    const sessionId = "foo.jsonl";
-    const source = sessionIngestionSourceFromCorpus(
-      {
-        agentId: "main",
-        artifactKind: "active-session",
-        sessionFile: path.join(os.tmpdir(), "foo.jsonl.jsonl"),
-        sessionId,
-        sessionKind: "interactive",
-      },
-      "backfill",
-    );
-
-    expect(source?.scope).toBe(`main:${sessionId}`);
-    expect(source?.sessionOrigin).toEqual({ agentId: "main", sessionId });
+    const source = corpusSource();
+    expect({ scope: source?.scope, sessionOrigin: source?.sessionOrigin }).toEqual({
+      scope: "main:foo.jsonl",
+      sessionOrigin: { agentId: "main", sessionId: "foo.jsonl" },
+    });
   });
 
   it("verifies backfill content despite an unchanged size and mtime", async () => {
@@ -151,10 +146,7 @@ describe("session ingestion", () => {
       const previous = checkpoint(await scan());
       let current: unknown[] = [...original, messageRecord("message-3", "Charlie durable note.")];
       if (change === "text") {
-        current[0] = {
-          ...firstRecord,
-          message: { ...firstRecord.message, content: "Altered durable note." },
-        };
+        current[0] = messageRecord("message-1", "Altered durable note.");
       } else if (change === "timestamp") {
         current[0] = {
           ...firstRecord,
