@@ -70,7 +70,8 @@ if (values.help) {
                                   Three live Gateways, serial setup and interleaved measured cells.
 Seed with team-shape-fixture.ts: --sessions 1000 --runs 0 --cron 1000 --projects 0
   --transcript-mib 0 --long-transcript-entries 2000 --long-transcript-sessions 1.
-The Gateway writes only isolated synthetic state. Use separate fixture copies for paired runs.
+The Gateway writes only isolated synthetic state. Generate each fixture at its final root;
+cron storage keys are absolute, so copying an existing fixture does not preserve its job inventory.
 Timing includes ordinary diagnostics observers; JSON and socket-write measurements are synchronous
 main-isolate subsets, not disjoint handler phases. CPU profiles attribute residual shaping/framing.`);
   process.exit(0);
