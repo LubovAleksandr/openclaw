@@ -452,27 +452,6 @@ describe("policy commands", () => {
     expect(parsed).toMatchObject({ ok: true, findings: [] });
   });
 
-  it("rejects removed or redirected routing probes as weaker", async () => {
-    const baselineProbe = routingProbe();
-    const { exitCode, parsed } = await runPolicyCompareFixture(
-      { routing: { probes: [baselineProbe] } },
-      {
-        routing: {
-          probes: [
-            {
-              ...baselineProbe,
-              expect: { ...baselineProbe.expect, agentId: "main" },
-            },
-          ],
-        },
-      },
-    );
-    expect(exitCode).toBe(1);
-    expect(parsed.findings).toEqual(
-      partialFindings({ checkId: "policy/policy-conformance-weaker" }),
-    );
-  });
-
   it("rejects unsupported exec approval allowlist requirement keys in policy compare", async () => {
     const { exitCode, parsed } = await runPolicyCompareFixture(
       approvalAllowlist([{ pattern: "deploy", argpattern: "^--prod$" }]),

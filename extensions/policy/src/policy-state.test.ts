@@ -19,6 +19,12 @@ const partial = (value: Record<string, unknown>) => expect.objectContaining(valu
 function expectIncludes(actual: unknown, ...entries: Record<string, unknown>[]) {
   expect(actual).toEqual(expect.arrayContaining(entries.map((entry) => partial(entry))));
 }
+const toolEvidence = (id: string, line: number, fields: object) => ({
+  id,
+  source: `oc://AGENTS.md/tools/${id}`,
+  line,
+  ...fields,
+});
 const agentSource = "oc://openclaw.config/agents/entries/guest";
 const execSource = "oc://openclaw.config/agents/entries/reviewer/tools/exec";
 function execEntry(kind: "Security" | "Ask", value: string, source: string, explicit?: true) {
@@ -30,12 +36,6 @@ function execEntry(kind: "Security" | "Ask", value: string, source: string, expl
     ...(explicit === undefined ? {} : { explicit }),
   };
 }
-const guestEntry = (source: string, fields: Record<string, unknown>) => ({
-  scope: "agent",
-  agentId: "guest",
-  source: `${agentSource}/${source}`,
-  ...fields,
-});
 const approvalEntry = (index: number, pattern: string, sourceIndex: number) =>
   partial({
     id: `agent:main:allowlist:${index}`,
@@ -46,82 +46,46 @@ const approvalEntry = (index: number, pattern: string, sourceIndex: number) =>
   });
 
 describe("configured agent scanning", () => {
+  const guest = {
+    models: { "openai/gpt-5.6-luna": {} },
+    sandbox: { mode: "all", workspaceAccess: "none" },
+    tools: { deny: ["exec"], elevated: { enabled: false } },
+  };
   it.each([
+    { agents: { entries: { malformed: null, guest } }, source: agentSource },
     {
-      agents: { entries: { malformed: null, guest: { sandbox: { mode: "all" } } } },
-      source: "oc://openclaw.config/agents/entries/guest/sandbox/mode",
-    },
-    {
-      agents: { list: [null, { id: "guest", sandbox: { mode: "all" } }] },
-      source: "oc://openclaw.config/agents/list/#1/sandbox/mode",
+      agents: { list: [null, { id: "guest", ...guest }] },
+      source: "oc://openclaw.config/agents/list/#1",
     },
   ])(
-    "ignores malformed agents without renumbering their sources ($source)",
+    "scans configured agents without renumbering malformed entries ($source)",
     ({ agents, source }) => {
-      const evidence = collectPolicyEvidence({ agents });
+      const evidence = collectPolicyEvidence({
+        tools: { elevated: { enabled: true } },
+        agents: { defaults: { sandbox: { mode: "off" } }, ...agents },
+      });
+      const entry = (path: string, fields: object) => ({
+        scope: "agent",
+        agentId: "guest",
+        source: `${source}/${path}`,
+        ...fields,
+      });
       expectIncludes(
-        evidence.sandboxPosture?.filter((entry) => entry.scope === "agent"),
-        { agentId: "guest", kind: "mode", value: "all", source },
+        evidence.sandboxPosture,
+        entry("sandbox/mode", { kind: "mode", value: "all" }),
       );
-      const workspaces = evidence.agentWorkspace?.filter((entry) => entry.scope === "agent");
-      expect(new Set(workspaces?.map((entry) => entry.agentId))).toEqual(new Set(["guest"]));
+      expectIncludes(evidence.toolPosture, entry("tools/elevated/enabled", { value: false }));
+      expectIncludes(evidence.agentWorkspace, entry("sandbox/workspaceAccess", { value: "none" }));
+      const workspaces = evidence.agentWorkspace?.filter((item) => item.scope === "agent");
+      expect(new Set(workspaces?.map((item) => item.agentId))).toEqual(new Set(["guest"]));
+      expect(evidence.modelRefs).toContainEqual({
+        ref: "openai/gpt-5.6-luna",
+        provider: "openai",
+        model: "gpt-5.6-luna",
+        source: `${source}/models/"openai/gpt-5.6-luna"`,
+      });
     },
   );
-
-  const keyedConfig = {
-    tools: { elevated: { enabled: true } },
-    agents: {
-      defaults: { sandbox: { mode: "off" } },
-      entries: {
-        guest: {
-          models: { "openai/gpt-5.6-luna": {} },
-          sandbox: { mode: "all", workspaceAccess: "none" },
-          tools: { deny: ["exec"], elevated: { enabled: false } },
-        },
-      },
-    },
-  };
-
-  it("uses agents.entries across policy evidence", () => {
-    const evidence = collectPolicyEvidence(keyedConfig);
-    expectIncludes(
-      evidence.sandboxPosture,
-      guestEntry("sandbox/mode", { kind: "mode", value: "all" }),
-    );
-    expectIncludes(evidence.toolPosture, guestEntry("tools/elevated/enabled", { value: false }));
-    expectIncludes(
-      evidence.agentWorkspace,
-      guestEntry("sandbox/workspaceAccess", { value: "none" }),
-    );
-    expect(evidence.modelRefs).toContainEqual({
-      ref: "openai/gpt-5.6-luna",
-      provider: "openai",
-      model: "gpt-5.6-luna",
-      source: `${agentSource}/models/"openai/gpt-5.6-luna"`,
-    });
-  });
-
-  it("still uses legacy agents.list across policy evidence", () => {
-    const evidence = collectPolicyEvidence({
-      agents: {
-        defaults: { sandbox: { mode: "off" } },
-        list: [{ id: "legacy", models: { "openai/gpt-5.6-luna": {} }, sandbox: { mode: "all" } }],
-      },
-    });
-    expectIncludes(evidence.sandboxPosture, {
-      kind: "mode",
-      scope: "agent",
-      agentId: "legacy",
-      value: "all",
-      source: "oc://openclaw.config/agents/list/#0/sandbox/mode",
-    });
-    expect(evidence.modelRefs).toContainEqual(
-      partial({
-        ref: "openai/gpt-5.6-luna",
-        source: 'oc://openclaw.config/agents/list/#0/models/"openai/gpt-5.6-luna"',
-      }),
-    );
-  });
 
   it("keeps attestations stable across keyed entry order", () => {
     const first = {
@@ -248,23 +212,13 @@ describe("scanPolicyTools", () => {
       "  owner: support",
     );
     expect(evidence).toEqual([
-      {
-        id: "deploy-tool",
-        source: "oc://AGENTS.md/tools/deploy-tool",
-        line: 2,
+      toolEvidence("deploy-tool", 2, {
         risk: "critical",
         sensitivity: "restricted",
         owner: "ops",
         capabilities: ["IRREVERSIBLE_EXTERNAL"],
-      },
-      {
-        id: "inspect",
-        source: "oc://AGENTS.md/tools/inspect",
-        line: 3,
-        risk: "low",
-        sensitivity: "public",
-        owner: "support",
-      },
+      }),
+      toolEvidence("inspect", 3, { risk: "low", sensitivity: "public", owner: "support" }),
     ]);
   });
 
