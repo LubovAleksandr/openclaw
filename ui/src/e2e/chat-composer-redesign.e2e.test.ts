@@ -51,7 +51,7 @@ suite.define(() => {
             models: [modelFixture({ available: false, unavailableReason: reason })],
           });
           await page.goto(`${suite.server.baseUrl}chat`);
-          await gateway.waitForRequest("chat.startup");
+          await gateway.waitForRequest("sessions.messages.subscribe");
           const textarea = page.locator(".agent-chat__composer-combobox textarea");
           const sendButton = exactButton(page, "Send message");
           await expect.poll(() => textarea.isDisabled()).toBe(false);
@@ -106,7 +106,7 @@ suite.define(() => {
       });
 
       await page.goto(`${suite.server.baseUrl}chat`);
-      await gateway.waitForRequest("chat.startup");
+      await exactButton(page, "Stop generating").waitFor();
       await gateway.emitGatewayEvent("chat", {
         errorDetail: {
           provider: "openai",
@@ -134,6 +134,7 @@ suite.define(() => {
   it("keeps the loading model picker beside the microphone", async () => {
     await suite.withPage({ viewport: { width: 1280, height: 900 } }, async ({ page }) => {
       const gateway = await installMockGateway(page, {
+        subscriptionInitialHistory: false,
         deferredMethods: ["chat.startup", "models.list"],
       });
       await page.goto(`${suite.server.baseUrl}chat`);
@@ -158,7 +159,7 @@ suite.define(() => {
     await suite.withPage({ viewport: { width: 393, height: 852 } }, async ({ page }) => {
       const gateway = await installMockGateway(page);
       await page.goto(`${suite.server.baseUrl}chat`);
-      await gateway.waitForRequest("chat.startup");
+      await gateway.waitForRequest("sessions.messages.subscribe");
 
       const composer = page.locator(".agent-chat__input");
       await composer.waitFor({ state: "visible" });
@@ -214,7 +215,7 @@ suite.define(() => {
       await page.clock.install({ time: new Date("2026-01-01T00:00:00Z") });
       const gateway = await installMockGateway(page);
       await page.goto(suite.server.baseUrl + "chat");
-      await gateway.waitForRequest("chat.startup");
+      await gateway.waitForRequest("sessions.messages.subscribe");
       const textarea = page.locator(".agent-chat__input textarea");
       const voice = page.getByRole("button", { name: "Start voice input" });
       const microphonePicker = page.getByRole("button", { name: "Microphone input" });

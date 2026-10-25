@@ -114,7 +114,7 @@ suite.define(() => {
         ],
       });
       await page.goto(`${suite.server.baseUrl}chat`);
-      await gateway.waitForRequest("chat.startup");
+      await gateway.waitForRequest("sessions.messages.subscribe");
       const user = page.locator('.chat-bubble[data-entry-id="copy-user"]');
       const assistant = page.locator('.chat-bubble[data-entry-id="copy-assistant"]');
       const menu = page.locator(".chat-reply-context-menu");

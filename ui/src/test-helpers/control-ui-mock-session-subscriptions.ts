@@ -1,6 +1,11 @@
 // Serialized into the browser mock, like the session and response fixture owners.
 export function createControlUiMockSessionSubscriptions(
-  scenario: { mainSessionKey: string; defaultAgentId: string; sessionScope: string },
+  scenario: {
+    mainSessionKey: string;
+    defaultAgentId: string;
+    sessionScope: string;
+    subscriptionInitialHistory: boolean;
+  },
   isRecord: (value: unknown) => value is Record<string, unknown>,
 ) {
   const scopedEvents = new Set(
@@ -21,6 +26,30 @@ export function createControlUiMockSessionSubscriptions(
   };
   return {
     canonicalKey,
+    subscribeResponse(params: unknown, readHistory: (params: Record<string, unknown>) => unknown) {
+      const key = canonicalKey(
+        isRecord(params) && typeof params.key === "string" ? params.key : "",
+      );
+      if (
+        !scenario.subscriptionInitialHistory ||
+        !isRecord(params) ||
+        !isRecord(params.initialHistory)
+      ) {
+        return { key };
+      }
+      const payload = readHistory({
+        ...params.initialHistory,
+        sessionKey: key,
+        agentId: params.agentId,
+      });
+      return {
+        key,
+        initialHistory:
+          isRecord(payload) && isRecord(payload.__mockError)
+            ? { ok: false, error: payload.__mockError }
+            : { ok: true, payload },
+      };
+    },
     createClient(lifecycle?: {
       isOpen: () => boolean;
       startRepeatingEvents: () => void;
