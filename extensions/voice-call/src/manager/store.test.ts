@@ -126,8 +126,11 @@ const transcript = (text: string, timestamp = Date.now()): CallRecord["transcrip
 
 describe("voice-call call record store", () => {
   let storePath: string;
-  const saveCall = async (overrides: Parameters<typeof makePersistedCall>[0]) => {
-    const call = makeCall(overrides);
+  const saveCall = async (
+    callId: string,
+    overrides: Parameters<typeof makePersistedCall>[0] = {},
+  ) => {
+    const call = makeCall({ callId, ...overrides });
     await persistCallRecord(storePath, call);
     return call;
   };
@@ -141,6 +144,8 @@ describe("voice-call call record store", () => {
     mutateOfflineCallStore(storePath, (db) =>
       updateJson(db, namespace, key, JSON.stringify(value)),
     );
+  const expectHistory = async (calls: CallRecord[], limit?: number) =>
+    expect(await history(storePath, limit)).toEqual(calls);
   beforeEach(() => {
     resetPluginStateStoreForTests();
     installStateRuntime();
@@ -155,7 +160,7 @@ describe("voice-call call record store", () => {
 
   it.each([0, 1])("honors SQLite tail --since %s before following new snapshots", async (since) => {
     for (const callId of ["first", "second", "third"]) {
-      await saveCall({ callId });
+      await saveCall(callId);
     }
     const added = makeCall({ callId: "new" });
     const stopped = new Error("SQLite tail test finished");
@@ -202,7 +207,7 @@ describe("voice-call call record store", () => {
     resetPluginStateStoreForTests();
     const chunkQueries: string[][] = [];
     installStateRuntime({ onChunkRead: (keys) => chunkQueries.push([...keys]) });
-    await expect(history(storePath, calls.length)).resolves.toEqual(calls);
+    await expectHistory(calls, calls.length);
     expect(chunkQueries.length).toBeLessThanOrEqual(2);
     expect(chunkQueries.flat()).toHaveLength(131);
     const eventQueries = new Map<string, number>();
@@ -219,12 +224,12 @@ describe("voice-call call record store", () => {
     expect([...restored.processedEventIds]).toEqual(
       calls.flatMap((call) => call.processedEventIds),
     );
-    await expect(findCall(storePath, "provider-batch-127")).resolves.toEqual(calls[127]);
+    expect(await findCall(storePath, "provider-batch-127")).toEqual(calls[127]);
   });
 
   it("preserves errors before later malformed metadata", async () => {
     for (const callId of ["earlier", "later"]) {
-      await saveCall({ callId });
+      await saveCall(callId);
     }
     const events = openStore<{ chunkCount: number; sequence: number }>(EVENTS, 1100);
     const rows = (await events.entries()).toSorted((a, b) => a.value.sequence - b.value.sequence);
@@ -245,19 +250,16 @@ describe("voice-call call record store", () => {
     await corruptRow(CHUNKS, `${first.key}:chunk:0000`, { index: -1, dataBase64: "" });
     await expect(findCall(storePath, "later")).rejects.toBeInstanceOf(TypeError);
     await corruptRow(EVENTS, second.key, { chunkCount: 0, byteLength: 0 });
-    await expect(history(storePath)).resolves.toEqual([]);
+    await expectHistory([]);
   });
 
   it("restores complete chunked call transcripts", async () => {
-    const call = await saveCall({
-      callId: "call-chunked",
-      transcript: transcript("🦞".repeat(180_000)),
-    });
+    const call = await saveCall("call-chunked", { transcript: transcript("🦞".repeat(180_000)) });
     resetPluginStateStoreForTests();
     expect((await restore(storePath)).activeCalls.get(call.callId)?.transcript).toEqual(
       call.transcript,
     );
-    await expect(history(storePath)).resolves.toEqual([call]);
+    await expectHistory([call]);
     const openChunks = () => openStore<{ index: number; dataBase64: string }>(CHUNKS, CHUNK_LIMIT);
     let chunks = openChunks();
     const rows = await chunks.entries();
@@ -268,16 +270,16 @@ describe("voice-call call record store", () => {
       );
     const first = chunk(0);
     const later = chunk(1);
-    const good = await saveCall({ callId: "good-call", transcript: [] });
+    const good = await saveCall("good-call", { transcript: [] });
     await mutateOfflineCallStore(storePath, (db) =>
       updateJson(db, CHUNKS, later.key, "invalid JSON"),
     );
     chunks = openChunks();
     await chunks.register(first.key, { ...first.value, index: -1 });
-    await expect(history(storePath)).resolves.toEqual([good]);
+    await expectHistory([good]);
     expect(await findCall(storePath, good.callId)).toEqual(good);
     await chunks.delete(first.key);
-    await expect(history(storePath)).resolves.toEqual([good]);
+    await expectHistory([good]);
     await chunks.register(first.key, first.value);
     await expect(findCall(storePath, good.callId)).rejects.toThrowError(
       expect.objectContaining({ code: "PLUGIN_STATE_CORRUPT" }),
@@ -329,21 +331,18 @@ describe("voice-call call record store", () => {
       installStateRuntime();
       resetPluginStateStoreForTests();
       expect((await restore(storePath)).activeCalls.size).toBe(0);
-      await expect(history(storePath)).resolves.toEqual([]);
+      await expectHistory([]);
       await expect(findCall(storePath, call.callId)).resolves.toBeUndefined();
     },
   );
 
   it("persists oversized records in SQLite without creating a JSONL fallback", async () => {
-    const call = await saveCall({
-      callId: "call-large",
+    const call = await saveCall("call-large", {
       metadata: { mode: "conversation", numberRouteKey: "+15550000001" },
       transcript: transcript("x".repeat(3 * 1024 * 1024)),
     });
 
-    const restored = await restore(storePath);
-    const restoredCall = restored.activeCalls.get("call-large");
-    expect(restoredCall).toMatchObject({
+    expect((await restore(storePath)).activeCalls.get(call.callId)).toMatchObject({
       providerCallId: call.providerCallId,
       transcript: [],
       metadata: {
@@ -384,12 +383,12 @@ describe("voice-call call record store", () => {
     );
     await closeStore();
 
-    const first = await saveCall({ callId: "call-current", state: "ringing" });
-    await expect(findCall(storePath, first.callId)).resolves.toEqual(first);
+    const first = await saveCall("call-current", { state: "ringing" });
+    expect(await findCall(storePath, first.callId)).toEqual(first);
     const latest = { ...first, state: "answered" as const };
     await persistCallRecord(storePath, latest);
-    await expect(history(storePath, 2)).resolves.toEqual([first, latest]);
-    await expect(findCall(storePath, first.callId)).resolves.toEqual(latest);
+    await expectHistory([first, latest], 2);
+    expect(await findCall(storePath, first.callId)).toEqual(latest);
 
     const state = createVoiceCallStateRuntimeForTests();
     const events = state.openKeyedStoreV2({ namespace: EVENTS, maxEntries: 1_100, env });
@@ -424,18 +423,18 @@ describe("voice-call call record store", () => {
     const pending = persistCallRecord(storePath, first);
     try {
       await blocked.promise;
-      await expect(history(storePath)).resolves.toEqual([]);
+      await expectHistory([]);
       expectDefined(first.transcript[0], "first transcript entry").text =
         "mutated after persistence started";
       first.state = "answered";
       await persistCallRecord(storePath, first);
-      await expect(history(storePath)).resolves.toEqual([first]);
+      await expectHistory([first]);
     } finally {
       release.resolve();
       await pending;
     }
     resetPluginStateStoreForTests();
-    await expect(history(storePath)).resolves.toEqual([expectedFirst, first]);
+    await expectHistory([expectedFirst, first]);
     expect((await restore(storePath)).activeCalls.get(first.callId)?.state).toBe("answered");
   });
 
@@ -451,7 +450,7 @@ describe("voice-call call record store", () => {
       },
     });
     await expect(persistCallRecord(storePath, call)).rejects.toBe(failure);
-    await expect(history(storePath)).resolves.toEqual([]);
+    await expectHistory([]);
     expect((await restore(storePath)).activeCalls.size).toBe(0);
     await expect(findCall(storePath, call.callId)).rejects.toBe(failure);
     installStateRuntime();
@@ -461,7 +460,7 @@ describe("voice-call call record store", () => {
 
   it("persists and restores only the newest per-call replay keys", async () => {
     const replayKeys = Array.from({ length: MAX_CALL_REPLAY_KEYS + 2 }, (_, i) => `evt-${i}`);
-    await saveCall({ callId: "call-bounded-replay", processedEventIds: replayKeys });
+    await saveCall("call-bounded-replay", { processedEventIds: replayKeys });
 
     const restored = await restore(storePath);
     const expected = replayKeys.slice(-MAX_CALL_REPLAY_KEYS);
@@ -470,14 +469,12 @@ describe("voice-call call record store", () => {
   });
 
   it("hydrates manager replay keys in latest-snapshot call order", async () => {
-    await saveCall({
-      callId: "call-latest",
+    await saveCall("call-latest", {
       providerCallId: "provider-latest",
       processedEventIds: ["evt-latest-old"],
     });
     for (let callIndex = 0; callIndex < REPLAY_LIMIT / MAX_CALL_REPLAY_KEYS; callIndex++) {
-      await saveCall({
-        callId: `call-fill-${callIndex}`,
+      await saveCall(`call-fill-${callIndex}`, {
         providerCallId: `provider-fill-${callIndex}`,
         processedEventIds: Array.from(
           { length: MAX_CALL_REPLAY_KEYS },
@@ -485,8 +482,7 @@ describe("voice-call call record store", () => {
         ),
       });
     }
-    await saveCall({
-      callId: "call-latest",
+    await saveCall("call-latest", {
       providerCallId: "provider-latest",
       processedEventIds: ["evt-latest-old", "evt-latest-new"],
     });
@@ -502,15 +498,13 @@ describe("voice-call call record store", () => {
   });
 
   it("finds retained snapshots outside recent history and preserves internal-id precedence", async () => {
-    await saveCall({ callId: "call-target", providerCallId: "provider-target" });
-    await saveCall({
-      callId: "call-target",
+    await saveCall("call-target", { providerCallId: "provider-target" });
+    await saveCall("call-target", {
       providerCallId: "provider-target",
       state: "completed",
     });
     for (let index = 0; index < 101; index += 1) {
-      await saveCall({
-        callId: `noise-${index}`,
+      await saveCall(`noise-${index}`, {
         providerCallId: index === 100 ? "call-target" : `provider-noise-${index}`,
       });
     }

@@ -8,50 +8,25 @@ import {
   type OutboundCallOptions,
 } from "../types.js";
 
-const {
-  clearMaxDurationTimerMock,
-  startMaxDurationTimerMock,
-  generateDtmfRedirectTwimlMock,
-  generateNotifyTwimlMock,
-  getCallByProviderCallIdMock,
-  mapVoiceToPollyMock,
-  persistCallRecordMock,
-  rejectTranscriptWaiterMock,
-} = vi.hoisted(() => ({
-  clearMaxDurationTimerMock: vi.fn(),
-  startMaxDurationTimerMock: vi.fn(),
-  generateDtmfRedirectTwimlMock: vi.fn(),
-  generateNotifyTwimlMock: vi.fn(),
-  getCallByProviderCallIdMock: vi.fn(),
-  mapVoiceToPollyMock: vi.fn(),
-  persistCallRecordMock: vi.fn(),
-  rejectTranscriptWaiterMock: vi.fn(),
+const mocks = vi.hoisted(() => ({
+  clearMaxDurationTimer: vi.fn(),
+  startMaxDurationTimer: vi.fn(),
+  getCallByProviderCallId: vi.fn(),
+  persistCallRecord: vi.fn(),
+  rejectTranscriptWaiter: vi.fn(),
 }));
 
-vi.mock("./store.js", () => ({
-  persistCallRecord: persistCallRecordMock,
-}));
+vi.mock("./store.js", () => ({ persistCallRecord: mocks.persistCallRecord }));
 
 vi.mock("./timers.js", () => ({
-  clearMaxDurationTimer: clearMaxDurationTimerMock,
+  clearMaxDurationTimer: mocks.clearMaxDurationTimer,
   clearTranscriptWaiter: vi.fn(),
-  startMaxDurationTimer: startMaxDurationTimerMock,
-  rejectTranscriptWaiter: rejectTranscriptWaiterMock,
+  startMaxDurationTimer: mocks.startMaxDurationTimer,
+  rejectTranscriptWaiter: mocks.rejectTranscriptWaiter,
   waitForFinalTranscript: vi.fn(),
 }));
 
-vi.mock("./lookup.js", () => ({
-  getCallByProviderCallId: getCallByProviderCallIdMock,
-}));
-
-vi.mock("../voice-mapping.js", () => ({
-  mapVoiceToPolly: mapVoiceToPollyMock,
-}));
-
-vi.mock("./twiml.js", () => ({
-  generateDtmfRedirectTwiml: generateDtmfRedirectTwimlMock,
-  generateNotifyTwiml: generateNotifyTwimlMock,
-}));
+vi.mock("./lookup.js", () => ({ getCallByProviderCallId: mocks.getCallByProviderCallId }));
 
 import {
   continueCall,
@@ -134,6 +109,11 @@ function expectPlaced(result: Awaited<ReturnType<typeof initiateCall>>) {
   return result.callId;
 }
 
+const expectFailure = async (
+  result: Promise<{ success: boolean; error?: string }>,
+  error: string,
+) => expect(result).resolves.toEqual({ success: false, error });
+
 const placementInput = (callId: string) => ({
   callId,
   from: "+14155550100",
@@ -174,10 +154,7 @@ function speechContext(
 describe("voice-call outbound helpers", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    persistCallRecordMock.mockReset().mockResolvedValue(undefined);
-    mapVoiceToPollyMock.mockReturnValue("Polly.Joanna");
-    generateDtmfRedirectTwimlMock.mockReturnValue("<DtmfRedirect />");
-    generateNotifyTwimlMock.mockReturnValue("<Response />");
+    mocks.persistCallRecord.mockReset().mockResolvedValue(undefined);
   });
 
   it("guards initiateCall when provider, webhook, capacity, or fromNumber are missing", async () => {
@@ -199,26 +176,19 @@ describe("voice-call outbound helpers", () => {
   });
 
   it("holds Twilio notify calls silently until AMD classification", async () => {
-    const {
-      ctx,
-      place,
-      initiateProviderCall: initiate,
-    } = dial(
+    const { ctx, place, initiateProviderCall } = dial(
       { voicemail: { detection: "twilio", onMachine: "leave-message" } },
       "twilio",
       "CA-notify",
     );
-    await place({
-      mode: "notify",
-      message: "Your parcel is ready.",
-    });
-    expect(initiate.mock.calls[0]?.[0]).toMatchObject({
+    await place({ mode: "notify", message: "Your parcel is ready." });
+    expect(initiateProviderCall.mock.calls[0]?.[0]).toMatchObject({
       inlineTwiml: '<Response><Pause length="60"/></Response>',
     });
     const call = [...ctx.activeCalls.values()][0];
     expect(call?.metadata?.pendingNotifyAmd).toBe(true);
     const playTts = vi.fn(async () => {});
-    getCallByProviderCallIdMock.mockReturnValue(call);
+    mocks.getCallByProviderCallId.mockReturnValue(call);
     await speakInitialMessage(
       { ...ctx, initialMessageInFlight: new Set(), provider: { name: "twilio", playTts } } as never,
       "CA-notify",
@@ -239,22 +209,23 @@ describe("voice-call outbound helpers", () => {
         ...(mode === "conversation" ? { dtmfSequence: "ww123456#" } : {}),
       });
       const callId = expectPlaced(result);
-      if (mode === "notify") {
-        expect(mapVoiceToPollyMock).toHaveBeenCalledWith("nova");
-        expect(generateNotifyTwimlMock).toHaveBeenCalledWith(message, "Polly.Joanna");
-      } else {
-        expect(generateDtmfRedirectTwimlMock).toHaveBeenCalledWith(
-          "ww123456#",
-          "https://example.com/webhook",
-        );
-      }
       expect(initiateProviderCall).toHaveBeenCalledWith({
         ...placementInput(callId),
         ...(mode === "notify"
-          ? { inlineTwiml: "<Response />" }
+          ? {
+              inlineTwiml: `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Say voice="Polly.Salli">hello there</Say>
+  <Hangup/>
+</Response>`,
+            }
           : {
               inlineTwiml: undefined,
-              preConnectTwiml: "<DtmfRedirect />",
+              preConnectTwiml: `<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+  <Play digits="ww123456#" />
+  <Redirect method="POST">https://example.com/webhook</Redirect>
+</Response>`,
             }),
       });
       expect(ctx.providerCallIdMap.get("provider-1")).toBe(callId);
@@ -262,7 +233,7 @@ describe("voice-call outbound helpers", () => {
         sessionKey: "agent:main:work",
         metadata: { initialMessage: message, mode },
       });
-      expect(persistCallRecordMock).toHaveBeenCalledTimes(2);
+      expect(mocks.persistCallRecord).toHaveBeenCalledTimes(2);
     },
   );
 
@@ -309,18 +280,9 @@ describe("voice-call outbound helpers", () => {
   );
 
   it("rejects DTMF sequences outside conversation mode", async () => {
-    const { ctx, place, initiateProviderCall } = dial({
-      outbound: { defaultMode: "notify" },
-    });
-
+    const { ctx, place, initiateProviderCall } = dial({ outbound: { defaultMode: "notify" } });
     await expect(
-      place(
-        {
-          message: "hello",
-          dtmfSequence: "123456#",
-        },
-        "session-1",
-      ),
+      place({ message: "hello", dtmfSequence: "123456#" }, "session-1"),
     ).resolves.toEqual({
       callId: "",
       success: false,
@@ -354,21 +316,15 @@ describe("voice-call outbound helpers", () => {
     });
     expect(call.transcript).toEqual([expect.objectContaining({ speaker: "bot", text: "hello" })]);
 
-    playTts.mockImplementationOnce(async () => {
-      throw new Error("tts failed");
-    });
-    await expect(speak(ctx as never, "call-1", "hello again")).resolves.toEqual({
-      success: false,
-      error: "tts failed",
-    });
+    playTts.mockRejectedValueOnce(new Error("tts failed"));
+    await expectFailure(speak(ctx as never, "call-1", "hello again"), "tts failed");
     expect(call.state).toBe("listening");
   });
 
   it("reports telephony queue overflow without starting a silent listening turn", async () => {
     const { call, playTts, ctx: base } = speechContext({ tts: { provider: "openai" } });
-    playTts.mockImplementation(async () => {
-      throw new Error("Telephony TTS queue is full for stream; maxPending=8");
-    });
+    const error = "Telephony TTS queue is full for stream; maxPending=8";
+    playTts.mockRejectedValue(new Error(error));
     const startListening = vi.fn(async () => {});
     const ctx = {
       ...base,
@@ -380,10 +336,7 @@ describe("voice-call outbound helpers", () => {
       },
     };
 
-    await expect(continueCall(ctx as never, "call-1", "hello")).resolves.toEqual({
-      success: false,
-      error: "Telephony TTS queue is full for stream; maxPending=8",
-    });
+    await expectFailure(continueCall(ctx as never, "call-1", "hello"), error);
 
     expect(playTts).toHaveBeenCalledOnce();
     expect(startListening).not.toHaveBeenCalled();
@@ -399,7 +352,7 @@ describe("voice-call outbound helpers", () => {
     const timeoutSpy = vi
       .spyOn(globalThis, "setTimeout")
       .mockReturnValue(1 as unknown as ReturnType<typeof setTimeout>);
-    getCallByProviderCallIdMock.mockReturnValue(call);
+    mocks.getCallByProviderCallId.mockReturnValue(call);
 
     try {
       await speakInitialMessage(ctx as never, "provider-1");
@@ -459,14 +412,14 @@ describe("voice-call outbound helpers", () => {
       config: {},
     };
 
-    await expect(sendDtmf(ctx as never, "call-1", "abc")).resolves.toEqual({
-      success: false,
-      error: "digits may only contain digits, *, #, comma, w, p",
-    });
-    await expect(sendDtmf(ctx as never, "call-1", "123#")).resolves.toEqual({
-      success: false,
-      error: "telnyx does not support outbound DTMF",
-    });
+    await expectFailure(
+      sendDtmf(ctx as never, "call-1", "abc"),
+      "digits may only contain digits, *, #, comma, w, p",
+    );
+    await expectFailure(
+      sendDtmf(ctx as never, "call-1", "123#"),
+      "telnyx does not support outbound DTMF",
+    );
   });
 
   it.each([undefined, "timeout"] as const)(
@@ -488,8 +441,8 @@ describe("voice-call outbound helpers", () => {
       expect(call.endedAt).toBeTypeOf("number");
       expect(call.endedAt).toBeGreaterThanOrEqual(beforeEndMs);
       expect(call.endedAt).toBeLessThanOrEqual(afterEndMs);
-      expect(clearMaxDurationTimerMock).toHaveBeenCalledWith(ctx, "call-1");
-      expect(rejectTranscriptWaiterMock).toHaveBeenCalledWith(
+      expect(mocks.clearMaxDurationTimer).toHaveBeenCalledWith(ctx, "call-1");
+      expect(mocks.rejectTranscriptWaiter).toHaveBeenCalledWith(
         ctx,
         "call-1",
         `Call ended: ${expectedReason}`,
@@ -500,10 +453,7 @@ describe("voice-call outbound helpers", () => {
 
   it("handles missing, disconnected, and already-ended calls", async () => {
     const { ctx: missing } = speechContext();
-    await expect(speak(missing as never, "missing", "hello")).resolves.toEqual({
-      success: false,
-      error: "Call not found",
-    });
+    await expectFailure(speak(missing as never, "missing", "hello"), "Call not found");
 
     const { call, ctx } = createActiveCallContext();
     call.state = "completed";
