@@ -1844,6 +1844,9 @@ try {
               ["layoutMs", "LayoutDuration"],
               ["styleMs", "RecalcStyleDuration"],
               ["threadMs", "ThreadTime"],
+              ["compileMs", "V8CompileDuration"],
+              ["devtoolsMs", "DevToolsCommandDuration"],
+              ["otherTaskMs", "TaskOtherDuration"],
             ].map(([key, name]) => {
               const before = threadCpuBefore.find((metric) => metric.name === name)?.value;
               const after = threadCpuAfter.find((metric) => metric.name === name)?.value;
@@ -1961,6 +1964,9 @@ try {
         variant: ["base", "candidate", "candidate-2"][bundleIndex],
         hostLoadAverage,
         threadCpu,
+        threadCpuSamples: threadCpuBefore
+          ? { before: threadCpuBefore, after: threadCpuAfter }
+          : undefined,
       }),
     );
     const profile = !traced && !cpuProfile ? undefined : await cdp.send("Profiler.stop");
