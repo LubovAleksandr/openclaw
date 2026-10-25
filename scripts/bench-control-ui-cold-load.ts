@@ -18,6 +18,7 @@
 // --sidebar-persistent-children keeps expanded rows outside root windows for staggered handoff proof.
 // --boot-route chat|new|sessions|settings selects the measured reload destination.
 // --layout-matrix covers routes, themes, viewports and cold/warm reloads; --runs is per bundle/cell.
+// Repeat --layout-cell mobile:light:chat:cold to isolate cells with their matrix setup intact.
 // --critical-path captures usable-screen readiness and first Sessions/Settings/Cron/Agents visits.
 // Repeat --critical-path-route to narrow/order visits; HTTP throttling and RPC latency are separate.
 // Paint/CLS and static-shell geometry are recorded in presentation; --filmstrip-only saves frames.
@@ -258,6 +259,7 @@ const { values } = parseArgs({
     "filmstrip-only": { type: "boolean", default: false },
     "layout-matrix": { type: "boolean", default: false },
     "layout-route": { type: "string", multiple: true, default: [] },
+    "layout-cell": { type: "string", multiple: true, default: [] },
     "layout-start": { type: "string", default: "0" },
     "hold-boot-assets": { type: "boolean", default: false },
     "history-validator-delay-ms": { type: "string", default: "0" },
@@ -389,9 +391,15 @@ if (
   !Number.isInteger(layoutStart) ||
   layoutStart < 0 ||
   layoutStart > 31 ||
+  values["layout-cell"].some(
+    (cell) =>
+      !/^(desktop|mobile):(light|dark):(chat|new|sessions|settings):(cold|warm)$/u.test(cell),
+  ) ||
   values["layout-route"].some((route) => !["chat", "new", "sessions", "settings"].includes(route))
 ) {
-  throw new Error("Expected layout-start 0–31 and layout-route chat, new, sessions or settings");
+  throw new Error(
+    "Expected layout-start 0–31, a known layout-route, and layout-cell viewport:theme:route:cold|warm",
+  );
 }
 if (
   values["layout-matrix"] &&
@@ -421,10 +429,17 @@ const layoutCells = values["layout-matrix"]
       .filter(
         ({ route }) => !values["layout-route"].length || values["layout-route"].includes(route),
       )
+      .filter(
+        ({ viewport, colorScheme, route, cold }) =>
+          !values["layout-cell"].length ||
+          values["layout-cell"].includes(
+            `${viewport}:${colorScheme}:${route}:${cold ? "cold" : "warm"}`,
+          ),
+      )
       .slice(layoutStart)
   : [];
 if (values["layout-matrix"] && !layoutCells.length) {
-  throw new Error("layout-start must leave at least one selected matrix cell");
+  throw new Error("Layout filters and layout-start must leave at least one matrix cell");
 }
 const layoutVariants = values["layout-matrix"] ? values["compare-bundle-dir"].length + 1 : 1;
 const requestedRuns = Number(values.runs);
