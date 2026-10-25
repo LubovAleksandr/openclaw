@@ -455,11 +455,11 @@ const includeReleaseOnlyUiTests =
     !isCanonicalRepository ||
     compatibilityTarget ||
     changedPaths === null);
-// Pack ordinary CI into four 16-class browser jobs with six workers each,
-// retaining 24 aggregate worker slots. Private source-server projects remain serial.
+// Match four observed CPUs per 16-class job while retaining 24 worker slots.
+// Private source-server projects remain serial.
 const compactUiE2e = supportsUiE2eProjects && !includeReleaseOnlyUiTests;
 let uiE2eJobCount = compactUiE2e
-  ? 5
+  ? 7
   : supportsUiE2eProjects
     ? 13
     : usesHostedRunnerProfile
@@ -1746,7 +1746,7 @@ const manifest = {
         shard_count: uiE2eJobCount,
         task: shard === uiE2eJobCount ? "browser-extension" : "control-ui",
         vitest_shard_count: uiE2eJobCount - 1,
-        vitest_max_workers: compactUiE2e ? 6 : 2,
+        vitest_max_workers: compactUiE2e ? 4 : 2,
       };
     }).filter((row) =>
       row.task === "browser-extension"

@@ -2632,6 +2632,13 @@ describe("ci workflow guards", () => {
       });
       expect(manifest.status, manifest.output).toBe(0);
       expect(manifest.outputs.validation_tier).toBe(tier);
+      const controlRows = JSON.parse(
+        expectDefined(manifest.outputs.ui_e2e_matrix, "UI matrix"),
+      ).include.filter((row: { task: string }) => row.task === "control-ui") as Array<{
+        vitest_max_workers: number;
+      }>;
+      expect(controlRows).toHaveLength(release ? 12 : 6);
+      expect(controlRows.reduce((total, row) => total + row.vitest_max_workers, 0)).toBe(24);
       for (const family of [
         "run_build_artifacts",
         "run_ios_build",
@@ -10597,16 +10604,16 @@ describe("ci workflow guards", () => {
         expectDefined(manifest.outputs.ui_e2e_matrix, "browser matrix"),
       ).include;
       expect(rows.map((row: { shard: number }) => row.shard)).toEqual([
-        ...(control ? [1, 2, 3, 4] : []),
+        ...(control ? [1, 2, 3, 4, 5, 6] : []),
         ...(browser && manifest.outputs.reuse_browser_extension_build !== "true"
-          ? [control ? 5 : 1]
+          ? [control ? 7 : 1]
           : []),
       ]);
       for (const row of rows) {
         expect(row).toMatchObject({
-          shard_count: control ? 5 : 1,
-          vitest_shard_count: control ? 4 : 0,
-          vitest_max_workers: 6,
+          shard_count: control ? 7 : 1,
+          vitest_shard_count: control ? 6 : 0,
+          vitest_max_workers: 4,
         });
       }
       for (const name of ["checks-ui-e2e", "checks-ui-e2e-real-gateway"]) {
@@ -10866,7 +10873,7 @@ describe("ci workflow guards", () => {
     const expectedUiE2eMatrices = (
       [
         [8, 3],
-        [4, 6],
+        [6, 4],
         [12, 2],
       ] as const
     ).map(([vitestShardCount, workers]) => ({
