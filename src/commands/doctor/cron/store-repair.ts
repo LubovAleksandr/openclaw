@@ -25,6 +25,7 @@ import {
 } from "../../../cron/store/row-codec.js";
 import { getCronStoreKysely } from "../../../cron/store/schema.js";
 import { migrateCronInferenceStandingGrantReferences } from "../../../gateway/operator-approval-standing-grants.worker.js";
+import { engineGreatest } from "../../../infra/database-engine/scalar.js";
 import { executeSqliteQuerySync } from "../../../infra/kysely-sync.js";
 import type { EngineConnection } from "../../../infra/sql-connection.js";
 import { deferSqlitePostCommitPublication } from "../../../infra/sqlite-post-commit.js";
@@ -130,7 +131,7 @@ export async function repairLegacyCronJobOwnersForDoctor(
               agent_id: change.agentId,
               job_json: change.definition,
               grant_definition_revision: null,
-              grant_definition_generation: eb.fn<number>("max", [
+              grant_definition_generation: engineGreatest(db, [
                 eb(eb.fn.coalesce("grant_definition_generation", eb.val(0)), "+", 1),
                 eb.val(retainedGenerationFloor),
               ]),

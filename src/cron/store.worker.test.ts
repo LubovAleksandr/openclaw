@@ -313,18 +313,30 @@ it("preserves the cron conflict error class across an actual worker save", async
   });
 });
 
-it.each([false, true])(
-  "publishes native saves with ordered hooks before observer failure=%s",
-  async (fail) => {
+it.each([
+  { incremental: false, fail: false },
+  { incremental: false, fail: true },
+  { incremental: true, fail: false },
+  { incremental: true, fail: true },
+])(
+  "publishes native saves with ordered hooks incremental=$incremental before observer failure=$fail",
+  async ({ incremental, fail }) => {
     await withCronStore("cron-native-save-hooks", async (state) => {
       const { storePath } = state;
-      const store = cronWorkerFixture();
+      const previous = cronWorkerFixture();
+      if (incremental) {
+        await saveCronJobsStore(storePath, previous);
+      }
+      const store = structuredClone(previous);
+      if (incremental) {
+        store.jobs[0]!.name = "pending incremental change";
+      }
       const order: string[] = [];
       let beforeDatabase: EngineConnection | undefined;
       let afterDatabase: EngineConnection | undefined;
       const before = getCronJobsStoreRevision(storePath);
       const failure = new Error("post-commit observer failed");
-      const save = saveCronJobsStore(storePath, store, {
+      const options: NonNullable<Parameters<typeof saveCronJobsStore>[2]> = {
         transactionHooks: {
           beforeWrite: (db) => {
             beforeDatabase = db;
@@ -342,7 +354,10 @@ it.each([false, true])(
             }
           },
         },
-      });
+      };
+      const save = incremental
+        ? saveCronJobsStoreChanges(storePath, previous, store, options)
+        : saveCronJobsStore(storePath, store, options);
       if (fail) {
         await expect(save).rejects.toBe(failure);
       } else {

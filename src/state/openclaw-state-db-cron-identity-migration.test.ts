@@ -4,6 +4,7 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import {
+  CRON_DEFAULT_STORE_IDENTITY_SCHEMA_VERSION,
   migrateCronDefaultStoreIdentity,
   readCronDefaultStoreKeyInDatabase,
   readCronStorePartitionInventoryInDatabase,
@@ -67,7 +68,10 @@ function seedPartition(db: DatabaseSync, storeKey: string, jobs: boolean) {
   );
 }
 
-function legacyStore(jobs = true) {
+function legacyStore(
+  jobs = true,
+  previousVersion = CRON_DEFAULT_STORE_IDENTITY_SCHEMA_VERSION - 1,
+) {
   const root = tempDirs.make("cron-identity-");
   const stateDir = path.join(root, "source");
   const options = { env: { OPENCLAW_STATE_DIR: stateDir } };
@@ -78,8 +82,8 @@ function legacyStore(jobs = true) {
   using legacy = new DatabaseSync(databasePath);
   legacy.exec(`DELETE FROM config_machine_state WHERE state_key IN
     ('cron.defaultStoreKey', 'state.schema.contentVersion');
-    UPDATE schema_meta SET schema_version = 32;
-    PRAGMA user_version = 32;`);
+    UPDATE schema_meta SET schema_version = ${previousVersion};
+    PRAGMA user_version = ${previousVersion};`);
   seedPartition(legacy, storeKey, jobs);
   return { root, stateDir, options, databasePath, storeKey };
 }
@@ -137,22 +141,25 @@ it("preserves an upgraded partition and receipt bytes across a stopped state-dir
   expect(reopened.db.prepare("SELECT content, revision FROM cron_job_scratch").get()).toMatchObject(
     { content: null, revision: 7 },
   );
-  expect(reopened.db.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 33 });
+  expect(reopened.db.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 34 });
 });
 
-it("upgrades already-moved ambiguous state without guessing or refusing database startup", async () => {
-  const fixture = legacyStore();
-  const moved = path.join(fixture.root, "already-moved");
-  renameSync(fixture.stateDir, moved);
-  const options = { env: { OPENCLAW_STATE_DIR: moved } };
-  await withStateMigrationBackupForTest(options, () => openState(options));
-  const migrated = openState(options);
-  expect(readCronDefaultStoreKeyInDatabase(migrated.db)).toBeUndefined();
-  expect(readCronStorePartitionInventoryInDatabase(migrated.db)).toMatchObject([
-    { storeKey: fixture.storeKey, jobs: 1 },
-  ]);
-  expect(migrated.db.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 33 });
-});
+it.each([32, 33])(
+  "upgrades already-moved v%s state without guessing or refusing database startup",
+  async (previousVersion) => {
+    const fixture = legacyStore(true, previousVersion);
+    const moved = path.join(fixture.root, "already-moved");
+    renameSync(fixture.stateDir, moved);
+    const options = { env: { OPENCLAW_STATE_DIR: moved } };
+    await withStateMigrationBackupForTest(options, () => openState(options));
+    const migrated = openState(options);
+    expect(readCronDefaultStoreKeyInDatabase(migrated.db)).toBeUndefined();
+    expect(readCronStorePartitionInventoryInDatabase(migrated.db)).toMatchObject([
+      { storeKey: fixture.storeKey, jobs: 1 },
+    ]);
+    expect(migrated.db.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 34 });
+  },
+);
 
 it("uses retained history, scratch, quarantine and provisioning evidence after all jobs were removed", async () => {
   const fixture = legacyStore(false);
@@ -174,7 +181,7 @@ it("rolls back the binding with failed schema publication", async () => {
   ).rejects.toThrow("fixture publication refusal");
   using after = new DatabaseSync(fixture.databasePath, { readOnly: true });
   expect(readCronDefaultStoreKeyInDatabase(after)).toBeUndefined();
-  expect(after.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 32 });
+  expect(after.prepare("PRAGMA user_version").get()).toMatchObject({ user_version: 33 });
   expect(after.prepare("SELECT store_key FROM cron_jobs").get()).toMatchObject({
     store_key: fixture.storeKey,
   });
@@ -189,7 +196,7 @@ it("preserves an existing malformed binding for visible explicit repair", () => 
     INSERT INTO config_machine_state VALUES ('cron.defaultStoreKey', '{}', 1);`);
   expect(
     migrateCronDefaultStoreIdentity(db, {
-      previousVersion: 32,
+      previousVersion: 33,
       legacyDefaultStoreKey: "/old/cron/jobs.json",
     }),
   ).toBe(false);

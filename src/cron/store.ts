@@ -366,7 +366,9 @@ export async function saveCronJobsStoreChanges(
   assertCronStoreCanPersist(next);
   const context = captureOpenClawStateWorkerContext();
   const { transactionHooks, ...options } = opts ?? {};
-  const snapshot = structuredClone({ previous, next, options });
+  const snapshot = transactionHooks
+    ? { previous, next, options }
+    : structuredClone({ previous, next, options });
   const prepared = prepareCronStoreChanges(snapshot.previous, snapshot.next);
   if (prepared.changedIds.size === 0) {
     return previous;

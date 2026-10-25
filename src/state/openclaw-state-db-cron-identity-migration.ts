@@ -15,7 +15,7 @@ import { tableExists } from "./openclaw-state-db-schema-helpers.js";
 import type { DB } from "./openclaw-state-db.generated.js";
 
 export const CRON_DEFAULT_STORE_KEY_STATE_KEY = "cron.defaultStoreKey";
-export const CRON_DEFAULT_STORE_IDENTITY_SCHEMA_VERSION = 33;
+export const CRON_DEFAULT_STORE_IDENTITY_SCHEMA_VERSION = 34;
 
 export type CronStorePartitionInventory = {
   storeKey: string;
@@ -217,7 +217,7 @@ export const stateCronIdentityMigration = {
       previousVersion,
       legacyDefaultStoreKey: resolveCronIdentityMigrationDefaultStoreKey(options.env),
     }),
-  applied: "Introduced durable default cron partition selection (v33)",
+  applied: "Introduced durable default cron partition selection (v34)",
 };
 
 /** Doctor owns the prompt and offline transaction; this owner validates and binds its choice. */
