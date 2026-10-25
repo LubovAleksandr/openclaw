@@ -488,7 +488,7 @@ function assertResourceRecovery(
     }
   }
   return {
-    retiredResizeTargets: before.resizeTargets - retired.resizeTargets,
+    releasedResizeTargets: before.resizeTargets - retired.resizeTargets,
     nativeResourcesRecovered: true,
   };
 }

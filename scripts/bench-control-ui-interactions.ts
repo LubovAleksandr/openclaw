@@ -34,6 +34,7 @@ import {
   summarizeLongTaskCpuProfiles,
   type InteractionStyleSheet,
 } from "./lib/control-ui-interaction-trace.ts";
+import { launchControlUiObservationBrowser } from "./lib/control-ui-observation-browser.ts";
 import {
   installControlUiResourceCounts,
   readControlUiResourceCounts,
@@ -477,11 +478,12 @@ try {
           "No sidebar text input exists; measure command palette search separately",
           "No fake clocks, Lit probes or simulated transport delay",
         ],
-        scenarios: scenarios.map(({ id, route, expected, fixture }) => ({
+        scenarios: scenarios.map(({ id, route, expected, fixture, observationBrowser }) => ({
           id,
           route,
           expected,
           fixture,
+          observationBrowser,
         })),
         viewports,
         bundles: servers.map(({ directory, build, indexSha256, workboardSource }) => ({
@@ -501,12 +503,25 @@ try {
         const startedAt = new Date().toISOString();
         const startLoad = os.loadavg();
         for (const [bundle, slot] of servers.entries()) {
+          const artifactPrefix = `${viewport.name}-${theme}-${scenario.id}-${pair + 1}-${bundle}`;
           const nativeVisibility =
             scenario.visibility === "hidden" && values.headed
               ? await launchNativeVisibilityContext()
               : undefined;
+          const observationBrowser =
+            scenario.observationBrowser && !nativeVisibility
+              ? await launchControlUiObservationBrowser({
+                  viewport: { width: viewport.width, height: viewport.height },
+                  artifactDir,
+                  artifactPrefix,
+                  headless: !values.headed,
+                  colorScheme: theme,
+                })
+              : undefined;
+          const ownedBrowserPid = nativeVisibility?.processId ?? observationBrowser?.processId;
           const context =
             nativeVisibility?.context ??
+            observationBrowser?.context ??
             (await browser.newContext({
               viewport: { width: viewport.width, height: viewport.height },
               serviceWorkers: "block",
@@ -549,11 +564,11 @@ try {
             }
           } catch (error) {
             await nativeVisibility?.close();
+            await observationBrowser?.close();
             throw error;
           }
           const errors: string[] = [];
           page.on("pageerror", (error) => errors.push(error.message));
-          const artifactPrefix = `${viewport.name}-${theme}-${scenario.id}-${pair + 1}-${bundle}`;
           const result: Result = {
             step: scenario.id,
             viewport: viewport.name,
@@ -566,7 +581,7 @@ try {
               ? {
                   processWakeups: {
                     complete: false,
-                    nativeBrowserPid: nativeVisibility?.processId,
+                    nativeBrowserPid: ownedBrowserPid,
                     reason: processWakeupSetupError ?? "Sampling not reached",
                   },
                 }
@@ -748,7 +763,7 @@ try {
               observation.reason = processWakeupSetupError ?? "Process observation did not finish";
               if (processWakeupReader) {
                 try {
-                  if (nativeVisibility && nativeVisibility.processId === undefined) {
+                  if ((nativeVisibility || observationBrowser) && ownedBrowserPid === undefined) {
                     throw new Error("Native owned Chromium launch did not retain its PID");
                   }
                   const ownedBrowser = context.browser();
@@ -759,7 +774,7 @@ try {
                   observation.before = await readProcessWakeups(
                     processSession,
                     processWakeupReader,
-                    nativeVisibility?.processId,
+                    ownedBrowserPid,
                   );
                 } catch (error) {
                   observation.reason = String(error);
@@ -781,7 +796,7 @@ try {
                 result.processWakeups.after = await readProcessWakeups(
                   processSession,
                   processWakeupReader,
-                  nativeVisibility?.processId,
+                  ownedBrowserPid,
                 );
                 finishProcessWakeups(result.processWakeups);
               } catch (error) {
@@ -952,7 +967,13 @@ try {
                 }
               }
               await capture(async () => cdp?.detach());
-              await capture(() => (nativeVisibility ? nativeVisibility.close() : context.close()));
+              await capture(() =>
+                nativeVisibility
+                  ? nativeVisibility.close()
+                  : observationBrowser
+                    ? observationBrowser.close()
+                    : context.close(),
+              );
             }
             if (errors.length) {
               result.status = "failed";

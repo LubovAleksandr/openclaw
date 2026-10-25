@@ -90,6 +90,8 @@ export type InteractionScenario = {
   fixture?: InteractionFixtureOptions;
   /** Resource campaigns opt into the longer inventory and idle scenarios. */
   resourceOnly?: boolean;
+  /** Own one browser per observation; launch and retirement stay outside measurement. */
+  observationBrowser?: boolean;
   visibility?: "hidden";
   /** Count newly inserted rows across the action, including transient replacements. */
   rowSelector?: string;
@@ -1533,6 +1535,7 @@ export const interactionScenarios: readonly InteractionScenario[] = [
     route: workboardResourceRoute,
     fixture: { workboardResources: true },
     resourceOnly: true,
+    observationBrowser: true,
     expected:
       "1,000 actual native Workboard cards preserve cancelled/coalesced popover transitions, pending hover cancellation, placement and independent resource retirement. Requires --resource-counts; diagnostic waits are not CPU timing.",
     rowSelector: ".workboard-card",
@@ -1544,6 +1547,7 @@ export const interactionScenarios: readonly InteractionScenario[] = [
     route: workboardResourceRoute,
     fixture: { workboardResources: true },
     resourceOnly: true,
+    observationBrowser: true,
     expected:
       "1,000 closed cards receive eight actual viewport changes and eight native column scrolls with no diagnostic listeners; measure CPU without --resource-counts.",
     prepare: (page) => prepareWorkboardResourceFixture(page, settleSidebarBackgroundWork),
@@ -1558,6 +1562,7 @@ export const interactionScenarios: readonly InteractionScenario[] = [
     route: workboardResourceRoute,
     fixture: { workboardResources: true },
     resourceOnly: true,
+    observationBrowser: true,
     expected:
       "Retire 1,000 actual cards, then mount 1,000 through real paginated responses inside the warm CPU interval; measure without --resource-counts.",
     prepare: (page) => prepareWorkboardResourceFixture(page, settleSidebarBackgroundWork),
@@ -1572,6 +1577,7 @@ export const interactionScenarios: readonly InteractionScenario[] = [
     route: workboardResourceRoute,
     fixture: { workboardResources: true },
     resourceOnly: true,
+    observationBrowser: true,
     visibility: visibility === "hidden" ? visibility : undefined,
     expected: `1,000 actual Workboard cards stay mounted and genuinely ${visibility} during three native-clock idle seconds.`,
     prepare: (page) => prepareWorkboardResourceFixture(page, settleSidebarBackgroundWork),
