@@ -164,7 +164,10 @@ describe("Mattermost configuration and threading", () => {
   it("keeps sibling resolution stable across named-account additions and edits", () => {
     const beta = { baseUrl: "https://beta.example.com", chatmode: "onmessage" as const };
     const resolve = (accounts: MattermostConfig["accounts"]) =>
-      mattermostPlugin.config.resolveAccount(config({ replyToMode: "first", accounts }), "beta");
+      mattermostPlugin.config.resolveAccount(
+        { channels: { mattermost: { replyToMode: "first", accounts } } },
+        "beta",
+      );
     const expected = resolve({ beta });
     for (const baseUrl of ["https://alpha.example.com", "https://alpha-new.example.com"]) {
       expect(resolve({ beta, alpha: { baseUrl } })).toEqual(expected);

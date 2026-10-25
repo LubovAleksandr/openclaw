@@ -313,7 +313,7 @@ it.each(["descriptor", "connection"] as const)(
   async (change) => {
     await import("./logbook-view.tsx");
     vi.useFakeTimers({ now: new Date(2026, 6, 5, 12).getTime() });
-    const pending = createDeferred<void>();
+    const pending = createDeferred();
     let held = true;
     const request = vi.fn(async (method: string) => {
       if (held) {

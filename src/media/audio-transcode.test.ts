@@ -8,8 +8,14 @@ import { transcodeAudioBuffer, transcodeAudioBufferToOpus } from "./audio-transc
 const runFfmpegMock = vi.hoisted(() => vi.fn());
 const runCommandWithTimeoutMock = vi.hoisted(() => vi.fn());
 
-vi.mock("./ffmpeg-exec.js", () => ({ runFfmpeg: runFfmpegMock }));
-vi.mock("../process/exec.js", () => ({ runCommandWithTimeout: runCommandWithTimeoutMock }));
+vi.mock("./ffmpeg-exec.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./ffmpeg-exec.js")>()),
+  runFfmpeg: runFfmpegMock,
+}));
+vi.mock("../process/exec.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../process/exec.js")>()),
+  runCommandWithTimeout: runCommandWithTimeoutMock,
+}));
 afterEach(() => {
   vi.restoreAllMocks();
   runCommandWithTimeoutMock.mockReset();

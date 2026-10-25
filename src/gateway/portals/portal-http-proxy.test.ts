@@ -263,7 +263,7 @@ describe("portal HTTP proxy", () => {
   it.each(["local", "worker"])("streams %s HTTP with safe headers", async (kind) => {
     let receivedHeaders: IncomingMessage["headers"] | undefined;
     let receivedBody = "";
-    target.handler = async (req, res) => {
+    target.handler = (req, res) => {
       receivedHeaders = req.headers;
       res.statusCode = 201;
       res.setHeader("Connection", "keep-alive, x-target-hop");
@@ -271,9 +271,14 @@ describe("portal HTTP proxy", () => {
       res.setHeader("X-Target-Hop", "remove");
       res.setHeader("X-App", "kept");
       res.setHeader("Referrer-Policy", "unsafe-url");
-      receivedBody = await readRequestText(req);
-      res.write("hello ");
-      res.end("portal");
+      void readRequestText(req).then(
+        (body) => {
+          receivedBody = body;
+          res.write("hello ");
+          res.end("portal");
+        },
+        (error: Error) => res.destroy(error),
+      );
     };
     const dial = createDeferredCore();
     const release = createDeferredCore();
