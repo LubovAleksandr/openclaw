@@ -137,57 +137,34 @@ function setup(mode: "off" | "escalate" | "always" = "escalate") {
 }
 
 describe("Active Memory policy status", () => {
-  it("lets a cold recall import finish after near-limit preflight latency", async () => {
-    vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
-    const importStarted = Promise.withResolvers<void>();
-    const finishImport = Promise.withResolvers<void>();
-    // mock-isolation: Delay module availability without starting a real model or database.
-    vi.doMock("./recall.js", async () => {
-      importStarted.resolve();
-      await finishImport.promise;
-      return {
-        maybeResolveActiveRecall: async () => ({
-          status: "ok",
-          summary: "The remembered ramen order",
-        }),
-      };
-    });
-    const fixture = setup("always");
-    fixture.lookup.mockImplementationOnce(
-      async () =>
-        await new Promise<undefined>((resolve) => {
-          setTimeout(() => resolve(undefined), 1_490);
-        }),
-    );
-    const pending = fixture.run(true);
-    try {
-      await vi.advanceTimersByTimeAsync(1_490);
-      await importStarted.promise;
-      await vi.advanceTimersByTimeAsync(100);
-      finishImport.resolve();
-      expect((await pending)?.prependContext).toContain("The remembered ramen order");
-    } finally {
-      finishImport.resolve();
-      await pending;
-      // mock-isolation: Restore the import guard for subsequent status-only hooks.
-      vi.doMock("./recall.js", unexpectedIo);
-      vi.useRealTimers();
-    }
-  });
-
-  it.each(["off", "escalate"] as const)(
-    "clears a denied turn's status before %s preflight settles and keeps it clear",
+  it.each(["off", "escalate", "always"] as const)(
+    "clears stale status before %s preflight and preserves the cold-import budget",
     async (mode) => {
+      vi.useFakeTimers({ toFake: ["Date", "performance", "setTimeout", "clearTimeout"] });
+      const entered = Promise.withResolvers<void>();
+      const preflight = Promise.withResolvers<undefined>();
+      const importStarted = Promise.withResolvers<void>();
+      const finishImport = Promise.withResolvers<void>();
+      if (mode === "always") {
+        // mock-isolation: Delay only module availability, without model or database I/O.
+        vi.doMock("./recall.js", async () => {
+          importStarted.resolve();
+          await finishImport.promise;
+          return {
+            maybeResolveActiveRecall: async () => ({
+              status: "ok",
+              summary: "The remembered ramen order",
+            }),
+          };
+        });
+      }
       const { entry, otherEntry, lookup, run, runtime } = setup(mode);
       await run(false);
       expect(entry.pluginDebugEntries).toContainEqual({
         pluginId: "active-memory",
         lines: ["🧩 Active Memory: status=policy-disabled"],
       });
-
-      const entered = Promise.withResolvers<void>();
-      const preflight = Promise.withResolvers<undefined>();
-      lookup.mockImplementationOnce(async () => {
+      lookup.mockImplementationOnce(() => {
         entered.resolve();
         return preflight.promise;
       });
@@ -195,12 +172,27 @@ describe("Active Memory policy status", () => {
       try {
         await entered.promise;
         expect([entry.pluginDebugEntries, entry.updatedAt]).toEqual([[otherEntry], 25]);
+        if (mode === "always") {
+          await vi.advanceTimersByTimeAsync(1_490);
+          preflight.resolve(undefined);
+          await importStarted.promise;
+          await vi.advanceTimersByTimeAsync(100);
+          finishImport.resolve();
+          expect((await pending)?.prependContext).toContain("The remembered ramen order");
+        } else {
+          preflight.resolve(undefined);
+          await pending;
+          expect([entry.pluginDebugEntries, entry.updatedAt]).toEqual([[otherEntry], 25]);
+        }
+        expect(runtime.agent.runEmbeddedAgent).not.toHaveBeenCalled();
       } finally {
         preflight.resolve(undefined);
+        finishImport.resolve();
         await pending;
+        // mock-isolation: Restore the import guard after the cold-import branch.
+        vi.doMock("./recall.js", unexpectedIo);
+        vi.useRealTimers();
       }
-      expect([entry.pluginDebugEntries, entry.updatedAt]).toEqual([[otherEntry], 25]);
-      expect(runtime.agent.runEmbeddedAgent).not.toHaveBeenCalled();
     },
   );
 });
