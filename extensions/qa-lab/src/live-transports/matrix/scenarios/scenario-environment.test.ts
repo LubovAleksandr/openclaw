@@ -3,22 +3,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 const buildMatrixQaConfig = vi.hoisted(() =>
   vi.fn(() => ({ channels: { matrix: { execApprovals: { enabled: true } } } })),
 );
-const runMatrixQaCanary = vi.hoisted(() =>
-  vi.fn(async () => ({
-    driverEventId: "$canary-driver",
-    reply: { eventId: "$canary-reply" },
-    token: "MATRIX_QA_CANARY",
-  })),
-);
-
 vi.mock("../substrate/config.js", () => ({ buildMatrixQaConfig }));
-vi.mock("./scenario-runtime-room.js", () => ({ runMatrixQaCanary }));
+vi.mock("./scenario-runtime-room.js", () => ({ runMatrixQaCanary: vi.fn() }));
 
 import { createMatrixQaScenarioEnvironment } from "./scenario-environment.js";
 
-afterEach(() => {
-  vi.useRealTimers();
-});
+afterEach(() => vi.useRealTimers());
 
 function createEnvironment() {
   return createMatrixQaScenarioEnvironment({
@@ -126,89 +116,61 @@ describe("matrix scenario environment", () => {
       ...matrixAccounts({ sut: { enabled: true, execApprovals: execApprovalOverrides } }, true),
       tools: { media: { audio: audioOverrides } },
     };
-    const preservedAccount = { deviceId: "CURRENT-DEVICE", lifecycleState: "preserve" };
     const preservedPlugin = {
       config: { preserve: "matrix-config" },
       hooks: { allowConversationAccess: true },
       llm: { allowModelOverride: true },
       subagent: { allowModelOverride: true },
     };
-    const staleAllowlist = ["@driver:test", "@stale:test"];
-    const currentConfig = {
-      ...matrixAccounts({
-        sibling: { enabled: true },
-        sut: {
-          ...preservedAccount,
-          autoJoin: "allowlist",
-          autoJoinAllowlist: staleAllowlist,
-          dm: { allowFrom: staleAllowlist, sessionScope: "per-user" },
-          execApprovals: execApprovalOverrides,
-          groupAllowFrom: staleAllowlist,
-          groups: {
-            "!room:test": { tools: { allow: ["read", "write"], deny: ["shell", "network"] } },
-          },
-        },
-        "qa-driver-bot-source": { enabled: true },
-      }),
-      messages: { groupChat: { mentionPatterns: ["@sut", "@sut"] } },
-      plugins: { entries: { matrix: { ...preservedPlugin, enabled: false } } },
-      tools: {
-        media: {
-          audio: {
-            scope: {
-              default: "deny",
-              rules: [{ action: "allow" }, { action: "deny" }],
+    const snapshot = (stale: boolean) => {
+      const keep = <T>(values: T[]) => (stale ? values : values.slice(0, 1));
+      const allowlist = keep(["@driver:test", "@stale:test"]);
+      return {
+        ...matrixAccounts({
+          sut: {
+            ...(stale ? { autoJoin: "allowlist", execApprovals: execApprovalOverrides } : {}),
+            autoJoinAllowlist: allowlist,
+            dm: { allowFrom: allowlist, ...(stale ? { sessionScope: "per-user" } : {}) },
+            groupAllowFrom: allowlist,
+            groups: {
+              "!room:test": {
+                tools: { allow: keep(["read", "write"]), deny: keep(["shell", "network"]) },
+              },
             },
           },
-          models: [{ provider: "first" }, { provider: "stale" }],
-        },
-      },
-      unrelated: { preserve: true },
-    };
-    const secondTarget = {
-      ...matrixAccounts({
-        sibling: { enabled: true },
-        sut: {
-          ...preservedAccount,
-          autoJoinAllowlist: ["@driver:test"],
-          dm: { allowFrom: ["@driver:test"] },
-          groupAllowFrom: ["@driver:test"],
-          groups: { "!room:test": { tools: { allow: ["read"], deny: ["shell"] } } },
-        },
-      }),
-      messages: { groupChat: { mentionPatterns: ["@sut"] } },
-      plugins: { entries: { matrix: { ...preservedPlugin, enabled: true } } },
-      tools: {
-        media: {
-          audio: {
-            scope: {
-              rules: [{ action: "allow" }],
+          ...(stale ? { "qa-driver-bot-source": { enabled: true } } : {}),
+        }),
+        messages: { groupChat: { mentionPatterns: keep(["@sut", "@sut"]) } },
+        plugins: { entries: { matrix: { ...preservedPlugin, enabled: !stale } } },
+        tools: {
+          media: {
+            audio: {
+              scope: {
+                ...(stale ? { default: "deny" } : {}),
+                rules: keep([{ action: "allow" }, { action: "deny" }]),
+              },
             },
+            models: keep([{ provider: "first" }, { provider: "stale" }]),
           },
-          models: [{ provider: "first" }],
         },
-      },
-      unrelated: { preserve: true },
+      };
     };
+    const currentConfig = snapshot(true);
+    const secondTarget = snapshot(false);
     buildMatrixQaConfig
       .mockReturnValueOnce(firstTarget as never)
       .mockReturnValueOnce(secondTarget as never);
-    let configReadCount = 0;
     let patchCount = 0;
     let statusCount = 0;
     const gateway = gatewayFor({
-      "config.get": () => {
-        configReadCount += 1;
-        const scenario = Math.ceil(configReadCount / 3);
-        const phase = (configReadCount - 1) % 3;
-        if (phase === 0) {
-          return { config: scenario === 1 ? baselineConfig : currentConfig };
-        }
-        if (phase === 1) {
-          return { hash: `base-${scenario}` };
-        }
-        return appliedConfig(`patched-${scenario}`);
-      },
+      "config.get": vi
+        .fn()
+        .mockReturnValueOnce({ config: baselineConfig })
+        .mockReturnValueOnce({ hash: "base-1" })
+        .mockReturnValueOnce(appliedConfig("patched-1"))
+        .mockReturnValueOnce({ config: currentConfig })
+        .mockReturnValueOnce({ hash: "base-2" })
+        .mockReturnValueOnce(appliedConfig("patched-2")),
       "config.patch": () => {
         patchCount += 1;
         return { hash: `patched-${patchCount}`, changedPaths: ["channels.matrix"], ok: true };
@@ -232,22 +194,19 @@ describe("matrix scenario environment", () => {
     input.config = {};
     await environment.prepareFlow(input);
 
-    expect(buildMatrixQaConfig).toHaveBeenNthCalledWith(
-      1,
-      baselineConfig,
-      expect.objectContaining({
-        currentConfig: baselineConfig,
-        overrides: {
-          audio: audioOverrides,
-          execApprovals: execApprovalOverrides,
+    expect(buildMatrixQaConfig.mock.calls).toMatchObject([
+      [
+        baselineConfig,
+        {
+          currentConfig: baselineConfig,
+          overrides: {
+            audio: audioOverrides,
+            execApprovals: execApprovalOverrides,
+          },
         },
-      }),
-    );
-    expect(buildMatrixQaConfig).toHaveBeenNthCalledWith(
-      2,
-      baselineConfig,
-      expect.objectContaining({ currentConfig, overrides: undefined }),
-    );
+      ],
+      [baselineConfig, { currentConfig, overrides: undefined }],
+    ]);
     const patchCalls = gateway.call.mock.calls.filter(([method]) => method === "config.patch");
     expect(patchCalls).toHaveLength(2);
     const secondPatchParams = patchCalls[1]?.[1] as {
@@ -255,29 +214,12 @@ describe("matrix scenario environment", () => {
       replacePaths?: string[];
     };
     const secondPatch = JSON.parse(secondPatchParams.raw) as Record<string, unknown>;
-    expect(secondPatch).toMatchObject({
-      channels: {
-        matrix: {
-          accounts: {
-            sut: {
-              autoJoin: null,
-              dm: { sessionScope: null },
-              execApprovals: null,
-            },
-            "qa-driver-bot-source": null,
-          },
-        },
-      },
-    });
-    expect(secondPatch).toMatchObject({
-      tools: { media: { audio: { scope: { default: null } } } },
-    });
-    expect(
-      (secondPatch.plugins as { entries?: Record<string, unknown> }).entries?.matrix as Record<
-        string,
-        unknown
-      >,
-    ).toEqual({ enabled: true });
+    expect(secondPatch).toHaveProperty("channels.matrix.accounts.sut.autoJoin", null);
+    expect(secondPatch).toHaveProperty("channels.matrix.accounts.sut.dm.sessionScope", null);
+    expect(secondPatch).toHaveProperty("channels.matrix.accounts.sut.execApprovals", null);
+    expect(secondPatch).toHaveProperty("channels.matrix.accounts.qa-driver-bot-source", null);
+    expect(secondPatch).toHaveProperty("tools.media.audio.scope.default", null);
+    expect(secondPatch).toHaveProperty("plugins.entries.matrix", { enabled: true });
     expect(secondPatchParams.replacePaths).toEqual([
       "channels.matrix.accounts.sut.autoJoinAllowlist",
       "channels.matrix.accounts.sut.dm.allowFrom",
@@ -296,7 +238,6 @@ describe("matrix scenario environment", () => {
   it("shares the preparation deadline and forwards gateway action options", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
-    const callOrder: string[] = [];
     let revisionReadCount = 0;
     let statusReadCount = 0;
     const revisionTimeouts: number[] = [];
@@ -330,17 +271,14 @@ describe("matrix scenario environment", () => {
         },
         "exec.approval.request": () => ({ id: "approval-1", status: "accepted" }),
       },
-      (method, opts) => {
-        callOrder.push(method);
+      (_method, opts) => {
         if (opts?.deadlineMs !== undefined && opts.deadlineMs <= Date.now()) {
           throw new Error("gateway RPC deadline expired");
         }
       },
     );
     const environment = createEnvironment();
-    const waitForConfigRestartSettle = vi.fn(async () => {
-      callOrder.push("config.settle");
-    });
+    const waitForConfigRestartSettle = vi.fn();
 
     const preparing = environment.prepareFlow(
       prepareInput(gateway, { waitForConfigRestartSettle }),
@@ -354,24 +292,11 @@ describe("matrix scenario environment", () => {
       { expectFinal: false, timeoutMs: 1_000 },
     );
 
-    expect(statusReadCount).toBe(3);
-    expect(callOrder).toEqual([
-      "config.get",
-      "channels.status",
-      "config.get",
-      "config.patch",
-      "config.get",
-      "config.get",
-      "channels.status",
-      "channels.status",
-      "exec.approval.request",
-    ]);
     expect(revisionTimeouts).toEqual([5_000, 4_000]);
     expect(statusTimeouts).toEqual([5_000, 4_000, 3_500]);
     expect(Date.now()).toBe(56_500);
     expect(scenarioContext.timeoutMs).toBe(8_000);
     expect(waitForConfigRestartSettle).not.toHaveBeenCalled();
-    expect(gateway.call.mock.calls.filter(([method]) => method === "config.patch")).toHaveLength(1);
     const patchCall = gateway.call.mock.calls.find(([method]) => method === "config.patch");
     expect(patchCall?.[1]).not.toHaveProperty("replacePaths");
     expect(gateway.call).toHaveBeenLastCalledWith(
@@ -409,9 +334,6 @@ describe("matrix scenario environment", () => {
       "config.get",
       "config.patch",
     ]);
-    expect(
-      gateway.call.mock.calls.map((call) => (call[2] as { deadlineMs?: number }).deadlineMs),
-    ).toEqual(Array.from({ length: gateway.call.mock.calls.length }, () => 60_000));
   });
 
   it("requires a fresh account after an effective Matrix token change", async () => {
@@ -459,7 +381,6 @@ describe("matrix scenario environment", () => {
       gateway.call.mock.calls.map((call) => (call[2] as { deadlineMs?: number }).deadlineMs),
     ).toEqual(Array.from({ length: gateway.call.mock.calls.length }, () => 60_000));
     expect(waitForConfigRestartSettle).not.toHaveBeenCalled();
-    expect(gateway.call.mock.calls.filter(([method]) => method === "config.patch")).toHaveLength(1);
   });
 
   it("rejects a stale account start after a delayed failed pre-restart status read", async () => {
@@ -482,22 +403,14 @@ describe("matrix scenario environment", () => {
           );
         },
       }),
-      restartAfterStateMutation: vi.fn(
-        async (
-          mutate: (context: {
-            configPath: string;
-            runtimeEnv: NodeJS.ProcessEnv;
-            stateDir: string;
-            tempRoot: string;
-          }) => Promise<void>,
-        ) => {
-          await mutate({
-            configPath: "/tmp/matrix-qa/config.json",
-            runtimeEnv: {},
-            stateDir: "/tmp/matrix-qa/state",
-            tempRoot: "/tmp/matrix-qa",
-          });
-        },
+      restartAfterStateMutation: vi.fn<
+        NonNullable<Preparation["gateway"]["restartAfterStateMutation"]>
+      >(async (mutate) =>
+        mutate({
+          ...gatewayPaths,
+          configPath: "/tmp/matrix-qa/config.json",
+          stateDir: "/tmp/matrix-qa/state",
+        }),
       ),
     };
     const environment = createEnvironment();

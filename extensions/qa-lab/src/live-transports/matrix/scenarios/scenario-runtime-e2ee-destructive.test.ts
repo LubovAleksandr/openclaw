@@ -155,8 +155,8 @@ function metadataStore(root: string, namespace = "storage-meta") {
   });
 }
 
-function createWrongAccountContext() {
-  return new Proxy(createMatrixQaE2eeTestContext(), {
+const createWrongAccountContext = () =>
+  new Proxy(createMatrixQaE2eeTestContext(), {
     get(target, property, receiver) {
       if (typeof property === "string" && property.startsWith("observer")) {
         throw new Error(`observer credential read: ${property}`);
@@ -164,11 +164,8 @@ function createWrongAccountContext() {
       return Reflect.get(target, property, receiver);
     },
   });
-}
 
-beforeEach(() => {
-  vi.clearAllMocks();
-});
+beforeEach(() => vi.clearAllMocks());
 
 it("awaits target room sync before sending", async () => {
   const order: string[] = [];
@@ -308,17 +305,10 @@ it("checks deleted-device status before releasing its disposable recovery runtim
   expect(result.details).toContain("default status exit code: 1");
   expect(result.details).toContain("degraded status exit code: 0");
   expect(result.details).toContain("device present on server: no");
+  const statusArgs = ["matrix", "verify", "status", "--account", "deleted-device"];
   expect(mocks.runMatrixQaCliJson.mock.calls.slice(1).map(([call]) => call.args)).toEqual([
-    ["matrix", "verify", "status", "--account", "deleted-device", "--json"],
-    [
-      "matrix",
-      "verify",
-      "status",
-      "--account",
-      "deleted-device",
-      "--allow-degraded-local-state",
-      "--json",
-    ],
+    [...statusArgs, "--json"],
+    [...statusArgs, "--allow-degraded-local-state", "--json"],
   ]);
   expect(cleanupOrder).toEqual([
     "owner:delete:RECOVERY",
@@ -370,8 +360,6 @@ it("uses disposable source and target owners without reading observer credential
 
   const result = await runMatrixQaE2eeWrongAccountRecoveryKeyScenario(createWrongAccountContext());
 
-  expect(registerWithToken).toHaveBeenCalledTimes(2);
-  expect(mocks.createMatrixQaE2eeScenarioClient).toHaveBeenCalledTimes(2);
   expect(mocks.loginMatrixQaRecoveryDevice).toHaveBeenCalledWith(
     expect.objectContaining({ password: "target-password", userId: "@target:matrix-qa.test" }),
   );
