@@ -86,6 +86,7 @@ describe.runIf("__vitest_browser__" in globalThis)("navigation rail menus", () =
       const registry = registryFor(document);
       const overlay = [...registry.members.keys()].find((entry) => entry.surface === surface);
       let escape: KeyboardEvent | undefined;
+      const readEscape = (): KeyboardEvent | undefined => escape;
       const record = (stage: string, detail: Record<string, unknown> = {}) => {
         const top = registry.stack.at(-1);
         if (events.length === 64) {
@@ -149,8 +150,8 @@ describe.runIf("__vitest_browser__" in globalThis)("navigation rail menus", () =
         record("before-keyboard");
         await userEvent.keyboard("{Escape}");
         record("after-keyboard", {
-          escapeReceived: Boolean(escape),
-          defaultPrevented: escape?.defaultPrevented,
+          escapeReceived: Boolean(readEscape()),
+          defaultPrevented: readEscape()?.defaultPrevented,
         });
         escape = undefined;
         await sidebar.updateComplete;
