@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { awaitGateBeforeSettlement, createDeferred } from "../../../test/helpers/promise.js";
 import { createTestGatewayScheduler } from "../../test-utils/gateway-scheduler-clock.js";
+import { makeCronJob } from "../delivery.test-helpers.js";
 import type { CronJob } from "../types.js";
 import { createCronServiceState, type CronServiceDeps } from "./state.js";
 import { wake } from "./wake.js";
@@ -31,13 +32,60 @@ function createState(jobs: CronJob[] = []) {
   };
 }
 
-describe("wake (cron timer)", () => {
-  it("returns ok:false on empty text without enqueueing or waking", async () => {
-    const { state, enqueueSessionEvent, deferSessionEvent } = createState();
-    expect(await wake(state, { mode: "now", text: "   " })).toEqual({ ok: false });
-    expect(enqueueSessionEvent).not.toHaveBeenCalled();
-    expect(deferSessionEvent).not.toHaveBeenCalled();
+function receiverJob(overrides: Partial<CronJob>) {
+  return makeCronJob({
+    id: "scheduled-session",
+    createdAtMs: 0,
+    updatedAtMs: 0,
+    payload: { kind: "agentTurn", message: "check pending work" },
+    sessionTarget: "main",
+    wakeMode: "now",
+    state: { nextRunAtMs: 60_000 },
+    ...overrides,
   });
+}
+
+function expectDeferred(fixture: ReturnType<typeof createState>, job: CronJob, at = 60_000) {
+  expect(fixture.deferSessionEvent).toHaveBeenCalledExactlyOnceWith(
+    "ping",
+    job,
+    undefined,
+    expect.any(Function),
+    at,
+    undefined,
+    undefined,
+  );
+  expect(fixture.enqueueSessionEvent).not.toHaveBeenCalled();
+}
+
+describe("wake (cron timer)", () => {
+  it.each([
+    { name: "empty text", mode: "now", text: "   ", expected: { ok: false } },
+    {
+      name: "no scheduled receiver",
+      mode: "next-heartbeat",
+      text: "ping",
+      expected: {
+        ok: false,
+        reason: expect.stringContaining("No enabled ordinary scheduled session job"),
+      },
+    },
+    {
+      name: "subagent target",
+      mode: "now",
+      text: "ping",
+      sessionKey: "agent:main:subagent:worker",
+      expected: { ok: false, reason: "unwakeable-session-key" },
+    },
+  ] as const)(
+    "rejects $name without enqueueing or waking",
+    async ({ expected, name: _name, ...opts }) => {
+      const { state, enqueueSessionEvent, deferSessionEvent } = createState();
+      expect(await wake(state, opts)).toEqual(expected);
+      expect(enqueueSessionEvent).not.toHaveBeenCalled();
+      expect(deferSessionEvent).not.toHaveBeenCalled();
+    },
+  );
 
   it("threads sessionKey into ordinary session admission on mode=now", async () => {
     const { state, enqueueSessionEvent, deferSessionEvent } = createState();
@@ -71,50 +119,24 @@ describe("wake (cron timer)", () => {
   ] satisfies Array<{ name: string } & Pick<CronJob, "schedule" | "trigger" | "activeHours">>)(
     "defers untargeted next-heartbeat work to an enabled $name session job",
     async (receiver) => {
-      const job: CronJob = {
-        id: "scheduled-session",
-        enabled: true,
-        createdAtMs: 0,
-        updatedAtMs: 0,
-        payload: { kind: "agentTurn", message: "check pending work" },
-        sessionTarget: "main",
-        wakeMode: "now",
-        state: { nextRunAtMs: 60_000 },
-        ...receiver,
-      };
-      const { state, enqueueSessionEvent, deferSessionEvent } = createState([
-        { ...job, id: "other-owner", agentId: "other" },
-        job,
-      ]);
-      expect(await wake(state, { mode: "next-heartbeat", text: "ping" })).toEqual({ ok: true });
-      expect(deferSessionEvent).toHaveBeenCalledExactlyOnceWith(
-        "ping",
-        job,
-        undefined,
-        expect.any(Function),
-        60_000,
-        undefined,
-        undefined,
-      );
-      expect(enqueueSessionEvent).not.toHaveBeenCalled();
+      const job = receiverJob(receiver);
+      const fixture = createState([{ ...job, id: "other-owner", agentId: "other" }, job]);
+      expect(await wake(fixture.state, { mode: "next-heartbeat", text: "ping" })).toEqual({
+        ok: true,
+      });
+      expectDeferred(fixture, job);
     },
   );
 
   it("does not accept deferred notices onto a one-shot with restricted active hours", async () => {
-    const job: CronJob = {
+    const job = receiverJob({
       id: "conditional-one-shot",
-      enabled: true,
-      createdAtMs: 0,
-      updatedAtMs: 0,
       schedule: { kind: "at", at: new Date(60_000).toISOString() },
-      payload: { kind: "agentTurn", message: "check pending work" },
-      sessionTarget: "main",
-      wakeMode: "now",
-      state: { nextRunAtMs: 60_000 },
       name: "Conditional one-shot",
       activeHours: { start: "09:00", end: "17:00", timezone: "UTC" },
-    };
-    const { state, enqueueSessionEvent, deferSessionEvent } = createState([job]);
+    });
+    const fixture = createState([job]);
+    const { state, enqueueSessionEvent, deferSessionEvent } = fixture;
     expect(await wake(state, { mode: "next-heartbeat", text: "ping" })).toEqual({
       ok: false,
       reason: expect.stringContaining("No enabled ordinary scheduled session job"),
@@ -132,26 +154,7 @@ describe("wake (cron timer)", () => {
     };
     state.store!.jobs.push(unconditional);
     expect(await wake(state, { mode: "next-heartbeat", text: "ping" })).toEqual({ ok: true });
-    expect(deferSessionEvent).toHaveBeenCalledExactlyOnceWith(
-      "ping",
-      unconditional,
-      undefined,
-      expect.any(Function),
-      120_000,
-      undefined,
-      undefined,
-    );
-    expect(enqueueSessionEvent).not.toHaveBeenCalled();
-  });
-
-  it("reports when no scheduled session can receive deferred work", async () => {
-    const { state, enqueueSessionEvent, deferSessionEvent } = createState();
-    expect(await wake(state, { mode: "next-heartbeat", text: "ping" })).toEqual({
-      ok: false,
-      reason: expect.stringContaining("No enabled ordinary scheduled session job"),
-    });
-    expect(enqueueSessionEvent).not.toHaveBeenCalled();
-    expect(deferSessionEvent).not.toHaveBeenCalled();
+    expectDeferred(fixture, unconditional, 120_000);
   });
 
   it("returns the ordinary admission refusal instead of reporting a lost wake as accepted", async () => {
@@ -193,18 +196,5 @@ describe("wake (cron timer)", () => {
       release.resolve();
       await pending.catch(() => undefined);
     }
-  });
-
-  it("rejects subagent sessionKey targets without enqueueing or waking", async () => {
-    const { state, enqueueSessionEvent, deferSessionEvent } = createState();
-    expect(
-      await wake(state, {
-        mode: "now",
-        text: "ping",
-        sessionKey: "agent:main:subagent:worker",
-      }),
-    ).toEqual({ ok: false, reason: "unwakeable-session-key" });
-    expect(enqueueSessionEvent).not.toHaveBeenCalled();
-    expect(deferSessionEvent).not.toHaveBeenCalled();
   });
 });

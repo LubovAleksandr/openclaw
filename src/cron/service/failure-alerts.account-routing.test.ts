@@ -39,7 +39,10 @@ function routingFixture(overrides: Partial<CronJob> = {}, deps: RoutingDeps = {}
     deferredNotifications,
     apply: (result: Parameters<typeof applyJobResult>[2]) =>
       applyJobResult(state, job, result, { deferredNotifications }),
-    drain: () => runPostPersistCronNotifications(state, structuredClone(deferredNotifications)),
+    drain: async () => {
+      expect(send).not.toHaveBeenCalled();
+      await runPostPersistCronNotifications(state, structuredClone(deferredNotifications));
+    },
   };
 }
 
@@ -141,16 +144,9 @@ it.each<RoutingCase>([
 });
 
 it("routes required delivery failure outside the failed topic", async () => {
-  const { send, apply, drain, deferredNotifications } = routingFixture(
-    {
-      delivery: {
-        ...primaryDelivery,
-        bestEffort: false,
-        failureDestination,
-      },
-    },
-    { storePath: "/tmp/openclaw-cron-unthreaded-failure-destination.json" },
-  );
+  const { send, apply, drain, deferredNotifications } = routingFixture({
+    delivery: { ...primaryDelivery, bestEffort: false, failureDestination },
+  });
   apply({
     status: "ok",
     deliveryAttempted: true,
@@ -161,7 +157,6 @@ it("routes required delivery failure outside the failed topic", async () => {
   });
 
   expect(deferredNotifications).toHaveLength(1);
-  expect(send).not.toHaveBeenCalled();
   await drain();
   expect(send).toHaveBeenCalledExactlyOnceWith(
     expect.objectContaining({
@@ -175,19 +170,12 @@ it("routes required delivery failure outside the failed topic", async () => {
   );
 });
 
-it("carries run start time without using it for alert cooldown", async () => {
+it("preserves the aliased primary route and run time while starting cooldown at completion", async () => {
   const runAtMs = Date.parse("2026-07-30T00:00:00.000Z");
   const endedAt = runAtMs + 5 * 60_000;
   const { job, send, apply, drain } = routingFixture(
+    { failureAlert: { to: "tg:19098680" } },
     {
-      id: "failed-run",
-      name: "Failed run",
-      createdAtMs: runAtMs,
-      updatedAtMs: runAtMs,
-      delivery: { mode: "announce", channel: "telegram", to: "telegram:19098680" },
-    },
-    {
-      storePath: "/tmp/openclaw-cron-failure-alert-run-time.json",
       cronConfig: { failureAlert: { enabled: true, after: 1, cooldownMs: 60_000 } },
       nowMs: () => endedAt,
     },
@@ -200,27 +188,10 @@ it("carries run start time without using it for alert cooldown", async () => {
   });
 
   expect(job.state.lastFailureAlertAtMs).toBe(endedAt);
-  expect(send).not.toHaveBeenCalled();
-  await drain();
-  expect(send).toHaveBeenCalledWith(expect.objectContaining({ runAtMs }));
-});
-
-it("keeps the primary account and topic on provider-aliased failure alerts", async () => {
-  const { send, apply, drain } = routingFixture(
-    { failureAlert: { to: "tg:19098680" } },
-    { storePath: "/tmp/openclaw-cron-failure-alert-thread-routing.json" },
-  );
-  apply({
-    status: "error",
-    error: "provider unavailable",
-    startedAt: 1,
-    endedAt: 2,
-  });
-
-  expect(send).not.toHaveBeenCalled();
   await drain();
   expect(send).toHaveBeenCalledWith(
     expect.objectContaining({
+      runAtMs,
       ...failureDestination,
       to: "tg:19098680",
       threadId: 42,

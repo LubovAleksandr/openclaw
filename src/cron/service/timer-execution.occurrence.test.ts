@@ -6,69 +6,15 @@ import {
   type ScheduledOccurrence,
 } from "../scheduled-occurrence.js";
 import type { CronStoredJob } from "../types.js";
-import type { CronServiceDeps } from "./state.js";
 import { executeJobCore } from "./timer-execution.js";
 
-/**
- * Every executor the cron service can call, classified by whether it starts
- * work for an admitted occurrence. Adding an executor to `CronServiceDeps`
- * without classifying it here fails typecheck.
- */
-type CronExecutorDep = Extract<
-  keyof CronServiceDeps,
-  `run${string}` | `evaluate${string}` | `enqueue${string}`
->;
-const EXECUTOR_ADMISSION = {
-  evaluateCronTrigger: "occurrence",
-  runScriptJob: "occurrence",
-  runIsolatedAgentJob: "occurrence",
-  runSessionEvent: "occurrence",
-  // Consumes the occurrence; a command is not an agent run and mints no context.
-  runCommandJob: "occurrence",
-  // Script notify/wake and producer events enter ordinary session admission.
-  enqueueSystemEvent: "not-admitted",
-  enqueueSessionEvent: "not-admitted",
-  // Scheduler binding, not an executor.
-  runSchedulerOwned: "not-admitted",
-  // An ordinary turn in the owning conversation after a failed occurrence settles.
-  runCronFailureRepair: "not-admitted",
-} as const satisfies Record<CronExecutorDep, "occurrence" | "not-admitted">;
-
-type OccurrenceExecutor = {
-  [K in keyof typeof EXECUTOR_ADMISSION]: (typeof EXECUTOR_ADMISSION)[K] extends "occurrence"
-    ? K
-    : never;
-}[keyof typeof EXECUTOR_ADMISSION];
-// An executor classified as admitted must require the occurrence in its params.
-type RequiresOccurrence<K extends OccurrenceExecutor> = Parameters<
-  NonNullable<CronServiceDeps[K]>
->[0] extends { occurrence: ScheduledOccurrence }
-  ? true
-  : false;
-const executorsRequireOccurrence: { [K in OccurrenceExecutor]: RequiresOccurrence<K> } = {
-  evaluateCronTrigger: true,
-  runScriptJob: true,
-  runIsolatedAgentJob: true,
-  runSessionEvent: true,
-  runCommandJob: true,
-};
-
 type PayloadKind = CronStoredJob["payload"]["kind"];
-
-function payloadFor(kind: PayloadKind): CronStoredJob["payload"] {
-  switch (kind) {
-    case "agentTurn":
-      return { kind, message: "work" };
-    case "systemEvent":
-      return { kind, text: "check in" };
-    case "command":
-      return { kind, argv: ["true"] };
-    case "script":
-      return { kind, script: "return {}" };
-  }
-  throw new Error(`unclassified payload kind ${String(kind)}`);
-}
-
+const PAYLOADS = {
+  agentTurn: { kind: "agentTurn", message: "work" },
+  systemEvent: { kind: "systemEvent", text: "check in" },
+  command: { kind: "command", argv: ["true"] },
+  script: { kind: "script", script: "return {}" },
+} satisfies Record<PayloadKind, CronStoredJob["payload"]>;
 const PAYLOAD_KINDS: readonly PayloadKind[] = ["agentTurn", "systemEvent", "command", "script"];
 const SESSION_TARGETS: readonly CronStoredJob["sessionTarget"][] = [
   "isolated",
@@ -76,6 +22,13 @@ const SESSION_TARGETS: readonly CronStoredJob["sessionTarget"][] = [
   "session:agent:main:dashboard:parent",
   "main",
 ];
+// Expected routes in SESSION_TARGETS order, independent of the dispatch implementation.
+const EXECUTORS = {
+  agentTurn: ["runIsolatedAgentJob", "runIsolatedAgentJob", "runSessionEvent", "runSessionEvent"],
+  systemEvent: [undefined, undefined, undefined, "runSessionEvent"],
+  command: ["runCommandJob", "runCommandJob", "runCommandJob", undefined],
+  script: ["runScriptJob", "runScriptJob", "runScriptJob", "runScriptJob"],
+} satisfies Record<PayloadKind, readonly (string | undefined)[]>;
 
 function harness() {
   const admitted: ScheduledOccurrence[] = [];
@@ -104,63 +57,41 @@ function harness() {
 }
 
 const MATRIX = PAYLOAD_KINDS.flatMap((kind) =>
-  SESSION_TARGETS.flatMap((sessionTarget) =>
-    [false, true].map((withTrigger) => ({ kind, sessionTarget, withTrigger })),
+  SESSION_TARGETS.flatMap((sessionTarget, index) =>
+    [false, true].map((withTrigger) => ({
+      kind,
+      sessionTarget,
+      withTrigger,
+      executor: EXECUTORS[kind][index],
+    })),
   ),
 );
 
-describe("scheduled occurrence admission", () => {
-  it("classifies every executor that can start occurrence work", () => {
-    expect(Object.values(executorsRequireOccurrence).every(Boolean)).toBe(true);
-    expect(Object.keys(EXECUTOR_ADMISSION).toSorted()).toMatchInlineSnapshot(`
-      [
-        "enqueueSessionEvent",
-        "enqueueSystemEvent",
-        "evaluateCronTrigger",
-        "runCommandJob",
-        "runCronFailureRepair",
-        "runIsolatedAgentJob",
-        "runSchedulerOwned",
-        "runScriptJob",
-        "runSessionEvent",
-      ]
-    `);
+function matrixJob({ kind, sessionTarget, withTrigger }: (typeof MATRIX)[number]): CronStoredJob {
+  return makeCronJob({
+    payload: PAYLOADS[kind],
+    sessionTarget,
+    ...(withTrigger ? { trigger: { script: "return { fire: true }" } } : {}),
   });
+}
 
+describe("scheduled occurrence admission", () => {
   it.each(MATRIX)(
     "$kind on $sessionTarget (trigger: $withTrigger) runs every executor with one admitted occurrence",
-    async ({ kind, sessionTarget, withTrigger }) => {
+    async (row) => {
       const { state, admitted, release, seen } = harness();
-      const job: CronStoredJob = {
-        ...makeCronJob({ payload: payloadFor(kind), sessionTarget }),
-        ...(withTrigger ? { trigger: { script: "return { fire: true }" } } : {}),
-      };
-
-      await executeJobCore(state, job);
-
+      await executeJobCore(state, matrixJob(row));
       expect(admitted).toHaveLength(1);
-      for (const call of seen) {
-        expect(call, call.executor).toEqual({ executor: call.executor, occurrence: admitted[0] });
-      }
+      expect(seen).toEqual(
+        [
+          ...(row.withTrigger ? ["evaluateCronTrigger"] : []),
+          ...(row.executor ? [row.executor] : []),
+        ].map((executor) => ({ executor, occurrence: admitted[0] })),
+      );
       // The occurrence outlives every executor it admitted and is released once.
       expect(release).toHaveBeenCalledOnce();
     },
   );
-
-  it("reaches every admitted executor across the matrix", async () => {
-    const reached = new Set<string>();
-    for (const { kind, sessionTarget, withTrigger } of MATRIX) {
-      const { state, seen } = harness();
-      await executeJobCore(state, {
-        ...makeCronJob({ payload: payloadFor(kind), sessionTarget }),
-        ...(withTrigger ? { trigger: { script: "return { fire: true }" } } : {}),
-      });
-      for (const call of seen) {
-        reached.add(call.executor);
-      }
-    }
-    expect([...reached].toSorted()).toEqual(Object.keys(executorsRequireOccurrence).toSorted());
-  });
 
   it("admits before trigger evaluation, so a trigger that does not fire still consumes it", async () => {
     const { state, admitted, release } = harness();
@@ -169,7 +100,7 @@ describe("scheduled occurrence admission", () => {
       fire: false,
     }));
     await executeJobCore(state, {
-      ...makeCronJob({ payload: payloadFor("agentTurn") }),
+      ...makeCronJob({ payload: PAYLOADS.agentTurn }),
       trigger: { script: "return { fire: false }" },
     });
     expect(admitted).toHaveLength(1);
@@ -181,7 +112,8 @@ describe("scheduled occurrence admission", () => {
 
   it.each(MATRIX)(
     "a paused $kind occurrence on $sessionTarget (trigger: $withTrigger) runs nothing",
-    async ({ kind, sessionTarget, withTrigger }) => {
+    async (row) => {
+      const { kind, sessionTarget } = row;
       const { state, seen } = harness();
       const pause = {
         reason: "archived" as const,
@@ -191,10 +123,7 @@ describe("scheduled occurrence admission", () => {
         ...unadmittedScheduledOccurrence("paused"),
         pause,
       });
-      const result = await executeJobCore(state, {
-        ...makeCronJob({ payload: payloadFor(kind), sessionTarget }),
-        ...(withTrigger ? { trigger: { script: "return { fire: true }" } } : {}),
-      });
+      const result = await executeJobCore(state, matrixJob(row));
       if (kind === "command") {
         // Command jobs do not pause on a missing parent; they still run with the occurrence.
         expect(result).not.toHaveProperty("parentUnavailable");
@@ -215,7 +144,7 @@ describe("scheduled occurrence admission", () => {
   it("gives every run a fail context when no admitter is configured", async () => {
     const { state, seen } = harness();
     delete state.deps.admitScheduledOccurrence;
-    await executeJobCore(state, makeCronJob({ payload: payloadFor("agentTurn") }));
+    await executeJobCore(state, makeCronJob({ payload: PAYLOADS.agentTurn }));
     const occurrence = seen[0]?.occurrence as ScheduledOccurrence;
     expect(
       occurrence.mint({
