@@ -42,38 +42,22 @@ afterEach(() => {
   rmSync(`${tempDir}.zip`, { force: true });
 });
 
+it("prints artifact JSON", async () => {
+  await runRecordCommand("artifacts", ["--json"]);
+  expect(json()).toMatchObject({
+    tokenSource: "cached-access-token",
+    artifacts: [
+      { transcriptEntries: [{ transcript, entries: [{ text: "Hello from the transcript." }] }] },
+    ],
+  });
+});
 it.each([
-  [
-    "artifacts",
-    ["--conference-record", "rec-1", "--json"],
-    {
-      tokenSource: "cached-access-token",
-      artifacts: [
-        { transcriptEntries: [{ transcript, entries: [{ text: "Hello from the transcript." }] }] },
-      ],
-    },
-  ],
-  [
-    "attendance",
-    ["--conference-record", "rec-1"],
-    ["attendance rows: 1", "participant: Alice", participantSession],
-  ],
-  [
-    "attendance",
-    ["--conference-record", "rec-1", "--format", "markdown"],
-    ["# Google Meet Attendance", "## Alice", participantSession],
-  ],
-] satisfies Array<[string, string[], Record<string, unknown> | string[]]>)(
-  "prints %s output for %j",
-  async (command, args, expected) => {
-    await runApiCommand(command, args);
-    if (Array.isArray(expected)) {
-      cli.expectText(output(), ...expected);
-    } else {
-      expect(json()).toMatchObject(expected);
-    }
-  },
-);
+  ["summary", "attendance rows: 1", "participant: Alice"],
+  ["markdown", "# Google Meet Attendance", "## Alice"],
+])("prints %s attendance", async (format, heading, participant) => {
+  await runRecordCommand("attendance", ["--format", format]);
+  cli.expectText(output(), heading, participant, participantSession);
+});
 
 it.each([
   [["--meeting", "abc-defg-hij"], "space: spaces/abc-defg-hij"],

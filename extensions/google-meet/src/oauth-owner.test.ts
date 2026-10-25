@@ -31,6 +31,7 @@ const rotated = {
 };
 vi.mock("node:dns/promises", { spy: true });
 let stateDir: string;
+let refuseSettlement = false;
 let current = { plugins: { entries: { "google-meet": { config: { oauth: initial } } } } };
 const runtime = {
   state: {
@@ -41,12 +42,22 @@ const runtime = {
       if (options.maxEntries === undefined || !authority) {
         throw new Error("OAuth fixture requires bounded state and current authority");
       }
-      return createPluginStateKeyedStoreV2ForTests<T>("google-meet", options, authority);
+      const store = createPluginStateKeyedStoreV2ForTests<T>("google-meet", options, authority);
+      return {
+        ...store,
+        compareAndApply: async (...args: Parameters<typeof store.compareAndApply>) => {
+          if (refuseSettlement) {
+            throw new Error("synthetic settlement storage failure");
+          }
+          return store.compareAndApply(...args);
+        },
+      };
     },
   },
   config: { current: () => current },
 };
 beforeEach(async () => {
+  refuseSettlement = false;
   await closeOpenClawStateDatabaseAsync();
   resetPluginStateStoreForTests();
   stateDir = mkdtempSync(path.join(os.tmpdir(), "meet-oauth-owner-"));
@@ -225,28 +236,12 @@ it("does not treat Date-invalid cached expiry as a usable grant", async () => {
   expect(network).toHaveBeenCalledOnce();
 });
 it("cannot publish a rotated token when durable settlement fails", async () => {
-  const refusingRuntime = {
-    ...runtime,
-    state: {
-      openKeyedStoreV2: <T>(
-        options: OpenAsyncKeyedStoreOptions,
-        authority?: PluginStateActionAuthority,
-      ) => {
-        const store = runtime.state.openKeyedStoreV2<T>(options, authority);
-        return {
-          ...store,
-          compareAndApply: async (...args: Parameters<typeof store.compareAndApply>) => {
-            if (network.mock.calls.length) {
-              throw new Error("synthetic settlement storage failure");
-            }
-            return await store.compareAndApply(...args);
-          },
-        };
-      },
-    },
-  };
-  const network = stubFetch();
-  await expect(token(refusingRuntime)).rejects.toThrow("settlement storage failure");
+  const network = stubFetch().mockImplementationOnce(async () => {
+    refuseSettlement = true;
+    return Response.json(rotated);
+  });
+  await expect(token()).rejects.toThrow("settlement storage failure");
+  refuseSettlement = false;
   await expectToken();
   expect(network).toHaveBeenCalledTimes(2);
 });

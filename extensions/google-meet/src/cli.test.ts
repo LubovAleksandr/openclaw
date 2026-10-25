@@ -99,56 +99,44 @@ it.each(["resolve-space", "preflight"])(
   },
 );
 
-it.each(["chrome-node", "twilio"] as const)(
-  "prints %s session doctor output",
-  async (transport) => {
-    const chrome = transport === "chrome-node";
-    const session = meetSession({
-      transport,
-      chrome: {
-        health: {
-          lastCaptionSpeaker: "Alice",
-          lastCaptionText: "Hello",
-          audioInputActive: true,
-          audioOutputActive: false,
-        },
-      },
-      ...(!chrome && {
-        chrome: undefined,
-        twilio: {
-          dialInNumber: "+15551234567",
-          pinProvided: true,
-          voiceCallId: "call-1",
-          dtmfSent: true,
-          introSent: true,
-        },
-      }),
-    });
-    if (!chrome) {
-      session.chrome = undefined;
-    }
-    await run(["doctor", "meet_1"], {
-      runtime: { status: async () => ({ found: true, session }) },
-    });
-    if (chrome) {
-      cli.expectText(
-        output(),
-        "last caption text: Alice: Hello",
-        "audio input active: yes",
-        "audio output active: no",
-      );
-    } else {
-      cli.expectText(
-        output(),
-        "twilio dial-in: +15551234567",
-        "voice call id: call-1",
-        "dtmf sent: yes",
-        "intro sent: yes",
-      );
-      expect(output()).not.toContain("audio input active:");
-    }
+const chromeDoctor = meetSession({
+  transport: "chrome-node",
+  chrome: {
+    health: {
+      lastCaptionSpeaker: "Alice",
+      lastCaptionText: "Hello",
+      audioInputActive: true,
+      audioOutputActive: false,
+    },
   },
-);
+});
+const twilioDoctor = meetSession({
+  transport: "twilio",
+  twilio: {
+    dialInNumber: "+15551234567",
+    pinProvided: true,
+    voiceCallId: "call-1",
+    dtmfSent: true,
+    introSent: true,
+  },
+});
+twilioDoctor.chrome = undefined;
+it.each([
+  [
+    chromeDoctor,
+    ["last caption text: Alice: Hello", "audio input active: yes", "audio output active: no"],
+  ],
+  [
+    twilioDoctor,
+    ["twilio dial-in: +15551234567", "voice call id: call-1", "dtmf sent: yes", "intro sent: yes"],
+  ],
+] as const)("prints $0.transport session doctor output", async (session, lines) => {
+  await run(["doctor", "meet_1"], { runtime: { status: async () => ({ found: true, session }) } });
+  cli.expectText(output(), ...lines);
+  if (!session.chrome) {
+    expect(output()).not.toContain("audio input active:");
+  }
+});
 
 const tokenUrl = "https://oauth2.googleapis.com/token";
 const spacesUrl = "https://meet.googleapis.com/v2/spaces";
@@ -186,18 +174,14 @@ it.each([
   const report = json();
   expect(report).toMatchObject({ ok: !failedUrl, configured: true });
   if (failedUrl) {
-    expect(report.checks).toEqual(
-      expect.arrayContaining([
-        {
-          id,
-          ok: false,
-          message:
-            id === "oauth-token"
-              ? "Google Meet OAuth refresh transport failed"
-              : "access_token=[redacted] refresh_token=[redacted] client_secret=[redacted]",
-        },
-      ]),
-    );
+    expect(report.checks).toContainEqual({
+      id,
+      ok: false,
+      message:
+        id === "oauth-token"
+          ? "Google Meet OAuth refresh transport failed"
+          : "access_token=[redacted] refresh_token=[redacted] client_secret=[redacted]",
+    });
   } else {
     expect(report).toMatchObject({
       tokenSource: "refresh-token",
@@ -308,17 +292,6 @@ it("prints setup checks as text and JSON", async () => {
   expect(process.exitCode).toBe(1);
 });
 
-it("accepts --json on session status", async () => {
-  const sessions = [
-    meetSession({ transport: "twilio", participantIdentity: "Twilio PSTN participant" }),
-  ];
-  await run(["status", "--json"], { runtime: { status: async () => ({ found: true, sessions }) } });
-  expect(json()).toMatchObject({
-    found: true,
-    sessions: [{ id: "meet_1", transport: "twilio" }],
-  });
-});
-
 it("prints cursor-based transcripts from the gateway-owned runtime", async () => {
   const callGatewayFromCli = vi.fn(async () => ({
     found: true,
@@ -344,67 +317,38 @@ it("prints cursor-based transcripts from the gateway-owned runtime", async () =>
   );
 });
 
+const speechFlags = `${MEET_URL} --transport chrome-node --mode bidi --message Hello`;
+const speechRequest = { url: MEET_URL, transport: "chrome-node", mode: "bidi", message: "Hello" };
 it.each([
-  ["join", "chrome-node", "realtime", { id: "meet_gateway", transport: "chrome-node" }],
-  ["test-speech", "chrome", "bidi", { createdSession: true, session: { mode: "bidi" } }],
-] as const)(
-  "delegates %s to the gateway-owned runtime",
-  async (command, transport, mode, expected) => {
-    const result = {
-      session: { ...session, transport, mode },
-      ...(command === "test-speech" ? { createdSession: true } : {}),
-    };
-    const callGatewayFromCli = vi.fn(async () => result);
+  ["join", speechFlags, speechRequest, { session }],
+  ["test-speech", speechFlags, speechRequest, { createdSession: true, session }],
+  [
+    "test-listen",
+    `${MEET_URL} --transport chrome-node --timeout-ms 30000`,
+    { url: MEET_URL, transport: "chrome-node", timeoutMs: 30000 },
+    { listenVerified: true, transcriptLines: 1 },
+  ],
+  ["status", "--json", { sessionId: undefined }, { found: true, sessions: [session] }],
+] satisfies Array<[string, string, Record<string, unknown>, unknown]>)(
+  "delegates %s and prints its result without loading the local runtime",
+  async (command, flags, payload, response) => {
+    const callGatewayFromCli = vi.fn(async () => response);
     const ensureRuntime = vi.fn(async () => {
-      throw new Error("local runtime should not be loaded");
+      throw new Error("Unexpected local runtime");
     });
-    await run(
-      [command, MEET_URL, "--transport", transport, "--mode", mode, "--message", "Hello meeting"],
-      { callGatewayFromCli, ensureRuntime },
-    );
+    await run([command, ...flags.split(" ")], { callGatewayFromCli, ensureRuntime });
+    const method =
+      command === "test-speech" ? "testSpeech" : command === "test-listen" ? "testListen" : command;
     expect(callGatewayFromCli).toHaveBeenCalledWith(
-      command === "join" ? "googlemeet.join" : "googlemeet.testSpeech",
+      `googlemeet.${method}`,
       expect.anything(),
-      expect.objectContaining({
-        url: MEET_URL,
-        transport,
-        mode,
-        message: "Hello meeting",
-      }),
+      expect.objectContaining(payload),
       expect.anything(),
     );
     expect(ensureRuntime).not.toHaveBeenCalled();
-    expect(json()).toMatchObject(expected);
+    expect(json()).toEqual(command === "join" ? session : response);
   },
 );
-
-it("runs a listen-first health probe", async () => {
-  const testListen = vi.fn(async () => ({
-    createdSession: true,
-    inCall: true,
-    manualAction: undefined,
-    listenVerified: true,
-    listenTimedOut: false,
-    captioning: true,
-    captionsEnabledAttempted: true,
-    transcriptLines: 1,
-    lastCaptionAt: undefined,
-    lastCaptionSpeaker: undefined,
-    lastCaptionText: undefined,
-    recentTranscript: [],
-    session: meetSession({ transport: "chrome-node", mode: "transcribe" }),
-  }));
-
-  await run(["test-listen", MEET_URL, "--transport", "chrome-node", "--timeout-ms", "30000"], {
-    runtime: { testListen },
-  });
-  expect(testListen).toHaveBeenCalledWith({
-    url: MEET_URL,
-    transport: "chrome-node",
-    timeoutMs: 30000,
-  });
-  expect(json()).toMatchObject({ listenVerified: true, transcriptLines: 1 });
-});
 
 it.each([
   ["setup --mode agnt", /mode must be/],
