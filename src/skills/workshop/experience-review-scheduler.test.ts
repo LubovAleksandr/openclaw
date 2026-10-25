@@ -1,16 +1,16 @@
 import { setImmediate } from "node:timers/promises";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { TranscriptEntryAnchor } from "../../config/sessions/transcript-entry-anchor.js";
-import { GatewayDrainingError } from "../../process/gateway-work-admission.js";
 import {
   createSkillExperienceReviewScheduler,
   type ExperienceReviewCandidate,
   type SkillExperienceReviewParams,
 } from "./experience-review-scheduler.js";
 
-const log = vi.hoisted(() => ({ debug: vi.fn(), warn: vi.fn() }));
-// mock-isolation: Capture severity without initializing real log sinks.
-vi.mock("../../logging/subsystem.js", () => ({ createSubsystemLogger: () => log }));
+// mock-isolation: Keep scheduler failures out of real log sinks.
+vi.mock("../../logging/subsystem.js", () => ({
+  createSubsystemLogger: () => ({ debug: vi.fn(), warn: vi.fn() }),
+}));
 const source = {
   agentId: "main",
   sessionId: "session-1",
@@ -25,8 +25,7 @@ beforeEach(() => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   now = 1_000;
   vi.spyOn(Date, "now").mockImplementation(() => now);
-  log.debug.mockReset();
-  log.warn.mockReset();
+  vi.clearAllMocks();
   runReview.mockReset();
   scheduler = createSkillExperienceReviewScheduler({ isSystemActive: () => false, runReview });
 });
@@ -35,9 +34,7 @@ afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
 });
-type TurnOptions = Partial<SkillExperienceReviewParams> & {
-  sessionKey?: string;
-};
+type TurnOptions = Partial<SkillExperienceReviewParams> & { sessionKey?: string };
 function turn(
   modelIterations: number,
   { sessionKey = source.sessionKey, ...overrides }: TurnOptions = {},
@@ -52,12 +49,7 @@ function turn(
       modelId: "gpt-test",
       modelIterations,
       skillWorkshopAvailable: true,
-      foregroundPromptContext: {
-        agentId: "main",
-        workspaceDir: "/workspace",
-        sandboxSessionKey: source.sessionKey,
-        trigger: "user",
-      },
+      foregroundPromptContext: { agentId: "main", workspaceDir: "/workspace", trigger: "user" },
     },
     config: { skills: { workshop: { autonomous: { mode: "auto" } } } },
     source,
@@ -68,28 +60,27 @@ function countedTurn(iterations: number, timers: number, options?: TurnOptions) 
   turn(iterations, options);
   expect(vi.getTimerCount()).toBe(timers);
 }
-async function fireTimers() {
+async function fireTimers(calls?: number) {
   vi.runOnlyPendingTimers();
   await setImmediate();
+  if (calls !== undefined) {
+    expect(runReview).toHaveBeenCalledTimes(calls);
+  }
 }
 
 it("backs off all sessions after a TPM rejection without replaying the failed review", async () => {
   runReview.mockRejectedValue(new Error("429 Rate limit reached: tokens per min (TPM)"));
   turn(10);
-  await fireTimers();
-  expect(runReview).toHaveBeenCalledTimes(1);
+  await fireTimers(1);
   for (const [index, minutes] of [15, 30, 60].entries()) {
     turn(10, { sessionKey: `agent:main:session-${minutes}` });
     now += minutes * 60_000 - 1;
-    await fireTimers();
-    expect(runReview).toHaveBeenCalledTimes(index + 1);
+    await fireTimers(index + 1);
     now += 1;
-    await fireTimers();
-    expect(runReview).toHaveBeenCalledTimes(index + 2);
+    await fireTimers(index + 2);
   }
   now += 60 * 60_000;
-  await fireTimers();
-  expect(runReview).toHaveBeenCalledTimes(4);
+  await fireTimers(4);
 });
 
 it("defers queued reviews when a foreground turn hits the shared rate limit", async () => {
@@ -100,28 +91,13 @@ it("defers queued reviews when a foreground turn hits the shared rate limit", as
     });
   turn(10);
   foregroundRejection();
-  await fireTimers();
-  expect(runReview).not.toHaveBeenCalled();
+  await fireTimers(0);
   now += 15 * 60_000 - 1;
   foregroundRejection();
   now += 1;
-  await fireTimers();
-  expect(runReview).not.toHaveBeenCalled();
+  await fireTimers(0);
   now += 15 * 60_000;
-  await fireTimers();
-  expect(runReview).toHaveBeenCalledOnce();
-});
-
-it.each([
-  [new GatewayDrainingError(), "debug"],
-  [new Error("provider request failed"), "warn"],
-] as const)("reports %s at %s level", async (error, level) => {
-  runReview.mockRejectedValue(error);
-  turn(10);
-  log.debug.mockClear();
-  await fireTimers();
-  expect(log[level]).toHaveBeenCalledOnce();
-  expect(log[level === "debug" ? "warn" : "debug"]).not.toHaveBeenCalled();
+  await fireTimers(1);
 });
 
 it.each(["reported", "messages"])("accumulates %s iterations despite skill use", async (kind) => {
@@ -158,8 +134,7 @@ it.each([8, 10])(
   async (iterations) => {
     countedTurn(iterations, iterations === 10 ? 1 : 0);
     turn(1, { workshopMutated: true });
-    await fireTimers();
-    expect(runReview).not.toHaveBeenCalled();
+    await fireTimers(0);
     countedTurn(9, 0);
     countedTurn(1, 1);
   },

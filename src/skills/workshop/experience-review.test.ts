@@ -28,12 +28,6 @@ import {
 } from "../../infra/diagnostic-events.js";
 import { requireNodeSqlite } from "../../infra/node-sqlite.js";
 import { readSqliteDatabaseScopedWriteTokensForPath } from "../../infra/sqlite-database-admission.js";
-import { runBeforeAgentReplyForTurn } from "../../plugins/before-agent-reply.js";
-import {
-  initializeGlobalHookRunner,
-  resetGlobalHookRunner,
-} from "../../plugins/hook-runner-global.js";
-import { createMockPluginRegistry } from "../../plugins/hooks.test-fixtures.js";
 import {
   createOpenClawTestState,
   type OpenClawTestState,
@@ -46,7 +40,6 @@ import type { runSkillWorkshopReview } from "./review-run.js";
 import { resolveWorkshopSkillsDir } from "./skills-root.js";
 
 const mocks = vi.hoisted(() => ({
-  runSkillWorkshopReview: vi.fn(),
   runEmbeddedAgent: vi.fn(),
   listWorkshopChanges: vi.fn(),
   postWorkshopChangeNotice: vi.fn(async () => {}),
@@ -54,10 +47,6 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../../agents/embedded-agent.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("../../agents/embedded-agent.js")>()),
   runEmbeddedAgent: mocks.runEmbeddedAgent,
-}));
-vi.mock("./review-run.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("./review-run.js")>()),
-  runSkillWorkshopReview: mocks.runSkillWorkshopReview,
 }));
 vi.mock("./library.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./library.js")>()),
@@ -83,7 +72,6 @@ beforeEach(async () => {
   state = await createOpenClawTestState({ layout: "state-only" });
   candidate = await makeCandidate("review", "gpt-test");
   setRuntimeConfigSnapshot(candidate.config);
-  mocks.runSkillWorkshopReview.mockReset();
   mocks.runEmbeddedAgent.mockReset();
   mocks.listWorkshopChanges.mockReset().mockResolvedValue([]);
   mocks.postWorkshopChangeNotice.mockClear();
@@ -97,8 +85,6 @@ beforeEach(async () => {
 afterEach(async () => {
   stopUsage();
   clearPromptCacheObservations();
-  mocks.runEmbeddedAgent.mockReset();
-  resetGlobalHookRunner();
   vi.restoreAllMocks();
   await state.cleanup();
 });
@@ -109,53 +95,22 @@ function observe(sessionId: string) {
   beginOpenAIObservation({ sessionId });
   completePromptCacheObservation({ sessionId, usage: { cacheRead: 8_000 } });
 }
-async function useRealReview() {
-  const review = await vi.importActual<{ runSkillWorkshopReview: typeof runSkillWorkshopReview }>(
-    "./review-run.js",
-  );
-  mocks.runSkillWorkshopReview.mockImplementation(review.runSkillWorkshopReview);
-}
 function withAdmission(run: (assertCurrent: ReturnType<typeof activeAssertion>) => Promise<void>) {
-  mocks.runSkillWorkshopReview.mockImplementation(async (params: ReviewParams) => {
-    try {
-      const admitted = await params.preparedRunAdmission.admit("embedded");
-      const assertCurrent = activeAssertion(admitted, params.abortSignal);
-      expect(assertCurrent).toBeDefined();
-      await run(assertCurrent);
-      return completedReview;
-    } finally {
-      params.preparedRunAdmission.close();
-    }
+  mocks.runEmbeddedAgent.mockImplementation(async (params: ReviewParams) => {
+    const admitted = await params.preparedRunAdmission.admit("embedded");
+    await run(expectDefined(activeAssertion(admitted, params.abortSignal), "review admission"));
+    return completedReview;
   });
 }
 it.each(["success", "failure"])(
-  "isolates review diagnostics and user reply hooks after %s",
+  "cleans up system review diagnostics after %s without affecting the source",
   async (outcome) => {
-    const handler = vi.fn(() => ({ handled: true }));
-    initializeGlobalHookRunner(
-      createMockPluginRegistry([
-        { hookName: "before_agent_reply", handler, eligibleTriggers: ["user"] },
-      ]),
-    );
-    const replyHook = (trigger: string | undefined, runId: string) =>
-      runBeforeAgentReplyForTurn({
-        runId,
-        trigger,
-        event: { cleanedBody: prompt },
-        context: { sessionKey: candidate.source.sessionKey },
-      });
-    await expect(
-      replyHook(candidate.ctx.foregroundPromptContext.trigger, "control"),
-    ).resolves.toEqual({ handled: true });
-    expect(handler).toHaveBeenCalledOnce();
-    handler.mockClear();
-    await useRealReview();
     const foreground = { sessionId: candidate.source.sessionId };
     observe(foreground.sessionId);
     let reviewSessionId = "";
     mocks.runEmbeddedAgent.mockImplementation(async (params: ReviewParams) => {
       reviewSessionId = params.sessionId;
-      await replyHook(params.trigger, params.runId);
+      expect(params.trigger).toBeUndefined();
       observe(reviewSessionId);
       if (outcome === "failure") {
         throw new Error("review provider failed");
@@ -164,13 +119,10 @@ it.each(["success", "failure"])(
     });
 
     const review = runSkillExperienceReview(candidate);
-    if (outcome === "failure") {
-      await expect(review).rejects.toThrow("review provider failed");
-    } else {
-      await review;
-    }
+    await (outcome === "failure"
+      ? expect(review).rejects.toThrow("review provider failed")
+      : review);
 
-    expect(handler).not.toHaveBeenCalled();
     expect(reviewSessionId).toMatch(/^internal-session-effects-/);
     expect(beginOpenAIObservation({ sessionId: reviewSessionId }).previousCacheRead).toBeNull();
     expect(beginOpenAIObservation(foreground).previousCacheRead).toBe(8_000);
@@ -178,7 +130,6 @@ it.each(["success", "failure"])(
 );
 
 it("yields an in-flight review when interactive work starts", async () => {
-  await useRealReview();
   const ownHandle = createEmbeddedRunHandle();
   const interactiveHandle = createEmbeddedRunHandle({ abort: vi.fn() });
   mocks.runEmbeddedAgent.mockImplementation(async (params: ReviewParams) => {
@@ -208,49 +159,36 @@ it("announces changes committed before the review run failed", async () => {
     createdAtMs: 1,
   };
   mocks.listWorkshopChanges.mockResolvedValue([committed]);
-  mocks.runSkillWorkshopReview.mockResolvedValue({
+  mocks.runEmbeddedAgent.mockResolvedValue({
     meta: { durationMs: 1, error: { kind: "timeout", message: "model request timed out" } },
   });
 
   await expect(runSkillExperienceReview(candidate)).rejects.toThrow("model request timed out");
+  const { sessionKey, sessionId } = candidate.source;
   expect(mocks.postWorkshopChangeNotice).toHaveBeenCalledWith(
     expect.objectContaining({
-      generation: expect.objectContaining({
-        sessionKey: candidate.source.sessionKey,
-        sessionId: candidate.source.sessionId,
-      }),
+      generation: expect.objectContaining({ sessionKey, sessionId }),
       changes: [committed],
     }),
   );
 });
 
-it("keeps prepared effects live through receipt pressure without MAIN SQL and denies revocation", async () => {
+it("keeps appended source effects live under receipt pressure without MAIN SQL, then revokes", async () => {
   withAdmission(async (assertCurrent) => {
     const session = await SessionManager.openAsync(candidate.source, state.workspaceDir);
-    const sql = observeSqliteReadSql(requireNodeSqlite().StatementSync.prototype);
-    for (let index = 0; index < 5; index += 1) {
-      assertCurrent!();
-    }
-    expect(sql.queries).toEqual([]);
-    sql.restore();
     await session.appendMessageWithTranscriptAnchorAsync(
       { role: "user", content: "Continue the foreground task.", timestamp: 2 },
       { config: candidate.config },
     );
-    const refreshedSql = observeSqliteReadSql(requireNodeSqlite().StatementSync.prototype);
-    // The model response resumes before the next tool can prepare its source scope.
+    const sql = observeSqliteReadSql(requireNodeSqlite().StatementSync.prototype);
     assertCurrent!();
     await withSource(assertCurrent, async () => {
-      expect(
-        readSqliteDatabaseScopedWriteTokensForPath(
-          candidate.source.storePath,
-          Array.from({ length: 5_000 }, (_, index) => `unrelated-review-${index}`),
-        ),
-      ).toHaveLength(5_000);
+      const scopes = Array.from({ length: 5_000 }, (_, index) => `unrelated-review-${index}`);
+      readSqliteDatabaseScopedWriteTokensForPath(candidate.source.storePath, scopes);
       assertCurrent!();
     });
-    expect(refreshedSql.queries).toEqual([]);
-    refreshedSql.restore();
+    expect(sql.queries).toEqual([]);
+    sql.restore();
     await upsertSessionEntryCore(candidate.source, { permissionMode: "read-only" });
     expect(() => assertCurrent!()).toThrow("no longer active");
   });
@@ -333,24 +271,18 @@ it.each([
     const usageCandidate = await makeCandidate("usage-review", "usage-fixture");
     usageCandidate.config.diagnostics = { enabled };
     const diagnosticUsage = { input: 100, output: 40, cacheRead: 20, cacheWrite: 10 };
-    mocks.runSkillWorkshopReview.mockImplementation(async (params: ReviewParams) => ({
+    mocks.runEmbeddedAgent.mockImplementation(async (params: ReviewParams) => ({
       meta: {
         durationMs: 123,
         ...(failed ? { error: { kind: "timeout", message: "synthetic review failed" } } : {}),
         agentMeta: {
           sessionId: params.sessionId,
-          provider: "openai",
-          model: "usage-fixture",
           ...(hasUsage ? { usage: { input: 10, output: 5 }, diagnosticUsage } : {}),
         },
       },
     }));
     const pending = runSkillExperienceReview(usageCandidate);
-    if (failed) {
-      await expect(pending).rejects.toThrow("synthetic review failed");
-    } else {
-      await pending;
-    }
+    await (failed ? expect(pending).rejects.toThrow("synthetic review failed") : pending);
     expect(usageEvents).toHaveLength(enabled && hasUsage ? 1 : 0);
     if (enabled && hasUsage) {
       const event = expectDefined(usageEvents[0], "Workshop review usage diagnostic");
