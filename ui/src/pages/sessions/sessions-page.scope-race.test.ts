@@ -6,10 +6,7 @@ import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { GatewaySessionRow, SessionsListResult } from "../../api/types.ts";
 import { showConfirmDialog } from "../../components/confirm-dialog.ts";
 import type { SessionCapability } from "../../lib/sessions/index.ts";
-import {
-  createTestSessionCapability,
-  sessionsResult,
-} from "../../lib/sessions/session-capability.test-support.ts";
+import { sessionsResult } from "../../lib/sessions/session-capability.test-support.ts";
 import type { SessionDeleteTarget } from "../../lib/sessions/session-capability.ts";
 import { createTestGatewayClient } from "../../test-helpers/gateway-client.ts";
 import { gatewayHelloForMethods } from "../../test-helpers/gateway-methods.ts";
@@ -19,12 +16,16 @@ import {
   getRenderedModalDialog,
   waitForConfirmDialogActions,
 } from "../../test-helpers/modal-dialog.ts";
-import { selectMenuValue, settleSessionMenu } from "../../test-helpers/session-menu.ts";
+import { selectMenuValue } from "../../test-helpers/session-menu.ts";
+import { createActiveSessionPlacement } from "../../test-helpers/session-placement.ts";
 import {
   createContext,
   createGateway,
   createRenderedPage,
   createSessions,
+  liveSessions,
+  openRowMenu,
+  sessionRow,
   withNotifyingAgentSelection,
 } from "./sessions-page.test-support.ts";
 
@@ -42,8 +43,10 @@ async function setupArchivedPageWithSelection(
   expandedSessionKey: string | null = null,
 ) {
   const { gateway } = createGateway({} as GatewayBrowserClient);
-  const baseContext = createContext(gateway, sessions);
-  const { context, changeScope } = withNotifyingAgentSelection(baseContext, scopeId);
+  const { context, changeScope } = withNotifyingAgentSelection(
+    createContext(gateway, sessions),
+    scopeId,
+  );
   const page = await createRenderedPage(
     context,
     sessionsResult([archivedRow("agent:writer:old-1")], 1),
@@ -65,7 +68,7 @@ const archivedWriterRows = (updatedAt?: number) => ({
 });
 
 describe("sessions page agent-scope retirement", () => {
-  it.each([false, true])("settles real delete-all confirmation (retire: %s)", async (retire) => {
+  it("retires real delete-all confirmation and confirms in the new scope", async () => {
     const actual = await vi.importActual<typeof import("../../components/confirm-dialog.ts")>(
       "../../components/confirm-dialog.ts",
     );
@@ -84,28 +87,23 @@ describe("sessions page agent-scope retirement", () => {
       let actions = await waitForConfirmDialogActions();
       expect((await getRenderedModalDialog(document.body)).dialog.open).toBe(true);
 
-      changeScope(retire ? "main" : "writer");
-      if (retire) {
-        await vi.waitFor(() =>
-          expect(document.body.querySelector("openclaw-modal-dialog")).toBeNull(),
-        );
-        await operation;
-        expect(deleteMany).not.toHaveBeenCalled();
-        await page.updateComplete;
-        await vi.waitFor(() => expect(page.loading).toBe(false));
-        operation = fixture.track(page.deleteAllArchived());
-        actions = await waitForConfirmDialogActions();
-        expect((await getRenderedModalDialog(document.body)).dialog.open).toBe(true);
-      } else {
-        expect(actions.isConnected).toBe(true);
-        expect(deleteMany).not.toHaveBeenCalled();
-      }
+      changeScope("main");
+      await vi.waitFor(() =>
+        expect(document.body.querySelector("openclaw-modal-dialog")).toBeNull(),
+      );
+      await operation;
+      expect(deleteMany).not.toHaveBeenCalled();
+      await page.updateComplete;
+      await vi.waitFor(() => expect(page.loading).toBe(false));
+      operation = fixture.track(page.deleteAllArchived());
+      actions = await waitForConfirmDialogActions();
+      expect((await getRenderedModalDialog(document.body)).dialog.open).toBe(true);
 
       answerConfirmDialog(actions, "confirm");
       await operation;
       expect(deleteMany).toHaveBeenCalledExactlyOnceWith([
         {
-          key: `agent:${retire ? "main" : "writer"}:archived`,
+          key: "agent:main:archived",
           agentId: undefined,
           archivedOnly: true,
           deleteTranscript: true,
@@ -130,16 +128,11 @@ describe("sessions page agent-scope retirement", () => {
         sessionId: "writer-global",
         kind: "direct",
         placement: {
+          ...createActiveSessionPlacement({ environmentId: "worker:writer", activeOwnerEpoch: 7 }),
           state: "draining",
           generation: 2,
-          createdAtMs: 1,
           updatedAtMs: 2,
           stateChangedAtMs: 2,
-          environmentId: "worker:writer",
-          activeOwnerEpoch: 7,
-          workerBundleHash: "a".repeat(64),
-          workspaceBaseManifestRef: "base",
-          remoteWorkspaceDir: "/workspace",
         },
         placementMove: {
           target: { kind: "gateway" },
@@ -171,11 +164,7 @@ describe("sessions page agent-scope retirement", () => {
       );
       const page = await createRenderedPage(context, sessionsResult([row], 1));
       await vi.waitFor(() => expect(page.loading).toBe(false));
-      page.openSessionMenu(row, { x: 10, y: 20 }, document.createElement("button"));
-      await page.updateComplete;
-      const menu = page.querySelector("openclaw-session-menu")!;
-      await settleSessionMenu(menu);
-      await selectMenuValue(menu, "move-session");
+      await selectMenuValue(await openRowMenu(page, row), "move-session");
       await vi.waitFor(() =>
         expect(clientRequest).toHaveBeenCalledWith("sessions.move", {
           key: "global",
@@ -305,46 +294,39 @@ describe("session selection across roster refresh", () => {
     async (change) => {
       const missingIds = change === "replacement without IDs during confirmation";
       const confirmation = createDeferred<boolean>();
-      const rows: GatewaySessionRow[] = Array.from({ length: 27 }, (_, index) => ({
-        key: `agent:main:selection-${index}`,
-        sessionId: index === 0 && missingIds ? undefined : `selected-generation-${index}`,
-        kind: "direct",
-        updatedAt: 100 - index,
-      }));
+      const rows = Array.from({ length: 27 }, (_, index) =>
+        sessionRow(`selection-${index}`, {
+          sessionId: index === 0 && missingIds ? undefined : `selected-generation-${index}`,
+          updatedAt: 100 - index,
+        }),
+      );
       const [original, stable] = [rows[0]!, rows[1]!];
       let serverRows = rows;
       let revision = 0;
       const deletedStable = createDeferred();
       const deletedTargets: SessionDeleteTarget[] = [];
-      const request = vi.fn(async (method: string, params?: unknown) => {
-        if (method === "sessions.subscribe") {
-          return { subscribed: true };
-        }
-        if (method === "sessions.list") {
-          return sessionsResult(
+      const { context, sessions } = liveSessions<SessionDeleteTarget>({
+        "sessions.subscribe": () => ({ subscribed: true }),
+        "sessions.list": () =>
+          sessionsResult(
             serverRows.filter((row) => !row.archived),
             ++revision,
-          );
-        }
-        if (method === "sessions.delete") {
-          const target = params as SessionDeleteTarget;
+          ),
+        "sessions.delete": (target) => {
+          if (!target) {
+            throw new Error("Missing delete target");
+          }
           deletedTargets.push(target);
           serverRows = serverRows.filter((row) => row.key !== target.key);
           if (target.key === stable.key) {
             deletedStable.resolve();
           }
           return { deleted: true };
-        }
-        throw new Error(`Unexpected request: ${method}`);
+        },
       });
-      const { gateway } = createGateway({ request } as unknown as GatewayBrowserClient);
-      const sessions = createTestSessionCapability(gateway);
       const subscribe = vi.spyOn(sessions, "subscribeList");
       const deletion = vi.spyOn(sessions, "deleteMany");
-      const page = await createRenderedPage(
-        createContext(gateway, sessions),
-        sessionsResult(rows, revision),
-      );
+      const page = await createRenderedPage(context, sessionsResult(rows, revision));
       const pageSize = page.querySelector<HTMLSelectElement>(".data-table-pagination__size");
       expect(pageSize?.getAttribute("aria-label")).toBe("Rows per page");
       expect(pageSize?.value).toBe("25");

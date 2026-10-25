@@ -1,24 +1,20 @@
 /* @vitest-environment jsdom */
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.js";
-import type { GatewaySessionRow } from "../../api/types.ts";
 import { showConfirmDialog } from "../../components/confirm-dialog.ts";
-import {
-  createTestSessionCapability,
-  sessionsResult,
-} from "../../lib/sessions/session-capability.test-support.ts";
+import { sessionsResult } from "../../lib/sessions/session-capability.test-support.ts";
 import { createTestGatewayClient } from "../../test-helpers/gateway-client.ts";
-import {
-  openSubmenu,
-  selectMenuValue,
-  settleSessionMenu,
-} from "../../test-helpers/session-menu.ts";
+import { openSubmenu, selectMenuValue } from "../../test-helpers/session-menu.ts";
 import { waitForFast } from "../../test-helpers/wait-for.ts";
 import {
   createContext,
   createGateway,
+  createLiveSessionContext,
   createManagedSessions,
   createRenderedPage,
+  openRowMenu,
+  selectRows,
+  sessionRow,
 } from "./sessions-page.test-support.ts";
 
 vi.mock("../../components/confirm-dialog.ts", async (importOriginal) => ({
@@ -32,13 +28,21 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+function commandSession(handlers: Record<string, () => unknown>) {
+  return createLiveSessionContext(
+    createTestGatewayClient((method) => {
+      if (!Object.hasOwn(handlers, method)) {
+        throw new Error(`Unexpected request: ${method}`);
+      }
+      return handlers[method]!();
+    }),
+  );
+}
+
 describe("sessions page lifecycle", () => {
   it("presents owner-started refreshes without replacing controls, rows, or subscriptions", async () => {
-    const initial = sessionsResult(
-      [{ key: "agent:main:retained", kind: "direct", updatedAt: 1 }],
-      1,
-    );
-    initial.sessions[0]!.sessionId = "retained-generation";
+    const target = sessionRow("retained", { sessionId: "retained-generation" });
+    const initial = sessionsResult([target], 1);
     const managed = createManagedSessions();
     const context = createContext(createGateway().gateway, managed.sessions);
     const page = await createRenderedPage(context, initial);
@@ -49,7 +53,7 @@ describe("sessions page lifecycle", () => {
       const [query] = managed.subscribeList.mock.calls[0]!;
       const input = searchInput();
       const row = page.querySelector("tbody tr");
-      page.selectedSessions = new Map([[initial.sessions[0]!.key, initial.sessions[0]!]]);
+      selectRows(page, target);
       await page.updateComplete;
       const refresh = () => page.querySelector<HTMLButtonElement>(".sessions-toolbar__refresh")!;
       const publish = (loading: boolean, error: string | null = null) =>
@@ -60,7 +64,7 @@ describe("sessions page lifecycle", () => {
       expect(refresh().disabled).toBe(false);
       expect(searchInput()).toBe(input);
       expect(page.querySelector("tbody tr")).toBe(row);
-      expect(page.selectedSessions.has(initial.sessions[0]!.key)).toBe(true);
+      expect(page.selectedSessions.has(target.key)).toBe(true);
 
       publish(false, "Synthetic background refresh failure");
       await vi.waitFor(() =>
@@ -74,7 +78,7 @@ describe("sessions page lifecycle", () => {
       publish(false);
       await vi.waitFor(() => expect(refresh().disabled).toBe(false));
       await vi.waitFor(() => expect(page.querySelector(".sessions-error")).toBeNull());
-      expect(page.selectedSessions.has(initial.sessions[0]!.key)).toBe(true);
+      expect(page.selectedSessions.has(target.key)).toBe(true);
       expect(managed.subscribeList).toHaveBeenCalledTimes(1);
       expect(managed.refreshList).not.toHaveBeenCalled();
 
@@ -96,41 +100,25 @@ describe("sessions page lifecycle", () => {
   });
 
   it("shows command progress while the session owner holds its follow-up roster read", async () => {
-    const target: GatewaySessionRow = {
-      key: "agent:main:held-command",
-      sessionId: "held-command-id",
-      kind: "direct",
-      label: "Before edit",
-      updatedAt: 1,
-    };
+    const target = sessionRow("held-command", { label: "Before edit" });
     const refreshed = createDeferred<ReturnType<typeof sessionsResult>>();
     const readStarted = createDeferred();
     let edited = false;
-    const connection = createGateway(
-      createTestGatewayClient((method) => {
-        if (method === "sessions.list") {
-          if (edited) {
-            readStarted.resolve();
-            return refreshed.promise;
-          }
-          return sessionsResult([target], 1);
+    const { context, sessions } = commandSession({
+      "sessions.list": () => {
+        if (edited) {
+          readStarted.resolve();
+          return refreshed.promise;
         }
-        if (method === "sessions.describe") {
-          return { session: target };
-        }
-        if (method === "sessions.patch") {
-          edited = true;
-          return { ok: true, path: "", key: target.key, entry: { sessionId: target.sessionId } };
-        }
-        throw new Error(`Unexpected request: ${method}`);
-      }),
-    );
-    const sessions = createTestSessionCapability(connection.gateway);
-    const page = await createRenderedPage(
-      createContext(connection.gateway, sessions),
-      sessionsResult([target], 1),
-      "all",
-    );
+        return sessionsResult([target], 1);
+      },
+      "sessions.describe": () => ({ session: target }),
+      "sessions.patch": () => {
+        edited = true;
+        return { ok: true, path: "", key: target.key, entry: { sessionId: target.sessionId } };
+      },
+    });
+    const page = await createRenderedPage(context, sessionsResult([target], 1), "all");
     const next = sessionsResult([{ ...target, label: "After edit" }], 2);
     try {
       page.querySelector<HTMLButtonElement>(".session-details-toggle")!.click();
@@ -155,52 +143,33 @@ describe("sessions page lifecycle", () => {
   });
 
   it("clears failed command feedback on Refresh and retry while retaining roster read errors", async () => {
-    const target: GatewaySessionRow = {
-      key: "agent:main:retry-command",
-      sessionId: "retry-command-id",
-      kind: "direct",
-      label: "Retry command fixture",
-      updatedAt: 1,
-    };
+    const target = sessionRow("retry-command", { label: "Retry command fixture" });
     let rows = [target];
     let deletionAttempts = 0;
     let readFails = false;
-    const connection = createGateway(
-      createTestGatewayClient((method) => {
-        if (method === "sessions.list") {
-          if (readFails) {
-            throw new Error("Roster unavailable. Refresh to recover.");
-          }
-          return sessionsResult(rows, 1);
+    const { context, sessions } = commandSession({
+      "sessions.list": () => {
+        if (readFails) {
+          throw new Error("Roster unavailable. Refresh to recover.");
         }
-        if (method === "sessions.delete") {
-          deletionAttempts += 1;
-          if (deletionAttempts < 3) {
-            throw new Error("Deletion unavailable. Try again.");
-          }
-          rows = [];
-          readFails = true;
-          return { deleted: true };
+        return sessionsResult(rows, 1);
+      },
+      "sessions.delete": () => {
+        deletionAttempts += 1;
+        if (deletionAttempts < 3) {
+          throw new Error("Deletion unavailable. Try again.");
         }
-        throw new Error(`Unexpected request: ${method}`);
-      }),
-    );
-    const sessions = createTestSessionCapability(connection.gateway);
-    const page = await createRenderedPage(
-      createContext(connection.gateway, sessions),
-      sessionsResult(rows, 1),
-      "all",
-    );
+        rows = [];
+        readFails = true;
+        return { deleted: true };
+      },
+    });
+    const page = await createRenderedPage(context, sessionsResult(rows, 1), "all");
     vi.mocked(showConfirmDialog).mockResolvedValue(true);
+    const deletionError = "Deletion unavailable. Try again.";
+    const rosterError = "Roster unavailable. Refresh to recover.";
     const remove = async () => {
-      page.openSessionMenu(target, { x: 10, y: 20 }, document.createElement("button"));
-      await page.updateComplete;
-      const menu =
-        page.querySelector<HTMLElementTagNameMap["openclaw-session-menu"]>(
-          "openclaw-session-menu",
-        )!;
-      expect(menu).not.toBeNull();
-      await settleSessionMenu(menu);
+      const menu = await openRowMenu(page, target);
       await openSubmenu(menu, "Advanced");
       await selectMenuValue(menu, "delete");
     };
@@ -208,23 +177,15 @@ describe("sessions page lifecycle", () => {
 
     try {
       await remove();
-      await waitForFast(() =>
-        expect(page.textContent).toContain("Deletion unavailable. Try again."),
-      );
+      await waitForFast(() => expect(page.textContent).toContain(deletionError));
       refresh().click();
-      await waitForFast(() =>
-        expect(page.textContent).not.toContain("Deletion unavailable. Try again."),
-      );
+      await waitForFast(() => expect(page.textContent).not.toContain(deletionError));
 
       await remove();
-      await waitForFast(() =>
-        expect(page.textContent).toContain("Deletion unavailable. Try again."),
-      );
+      await waitForFast(() => expect(page.textContent).toContain(deletionError));
       await remove();
-      await waitForFast(() =>
-        expect(page.textContent).toContain("Roster unavailable. Refresh to recover."),
-      );
-      expect(page.textContent).not.toContain("Deletion unavailable. Try again.");
+      await waitForFast(() => expect(page.textContent).toContain(rosterError));
+      expect(page.textContent).not.toContain(deletionError);
       expect(deletionAttempts).toBe(3);
 
       readFails = false;
