@@ -73,10 +73,6 @@ async function fixture(operation: Operation) {
     commandRelease,
     request: entered.promise,
     assertLeaseUnchanged,
-    async resolve() {
-      release.resolve();
-      await providerSettled;
-    },
     stop: () => manager.desktop.stop(environment.environmentId, environment.ownerEpoch),
     close(closure: "stop" | "replace-observe" | "replace-launch") {
       const replacement = {
@@ -136,7 +132,6 @@ describe.skipIf(process.platform === "win32")("desktop SSH identity caller lifet
     await using f = await fixture(operation);
     const { pending } = f;
     const request = await f.request;
-    expect(request.assertCurrent).toBeTypeOf("function");
     expect(() => request.assertCurrent!()).not.toThrow();
     f.assertLeaseUnchanged();
     if (closure === "timeout") {
@@ -153,7 +148,7 @@ describe.skipIf(process.platform === "win32")("desktop SSH identity caller lifet
     f.assertLeaseUnchanged();
     expect(() => request.assertCurrent!()).toThrow();
     // Identify the old directory without confusing valid replacement writes.
-    await f.resolve();
+    f.release.resolve();
     await f.preparedRemoved.promise;
     expect(await pending).toMatchObject({ status: "rejected" });
     const removedDirectory = String(

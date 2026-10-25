@@ -50,16 +50,15 @@ it("retains SQL-free placement facts through bookkeeping, claims, dispatch, reti
         state: "local",
         turnClaim: { claimId: claim.claimId },
       };
-      const fetched = (await store.getAsync(session.sessionId))!;
-      fetched.agentId = "caller-mutated-agent";
-      fetched.turnClaim!.claimId = "caller-mutated-claim";
-      expect(current()).toMatchObject(expectedLocal);
-      const listed = (await store.listAsync()).find(
-        (placement) => placement.sessionId === session.sessionId,
-      )!;
-      listed.agentId = "caller-mutated-agent";
-      listed.turnClaim!.claimId = "caller-mutated-claim";
-      expect(current()).toMatchObject(expectedLocal);
+      for (const fetch of [
+        () => store.getAsync(session.sessionId),
+        async () => (await store.listAsync()).find((row) => row.sessionId === session.sessionId),
+      ]) {
+        const fetched = (await fetch())!;
+        fetched.agentId = "caller-mutated-agent";
+        fetched.turnClaim!.claimId = "caller-mutated-claim";
+        expect(current()).toMatchObject(expectedLocal);
+      }
       expect(store.validateTurnClaim(claim)).toBe(true);
       const identity = requireOpenClawStateDatabaseIdentity({ db: database.db });
       const beforeResult = current()!;
