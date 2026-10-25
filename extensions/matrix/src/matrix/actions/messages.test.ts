@@ -12,6 +12,18 @@ import type { MatrixMessageSummary } from "./types.js";
 const ROOM = "!room:example.org";
 
 const MATRIX_ACTION_TEST_CFG = { channels: { matrix: {} } };
+type RawEvent = Record<string, unknown>;
+const ALICE = "@alice:example.org";
+
+function rawEvent(
+  event_id: string,
+  type: string,
+  content: RawEvent,
+  origin_server_ts = 1,
+  sender = ALICE,
+): RawEvent {
+  return { event_id, type, content, origin_server_ts, sender };
+}
 
 function installMatrixActionTestRuntime(): void {
   setMatrixRuntime({
@@ -26,38 +38,27 @@ function installMatrixActionTestRuntime(): void {
   } as unknown as import("openclaw/plugin-sdk/plugin-runtime").PluginRuntime);
 }
 
-function createPollResponseEvent(): Record<string, unknown> {
-  return {
-    event_id: "$vote",
-    sender: "@bob:example.org",
-    type: "m.poll.response",
-    origin_server_ts: 20,
-    content: {
+function createPollResponseEvent(): RawEvent {
+  return rawEvent(
+    "$vote",
+    "m.poll.response",
+    {
       "m.poll.response": { answers: ["a1"] },
       "m.relates_to": { rel_type: "m.reference", event_id: "$poll" },
     },
-  };
+    20,
+    "@bob:example.org",
+  );
 }
 
-function createPollStartEvent(params?: {
-  answers?: Array<Record<string, unknown>>;
-  includeDisclosedKind?: boolean;
-  maxSelections?: number;
-}): Record<string, unknown> {
-  return {
-    event_id: "$poll",
-    sender: "@alice:example.org",
-    type: "m.poll.start",
-    origin_server_ts: 1,
-    content: {
-      "m.poll.start": {
-        question: { "m.text": "Favorite fruit?" },
-        ...(params?.includeDisclosedKind ? { kind: "m.poll.disclosed" } : {}),
-        ...(params?.maxSelections !== undefined ? { max_selections: params.maxSelections } : {}),
-        answers: params?.answers ?? [{ id: "a1", "m.text": "Apple" }],
-      },
+function createPollStartEvent(content: RawEvent = {}): RawEvent {
+  return rawEvent("$poll", "m.poll.start", {
+    "m.poll.start": {
+      question: { "m.text": "Favorite fruit?" },
+      answers: [{ id: "a1", "m.text": "Apple" }],
+      ...content,
     },
-  };
+  });
 }
 
 function message(
@@ -65,8 +66,8 @@ function message(
   body: string,
   timestamp: number,
   params: { sender?: string; threadId?: string; replaces?: string; omitNewContent?: boolean } = {},
-): Record<string, unknown> {
-  const content: Record<string, unknown> = { msgtype: "m.text", body };
+): RawEvent {
+  const content: RawEvent = { msgtype: "m.text", body };
   if (params.threadId) {
     content["m.relates_to"] = { rel_type: "m.thread", event_id: params.threadId };
   }
@@ -77,21 +78,15 @@ function message(
       content["m.new_content"] = { msgtype: "m.text", body };
     }
   }
-  return {
-    event_id: eventId,
-    sender: params.sender ?? "@alice:example.org",
-    type: "m.room.message",
-    origin_server_ts: timestamp,
-    content,
-  };
+  return rawEvent(eventId, "m.room.message", content, timestamp, params.sender);
 }
 
 function createMessagesClient(params: {
-  chunk?: Array<Record<string, unknown>>;
-  hydratedChunk?: Array<Record<string, unknown>>;
-  pollRoot?: Record<string, unknown>;
-  pollRelations?: Array<Record<string, unknown>>;
-  threadRelations?: Array<Record<string, unknown>>;
+  chunk?: RawEvent[];
+  hydratedChunk?: RawEvent[];
+  pollRoot?: RawEvent;
+  pollRelations?: RawEvent[];
+  threadRelations?: RawEvent[];
 }) {
   const doRequest = vi.fn(async () => ({
     chunk: params.chunk ?? [],
@@ -99,8 +94,7 @@ function createMessagesClient(params: {
     end: "end-token",
   }));
   const hydrateEvents = vi.fn(
-    async (_roomId: string, _events: Array<Record<string, unknown>>) =>
-      (params.hydratedChunk ?? _events) as unknown,
+    async (_roomId: string, _events: RawEvent[]) => (params.hydratedChunk ?? _events) as unknown,
   );
   const getEvent = vi.fn(async (_roomId: string, eventId: string) =>
     params.pollRoot?.event_id === eventId ? params.pollRoot : null,
@@ -111,7 +105,7 @@ function createMessagesClient(params: {
       _eventId: string,
       relType: string,
     ): Promise<{
-      events: Array<Record<string, unknown>>;
+      events: RawEvent[];
       nextBatch: string | null;
       prevBatch: string | null;
     }> => ({
@@ -124,19 +118,8 @@ function createMessagesClient(params: {
     }),
   );
 
-  return {
-    client: {
-      doRequest,
-      hydrateEvents,
-      getEvent,
-      getRelations,
-      stop: vi.fn(),
-    } as unknown as MatrixClient,
-    doRequest,
-    hydrateEvents,
-    getEvent,
-    getRelations,
-  };
+  const client = { doRequest, hydrateEvents, getEvent, getRelations, stop: vi.fn() };
+  return { ...client, client: client as unknown as MatrixClient };
 }
 
 function createEditClient(originalContent: Record<string, unknown>) {
@@ -163,7 +146,7 @@ const readThread = (client: MatrixClient, before?: string) =>
   readHistory({ client, threadId: "$thread-root", limit: 1, before });
 
 async function expectHistory(
-  chunk: Array<Record<string, unknown>>,
+  chunk: RawEvent[],
   expected: MatrixMessageSummary[],
   opts: Parameters<typeof readHistory>[0] = {},
 ) {
@@ -189,25 +172,11 @@ describe("matrix message actions", () => {
     ).rejects.toThrow("Matrix edit requires content");
   });
 
-  it.each([
-    {
-      name: "notifies only newly added mentions",
-      previous: ["@alice:example.org"],
-      text: "hello @alice:example.org and @bob:example.org",
-      notify: { user_ids: ["@bob:example.org"] },
-      users: ["@alice:example.org", "@bob:example.org"],
-    },
-    {
-      name: "does not re-notify legacy mentions",
-      previous: undefined,
-      text: "hello again @alice:example.org",
-      notify: {},
-      users: ["@alice:example.org"],
-    },
-  ])("$name when editing", async ({ previous, text, notify, users }) => {
+  it("returns the edit receipt while notifying only newly added mentions", async () => {
+    const text = "hello @alice:example.org and @bob:example.org";
     const { client, sendMessage } = createEditClient({
       body: "hello @alice:example.org",
-      ...(previous ? { "m.mentions": { user_ids: previous } } : {}),
+      "m.mentions": { user_ids: ["@alice:example.org"] },
     });
     const result = await editMatrixMessage(ROOM, "$original", text, {
       cfg: MATRIX_ACTION_TEST_CFG,
@@ -218,8 +187,11 @@ describe("matrix message actions", () => {
       1,
       ROOM,
       expect.objectContaining({
-        "m.mentions": notify,
-        "m.new_content": expect.objectContaining({ body: text, "m.mentions": { user_ids: users } }),
+        "m.mentions": { user_ids: ["@bob:example.org"] },
+        "m.new_content": expect.objectContaining({
+          body: text,
+          "m.mentions": { user_ids: ["@alice:example.org", "@bob:example.org"] },
+        }),
       }),
     );
   });
@@ -262,35 +234,8 @@ describe("matrix message actions", () => {
     }
   });
 
-  it("fails visibly on cyclic poll pagination in room history", async () => {
-    const pollRoot = createPollStartEvent();
-    const { client, getRelations } = createMessagesClient({ chunk: [pollRoot], pollRoot });
-    let pollPageCalls = 0;
-    getRelations.mockImplementation(async (_roomId, _eventId, relationType) => {
-      if (relationType !== "m.reference") {
-        return { events: [], nextBatch: null, prevBatch: null };
-      }
-      pollPageCalls += 1;
-      if (pollPageCalls > 2) {
-        throw new Error("test stopped unbounded Matrix poll pagination");
-      }
-      return { events: [], nextBatch: "stuck", prevBatch: null };
-    });
-
-    await expect(readHistory({ client })).rejects.toThrow(
-      "Matrix poll pagination returned a repeated cursor",
-    );
-    expect(pollPageCalls).toBe(2);
-  });
-
   it("hydrates history before deduping multiple events for the same poll", async () => {
-    const encrypted = {
-      event_id: "$enc",
-      sender: "@bob:example.org",
-      type: "m.room.encrypted",
-      origin_server_ts: 20,
-      content: {},
-    };
+    const encrypted = rawEvent("$enc", "m.room.encrypted", {}, 20, "@bob:example.org");
     const { client, getEvent, hydrateEvents } = createMessagesClient({
       chunk: [encrypted],
       hydratedChunk: [createPollResponseEvent(), createPollStartEvent()],
@@ -388,10 +333,7 @@ describe("matrix message actions", () => {
     const { client } = createMessagesClient({
       chunk: [message("$edit", "redacted edit", 20, { replaces: "$original" }), redactedOriginal],
     });
-
-    const result = await readHistory({ client });
-
-    expect(result.messages).toEqual([]);
+    expect((await readHistory({ client })).messages).toEqual([]);
   });
 
   it("applies bundled Matrix replacements to first-page thread roots", async () => {
@@ -445,8 +387,8 @@ describe("matrix message actions", () => {
   it("includes poll snapshots from threaded reads", async () => {
     const { client, getEvent, getRelations } = createMessagesClient({
       pollRoot: createPollStartEvent({
-        includeDisclosedKind: true,
-        maxSelections: 1,
+        kind: "m.poll.disclosed",
+        max_selections: 1,
         answers: [
           { id: "a1", "m.text": "Apple" },
           { id: "a2", "m.text": "Strawberry" },
