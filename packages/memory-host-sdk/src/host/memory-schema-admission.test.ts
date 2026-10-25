@@ -47,15 +47,12 @@ function expectSchema(db: DatabaseSync, enabled = true) {
 function observe(before?: Parameters<typeof observeHostDataSql>[0]) {
   const observed = observeHostDataSql(before);
   return {
+    queries: observed.queries,
     expectAdmission(db: DatabaseSync, reused = true, enabled = true) {
       observed.queries.length = 0;
       expectSchema(db, enabled);
       const schema = observed.queries.filter((sql) => schemaSql.test(sql));
-      if (reused) {
-        expect(schema).toEqual([]);
-      } else {
-        expect(schema.length).toBeGreaterThan(0);
-      }
+      expect(schema.length > 0).toBe(!reused);
     },
     [Symbol.dispose]() {
       observed.restore();
@@ -67,8 +64,7 @@ it("reuses agent-created memory objects on first admission and repairs later DDL
   using db = openNodeSqliteDatabase(":memory:");
   db.exec(OPENCLAW_AGENT_SCHEMA_SQL);
   admitSqliteSchema(db);
-  const observed = observeHostDataSql();
-  using _ = { [Symbol.dispose]: observed.restore };
+  using observed = observe();
   runSqliteImmediateTransactionSync(db, () => expectSchema(db));
   expect(
     observed.queries.filter((sql) =>
@@ -151,43 +147,21 @@ it("skips fresh-shadow legacy inspection and data repair but backfills later imp
   const filename = path.join(tempDirs.make("memory-admission-"), "memory.sqlite");
   using sibling = openNodeSqliteDatabase(filename);
   admitSqliteSchema(sibling);
-  const legacyInspections = {
-    retiredFormat: /PRAGMA main\.table_xinfo\(meta\)/iu,
-    storageShape: /SELECT name, type FROM pragma_table_info/iu,
-    recallColumns: /PRAGMA table_info\(memory_index_chunks\)/iu,
-    sourceIdentity: /PRAGMA main\.table_xinfo\(memory_index_sources\)/iu,
-    retiredIndex: /DROP INDEX IF EXISTS idx_memory_index_chunks_path;/iu,
-    strictMigration: /PRAGMA (?:main\.)?table_list\b/iu,
-    ftsObjects: /SELECT type, name, sql FROM sqlite_schema/iu,
-  };
-  const legacySql: string[] = [];
-  const dataRepairSql: string[] = [];
-  using observed = observe((sql) => {
-    legacySql.push(sql);
-    if (
-      /\bWITH missing AS MATERIALIZED\b|\bSELECT COUNT\(\*\) FROM memory_index_chunks\b|^\s*(?:DELETE FROM|INSERT INTO) memory_index_(?:chunks_fts|paths_fts)\b/iu.test(
-        sql,
-      )
-    ) {
-      dataRepairSql.push(sql);
-    }
-  });
+  using observed = observe();
   expect(
-    ensureMemoryIndexSchema({
-      db: sibling,
-      cacheEnabled: true,
-      ftsEnabled: true,
-      fresh: true,
-    }),
+    ensureMemoryIndexSchema({ db: sibling, cacheEnabled: true, ftsEnabled: true, fresh: true }),
   ).toEqual({ ftsAvailable: true });
-  expect(dataRepairSql).toEqual([]);
-  for (const [kind, pattern] of Object.entries(legacyInspections)) {
-    expect
-      .soft(
-        legacySql.filter((sql) => pattern.test(sql)),
-        kind,
-      )
-      .toEqual([]);
+  for (const pattern of [
+    /PRAGMA main\.table_xinfo\(meta\)/iu,
+    /SELECT name, type FROM pragma_table_info/iu,
+    /PRAGMA table_info\(memory_index_chunks\)/iu,
+    /PRAGMA main\.table_xinfo\(memory_index_sources\)/iu,
+    /DROP INDEX IF EXISTS idx_memory_index_chunks_path;/iu,
+    /PRAGMA (?:main\.)?table_list\b/iu,
+    /SELECT type, name, sql FROM sqlite_schema/iu,
+    /\bWITH missing AS MATERIALIZED\b|\bSELECT COUNT\(\*\) FROM memory_index_chunks\b|^\s*(?:DELETE FROM|INSERT INTO) memory_index_(?:chunks_fts|paths_fts)\b/iu,
+  ]) {
+    expect(observed.queries.filter((sql) => pattern.test(sql))).toEqual([]);
   }
   for (let opening = 0; opening < 2; opening++) {
     using db = openNodeSqliteDatabase(filename);

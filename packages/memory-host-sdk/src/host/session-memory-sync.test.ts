@@ -21,7 +21,7 @@ import type {
 import { createPluginStateKeyedStoreForTests } from "../../../../src/plugin-sdk/plugin-state-test-runtime.js";
 import type {
   MemoryPluginRuntime,
-  RegisteredMemorySearchManager,
+  RegisteredMemorySearchManager as MemoryManager,
 } from "../../../../src/plugins/registry-contribution-types.js";
 import { runOpenClawAgentWriteTransaction } from "../../../../src/state/openclaw-agent-db.js";
 import { resolveOpenClawAgentSqlitePath } from "../../../../src/state/openclaw-agent-db.paths.js";
@@ -44,11 +44,13 @@ describe("memory synchronization of canonical SQLite transcripts", () => {
   let cfg: OpenClawConfig;
   let observer: DatabaseSync;
   let initial: Awaited<ReturnType<typeof acquireManager>>;
-  const managers = new Set<RegisteredMemorySearchManager>();
+  const managers = new Set<MemoryManager>();
   const sessionId = "memory-revision";
   const sessionKey = `agent:main:chat:${sessionId}`;
   const memoryPath = `sessions/main/${sessionId}.jsonl`;
   const fts = "memory_index_chunks_fts";
+  const query = (table: string, columns = "*") =>
+    observer.prepare(`SELECT ${columns} FROM ${table} WHERE path = ?`);
   const scope = () => ({
     agentId: "main",
     sessionId,
@@ -65,20 +67,16 @@ describe("memory synchronization of canonical SQLite transcripts", () => {
     },
   ];
   const published = () => ({
-    source: observer.prepare("SELECT * FROM memory_index_sources WHERE path = ?").all(memoryPath),
-    chunks: observer.prepare("SELECT * FROM memory_index_chunks WHERE path = ?").all(memoryPath),
-    fts: observer.prepare(`SELECT * FROM ${fts} WHERE path = ?`).all(memoryPath),
+    source: query("memory_index_sources").all(memoryPath),
+    chunks: query("memory_index_chunks").all(memoryPath),
+    fts: query(fts).all(memoryPath),
   });
   const matches = (word: string) =>
     observer
       .prepare(`SELECT text FROM ${fts} WHERE ${fts} MATCH ? AND path = ?`)
       .all(word, memoryPath);
 
-  async function expectRecall(
-    manager: RegisteredMemorySearchManager,
-    color: string,
-    absent?: string,
-  ) {
+  async function expectRecall(manager: MemoryManager, color: string, absent?: string) {
     expect(matches(color)).toEqual([{ text: `User: My ${color} preference is documented here.` }]);
     if (absent) {
       expect(matches(absent)).toEqual([]);
@@ -130,11 +128,7 @@ describe("memory synchronization of canonical SQLite transcripts", () => {
       ...scope(),
       entry: { sessionId, updatedAt: 1 },
       transcriptMtimeMs: 1,
-      readTranscriptEvents: (append) => {
-        for (const event of events("violet")) {
-          append(event);
-        }
-      },
+      readTranscriptEvents: (append) => events("violet").forEach(append),
     });
     observer = new DatabaseSync(scope().storePath, { readOnly: true });
     initial = await acquireManager();
@@ -157,7 +151,6 @@ describe("memory synchronization of canonical SQLite transcripts", () => {
   it.each([false, true])(
     "replaces stale recall after a closed-manager equal-size rewrite (legacy hash: %s)",
     async (legacy) => {
-      const original = initial;
       if (legacy) {
         const entry = await buildSessionEntry(sessionKey, {
           ...scope(),
@@ -175,7 +168,7 @@ describe("memory synchronization of canonical SQLite transcripts", () => {
         );
       }
       const beforeStats = readTranscriptStatsSync(scope());
-      await original.manager.close?.();
+      await initial.manager.close?.();
 
       await replaceTranscriptEvents(scope(), events("orange"));
       await waitForSessionTranscriptIndexReconcile({ agentId: "main", path: scope().storePath });
@@ -191,9 +184,7 @@ describe("memory synchronization of canonical SQLite transcripts", () => {
       await restarted.sync({ reason: "cli" });
       await expectRecall(restarted.manager, "orange", "violet");
       expect(restarted.manager.status().dirty).toBe(false);
-      expect(
-        observer.prepare("SELECT mtime FROM memory_index_sources WHERE path = ?").get(memoryPath),
-      ).toEqual({ mtime: 1 });
+      expect(query("memory_index_sources", "mtime").get(memoryPath)).toEqual({ mtime: 1 });
       await restarted.manager.close?.();
       expect((await acquireManager(true)).manager.status().dirty).toBe(false);
     },
