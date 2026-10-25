@@ -44,12 +44,8 @@ afterEach(() => {
 
 afterAll(() => targetWss.close());
 
-function portalService(httpServers: Server[] = []) {
-  return makeService({ httpServers }).service;
-}
-
 function openPortal(options: Partial<Parameters<GatewayPortalService["open"]>[0]> = {}) {
-  return portalService().open({ targetPort: target.port, ...options });
+  return makeService().service.open({ targetPort: target.port, ...options });
 }
 
 function authenticatedCall(portal: { listenPort: number; tokenQuery: string }, path = "/") {
@@ -202,10 +198,9 @@ describe("portal HTTP proxy", () => {
 
     const authorized = await httpCall(portal, `/preview?x=1&${portal.tokenQuery}`);
     expect(authorized).toMatchObject({ status: 200, body: "proxied" });
-    expect(authorized.headers["set-cookie"]?.[0]).toContain(
-      `openclaw_portal_${portal.listenPort}=`,
+    expect(authorized.headers["set-cookie"]?.[0]).toBe(
+      `${portalAuthCookie(portal)}; HttpOnly; SameSite=Lax; Path=/`,
     );
-    expect(authorized.headers["set-cookie"]?.[0]).toContain("HttpOnly; SameSite=Lax; Path=/");
 
     const cookieOnly = await authenticatedCall(portal, "/cookie?y=2");
     expect(cookieOnly).toMatchObject({ status: 200, body: "proxied" });
@@ -327,19 +322,13 @@ describe("portal HTTP proxy", () => {
     target.handler = cookieTarget("a", receivedCookiesA);
     const receivedCookiesB: Array<string | undefined> = [];
     const targetPortB = await listenTarget(cookieTarget("b", receivedCookiesB));
-    const service = portalService();
+    const { service } = makeService();
     const portalA = await service.open({ targetPort: target.port });
     const portalB = await service.open({ targetPort: targetPortB });
     const jar = new Map<string, string>();
 
     const initialA = await browserCall(jar, portalA, `/set?${portalA.tokenQuery}`);
     const initialB = await browserCall(jar, portalB, `/set?${portalB.tokenQuery}`);
-    const { socket } = await openWebSocket(`ws://127.0.0.1:${portalA.listenPort}/hmr?channel=dev`, {
-      Cookie: cookieJarHeader(jar),
-    });
-    await expectEcho(socket, "portal-a");
-    expect(upgradeRequest?.url).toBe("/hmr?channel=dev");
-    await closeWebSocket(socket);
     expect(initialA).toMatchObject({ status: 200, body: "target-a" });
     expect(initialB).toMatchObject({ status: 200, body: "target-b" });
     const targetCookies = [initialA, initialB].map((result) =>
@@ -372,7 +361,7 @@ describe("portal HTTP proxy", () => {
   });
 
   it.each(["HTTP", "WebSocket"])("isolates %s cookies across target-port reuse", async (kind) => {
-    const service = portalService();
+    const { service } = makeService();
     const jar = new Map<string, string>();
     const received: Array<string | undefined> = [];
     const name = kind === "HTTP" ? "session" : "socket";
@@ -484,7 +473,7 @@ describe("portal HTTP proxy", () => {
   it("contains browser socket errors while a worker WebSocket is attaching", async () => {
     target.handler = (_req, res) => res.end("still available");
     const httpServers: Server[] = [];
-    const service = portalService(httpServers);
+    const { service } = makeService({ httpServers });
     const dialing = createDeferredCore();
     const attachment = createDeferredCore<Duplex>();
     let firstConnection = true;
@@ -543,26 +532,13 @@ describe("portal HTTP proxy", () => {
   ] as const)("streams %s headers before body and settles %s", async (kind, completion) => {
     let appResponse: ServerResponse | undefined;
     let appClosed = false;
-    target.handler = (req, res) => {
-      if (req.url === "/events") {
-        appResponse = res;
-        res.once("close", () => {
-          appClosed = true;
-        });
-        res.writeHead(200, { "Content-Type": "text/event-stream", "X-App": "header-first" });
-        res.flushHeaders();
-      } else if (req.url === "/start" && req.method === "POST" && appResponse) {
-        res.writeHead(204).end();
-        if (completion === "complete") {
-          appResponse.end("data: started\n\n");
-        } else if (completion === "abort") {
-          appResponse.destroy();
-        } else {
-          appResponse.write("data: ready\n\n");
-        }
-      } else {
-        res.writeHead(404).end();
-      }
+    target.handler = (_req, res) => {
+      appResponse = res;
+      res.once("close", () => {
+        appClosed = true;
+      });
+      res.writeHead(200, { "Content-Type": "text/event-stream", "X-App": "header-first" });
+      res.flushHeaders();
     };
     const portal = await openPortal({ target: kind === "worker" ? workerTarget() : undefined });
     const connection = { headers: { Cookie: portalAuthCookie(portal) } };
@@ -591,9 +567,14 @@ describe("portal HTTP proxy", () => {
         browserResponse.on("error", () => undefined);
         browserResponse.once("close", resolve);
       });
-      expect(await httpCall(portal, "/start", { ...connection, method: "POST" })).toMatchObject({
-        status: 204,
-      });
+      // Produce the body only after the proxy has delivered the upstream headers.
+      if (completion === "complete") {
+        appResponse!.end("data: started\n\n");
+      } else if (completion === "abort") {
+        appResponse!.destroy();
+      } else {
+        appResponse!.write("data: ready\n\n");
+      }
       if (completion === "browser" || completion === "app") {
         await firstChunk.promise;
         (completion === "browser" ? browserResponse : appResponse)?.destroy();
@@ -675,13 +656,14 @@ describe("portal HTTP proxy", () => {
   });
 
   it("splices WebSockets and destroys upgraded sockets and listeners on close", async () => {
-    const service = portalService();
+    const { service } = makeService();
     const portal = await service.open({ targetPort: target.port });
     targetWebSocketSetCookie = "socket=ready; Domain=target.example; Path=/; HttpOnly";
     const { socket: ws, setCookies: upgradeCookies } = await openWebSocket(
-      `ws://127.0.0.1:${portal.listenPort}/hmr?channel=dev&${portal.tokenQuery}`,
+      `ws://127.0.0.1:${portal.listenPort}/hmr?channel=dev`,
       {
         ...privateHeaders,
+        Cookie: `${privateHeaders.Cookie}; ${portalAuthCookie(portal)}`,
         "X-Forwarded-Host": "forged.example",
         "X-Forwarded-Proto": "https",
         Forwarded: "host=forged.example",
