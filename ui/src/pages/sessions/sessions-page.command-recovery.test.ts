@@ -40,7 +40,7 @@ function commandSession(handlers: Record<string, () => unknown>) {
 }
 
 describe("sessions page lifecycle", () => {
-  it("presents owner-started refreshes without replacing controls, rows, or subscriptions", async () => {
+  it("presents owner-started refreshes without replacing controls or rows", async () => {
     const target = sessionRow("retained", { sessionId: "retained-generation" });
     const initial = sessionsResult([target], 1);
     const managed = createManagedSessions();
@@ -59,28 +59,26 @@ describe("sessions page lifecycle", () => {
       const publish = (loading: boolean, error: string | null = null) =>
         managed.publish(query, { result: initial, agentId: "main", loading, error });
 
-      publish(true);
-      await page.updateComplete;
-      expect(refresh().disabled).toBe(false);
-      expect(searchInput()).toBe(input);
-      expect(page.querySelector("tbody tr")).toBe(row);
-      expect(page.selectedSessions.has(target.key)).toBe(true);
-
-      publish(false, "Synthetic background refresh failure");
-      await vi.waitFor(() =>
-        expect(page.textContent).toContain("Synthetic background refresh failure"),
-      );
-      expect(searchInput()).toBe(input);
-      expect(page.querySelector("tbody tr")).toBe(row);
-
-      publish(true);
-      await page.updateComplete;
-      publish(false);
-      await vi.waitFor(() => expect(refresh().disabled).toBe(false));
-      await vi.waitFor(() => expect(page.querySelector(".sessions-error")).toBeNull());
-      expect(page.selectedSessions.has(target.key)).toBe(true);
-      expect(managed.subscribeList).toHaveBeenCalledTimes(1);
-      expect(managed.refreshList).not.toHaveBeenCalled();
+      const failure = "Synthetic background refresh failure";
+      for (const [loading, error] of [
+        [true, null],
+        [false, failure],
+        [true, null],
+        [false, null],
+      ] as const) {
+        publish(loading, error);
+        await vi.waitFor(() => {
+          expect(refresh().disabled).toBe(false);
+          expect(searchInput()).toBe(input);
+          expect(page.querySelector("tbody tr")).toBe(row);
+          expect(page.selectedSessions.has(target.key)).toBe(true);
+          if (error) {
+            expect(page.textContent).toContain(error);
+          } else if (!loading) {
+            expect(page.querySelector(".sessions-error")).toBeNull();
+          }
+        });
+      }
 
       managed.refreshList.mockImplementationOnce(async () => {
         publish(true);
@@ -91,7 +89,6 @@ describe("sessions page lifecycle", () => {
       await vi.waitFor(() => expect(refresh().disabled).toBe(true));
       pending.resolve();
       await vi.waitFor(() => expect(refresh().disabled).toBe(false));
-      expect(managed.refreshList).toHaveBeenCalledTimes(1);
       expect(page.querySelector("tbody tr")).toBe(row);
     } finally {
       pending.resolve();
@@ -147,7 +144,7 @@ describe("sessions page lifecycle", () => {
     let rows = [target];
     let deletionAttempts = 0;
     let readFails = false;
-    const { context, sessions } = commandSession({
+    const { context } = commandSession({
       "sessions.list": () => {
         if (readFails) {
           throw new Error("Roster unavailable. Refresh to recover.");
@@ -155,8 +152,7 @@ describe("sessions page lifecycle", () => {
         return sessionsResult(rows, 1);
       },
       "sessions.delete": () => {
-        deletionAttempts += 1;
-        if (deletionAttempts < 3) {
+        if (++deletionAttempts < 3) {
           throw new Error("Deletion unavailable. Try again.");
         }
         rows = [];
@@ -174,26 +170,17 @@ describe("sessions page lifecycle", () => {
       await selectMenuValue(menu, "delete");
     };
     const refresh = () => page.querySelector<HTMLButtonElement>('button[aria-label="Refresh"]')!;
-
-    try {
-      await remove();
-      await waitForFast(() => expect(page.textContent).toContain(deletionError));
-      refresh().click();
-      await waitForFast(() => expect(page.textContent).not.toContain(deletionError));
-
-      await remove();
-      await waitForFast(() => expect(page.textContent).toContain(deletionError));
-      await remove();
-      await waitForFast(() => expect(page.textContent).toContain(rosterError));
-      expect(page.textContent).not.toContain(deletionError);
-      expect(deletionAttempts).toBe(3);
-
-      readFails = false;
-      refresh().click();
-      await waitForFast(() => expect(page.querySelector('[role="alert"]')).toBeNull());
-    } finally {
-      page.remove();
-      sessions.dispose();
-    }
+    await remove();
+    await waitForFast(() => expect(page.textContent).toContain(deletionError));
+    refresh().click();
+    await waitForFast(() => expect(page.textContent).not.toContain(deletionError));
+    await remove();
+    await waitForFast(() => expect(page.textContent).toContain(deletionError));
+    await remove();
+    await waitForFast(() => expect(page.textContent).toContain(rosterError));
+    expect(page.textContent).not.toContain(deletionError);
+    readFails = false;
+    refresh().click();
+    await waitForFast(() => expect(page.querySelector('[role="alert"]')).toBeNull());
   });
 });

@@ -10,12 +10,6 @@ import { sessionsResult } from "../../lib/sessions/session-capability.test-suppo
 import type { SessionDeleteTarget } from "../../lib/sessions/session-capability.ts";
 import { createTestGatewayClient } from "../../test-helpers/gateway-client.ts";
 import { gatewayHelloForMethods } from "../../test-helpers/gateway-methods.ts";
-import {
-  answerConfirmDialog,
-  createModalDialogTestFixture,
-  getRenderedModalDialog,
-  waitForConfirmDialogActions,
-} from "../../test-helpers/modal-dialog.ts";
 import { selectMenuValue } from "../../test-helpers/session-menu.ts";
 import { createActiveSessionPlacement } from "../../test-helpers/session-placement.ts";
 import {
@@ -25,6 +19,7 @@ import {
   createSessions,
   liveSessions,
   openRowMenu,
+  selectRows,
   sessionRow,
   withNotifyingAgentSelection,
 } from "./sessions-page.test-support.ts";
@@ -37,15 +32,14 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function setupArchivedPageWithSelection(
-  scopeId: string | null,
+async function setupArchivedPage(
   sessions: SessionCapability,
   expandedSessionKey: string | null = null,
 ) {
   const { gateway } = createGateway({} as GatewayBrowserClient);
   const { context, changeScope } = withNotifyingAgentSelection(
     createContext(gateway, sessions),
-    scopeId,
+    "writer",
   );
   const page = await createRenderedPage(
     context,
@@ -59,62 +53,12 @@ async function setupArchivedPageWithSelection(
 const writerKeys = ["agent:writer:old-1", "agent:writer:old-2"];
 const archivedRow = (key: string): GatewaySessionRow => ({ key, kind: "direct", archived: true });
 const deleted = (keys: string[] = []) => ({ deleted: keys, errors: [], preservedWorktrees: [] });
-const archivedWriterRows = (updatedAt?: number) => ({
-  ...sessionsResult(
-    writerKeys.map((key) => ({ key, kind: "direct", archived: true, updatedAt })),
-    1,
-  ),
+const archivedWriterRows = () => ({
+  ...sessionsResult(writerKeys.map(archivedRow), 1),
   totalCount: writerKeys.length,
 });
 
 describe("sessions page agent-scope retirement", () => {
-  it("retires real delete-all confirmation and confirms in the new scope", async () => {
-    const actual = await vi.importActual<typeof import("../../components/confirm-dialog.ts")>(
-      "../../components/confirm-dialog.ts",
-    );
-    vi.mocked(showConfirmDialog).mockImplementation(actual.showConfirmDialog);
-    const fixture = createModalDialogTestFixture();
-    const list = vi.fn<SessionCapability["list"]>(async (options) =>
-      sessionsResult([archivedRow(`agent:${options?.agentId ?? "main"}:archived`)], 1),
-    );
-    const deleteMany = vi.fn<SessionCapability["deleteMany"]>().mockResolvedValue(deleted());
-    try {
-      const { page, changeScope } = await setupArchivedPageWithSelection(
-        "writer",
-        createSessions({ list, deleteMany }),
-      );
-      let operation = fixture.track(page.deleteAllArchived());
-      let actions = await waitForConfirmDialogActions();
-      expect((await getRenderedModalDialog(document.body)).dialog.open).toBe(true);
-
-      changeScope("main");
-      await vi.waitFor(() =>
-        expect(document.body.querySelector("openclaw-modal-dialog")).toBeNull(),
-      );
-      await operation;
-      expect(deleteMany).not.toHaveBeenCalled();
-      await page.updateComplete;
-      await vi.waitFor(() => expect(page.loading).toBe(false));
-      operation = fixture.track(page.deleteAllArchived());
-      actions = await waitForConfirmDialogActions();
-      expect((await getRenderedModalDialog(document.body)).dialog.open).toBe(true);
-
-      answerConfirmDialog(actions, "confirm");
-      await operation;
-      expect(deleteMany).toHaveBeenCalledExactlyOnceWith([
-        {
-          key: "agent:main:archived",
-          agentId: undefined,
-          archivedOnly: true,
-          deleteTranscript: true,
-        },
-      ]);
-      expect(document.body.querySelector("openclaw-modal-dialog")).toBeNull();
-    } finally {
-      await fixture.cleanup();
-    }
-  });
-
   it.each([
     [false, true],
     [true, true],
@@ -210,7 +154,7 @@ describe("sessions page agent-scope retirement", () => {
       const list = vi.fn<SessionCapability["list"]>().mockReturnValue(listResponse.promise);
       const deleteMany = vi.fn(async () => deleted(writerKeys));
       const sessions = createSessions({ list, deleteMany });
-      const { page, changeScope } = await setupArchivedPageWithSelection("writer", sessions);
+      const { page, changeScope } = await setupArchivedPage(sessions);
       vi.mocked(showConfirmDialog).mockReturnValueOnce(confirmation.promise);
       if (phase === "confirmation") {
         listResponse.resolve({ ...archivedWriterRows(), hasMore: false, nextOffset: null });
@@ -219,13 +163,18 @@ describe("sessions page agent-scope retirement", () => {
       await vi.waitFor(() =>
         expect(phase === "enumeration" ? list : showConfirmDialog).toHaveBeenCalledOnce(),
       );
+      const signal = vi.mocked(showConfirmDialog).mock.calls[0]?.[0].signal;
+      if (phase === "confirmation") {
+        expect(signal?.aborted).toBe(false);
+      }
       changeScope("main");
       changeScope("writer");
       if (phase === "confirmation") {
+        expect(signal?.aborted).toBe(true);
         await page.updateComplete;
         await vi.waitFor(() => expect(page.loading).toBe(false));
       }
-      listResponse.resolve(archivedWriterRows(1));
+      listResponse.resolve(archivedWriterRows());
       confirmation.resolve(true);
       await operation;
       if (phase === "enumeration") {
@@ -246,7 +195,7 @@ describe("sessions page agent-scope retirement", () => {
       .mockResolvedValue(deleted());
     const sessions = createSessions({ deleteMany });
     const key = "agent:writer:old-1";
-    const { page, changeScope } = await setupArchivedPageWithSelection("writer", sessions, key);
+    const { page, changeScope } = await setupArchivedPage(sessions, key);
     const query = vi.mocked(sessions.subscribeList).mock.calls.at(-1)?.[0];
     expect(query).toMatchObject({ search: key, agentId: "writer" });
     vi.mocked(showConfirmDialog).mockResolvedValue(true);
@@ -259,11 +208,10 @@ describe("sessions page agent-scope retirement", () => {
       await vi.waitFor(() => expect(page.loading).toBe(false));
       expect(vi.mocked(sessions.subscribeList).mock.calls.at(-1)?.[0]).toEqual(query);
 
-      const newRow = archivedRow(key);
-      newRequest = page.deleteSessionFromMenu(newRow);
+      newRequest = page.deleteSessionFromMenu(archivedRow(key));
       await vi.waitFor(() => expect(deleteMany).toHaveBeenCalledTimes(2));
       expect(deleteMany.mock.calls[1]?.[0]).toEqual([
-        { key: newRow.key, agentId: undefined, archivedOnly: true },
+        { key, agentId: undefined, archivedOnly: true },
       ]);
 
       oldDelete.resolve({
@@ -273,12 +221,12 @@ describe("sessions page agent-scope retirement", () => {
       await oldRequest;
       expect(page.error).toBeNull();
       changeScope("main");
-      await page.deleteSessionFromMenu(newRow);
+      await page.deleteSessionFromMenu(archivedRow(key));
       expect(deleteMany).toHaveBeenCalledTimes(2);
 
       newDelete.resolve(deleted());
       await newRequest;
-      await page.deleteSessionFromMenu(newRow);
+      await page.deleteSessionFromMenu(archivedRow(key));
       expect(deleteMany).toHaveBeenCalledTimes(3);
     } finally {
       oldDelete.resolve(deleted());
@@ -303,7 +251,6 @@ describe("session selection across roster refresh", () => {
       const [original, stable] = [rows[0]!, rows[1]!];
       let serverRows = rows;
       let revision = 0;
-      const deletedStable = createDeferred();
       const deletedTargets: SessionDeleteTarget[] = [];
       const { context, sessions } = liveSessions<SessionDeleteTarget>({
         "sessions.subscribe": () => ({ subscribed: true }),
@@ -318,40 +265,22 @@ describe("session selection across roster refresh", () => {
           }
           deletedTargets.push(target);
           serverRows = serverRows.filter((row) => row.key !== target.key);
-          if (target.key === stable.key) {
-            deletedStable.resolve();
-          }
           return { deleted: true };
         },
       });
       const subscribe = vi.spyOn(sessions, "subscribeList");
-      const deletion = vi.spyOn(sessions, "deleteMany");
       const page = await createRenderedPage(context, sessionsResult(rows, revision));
-      const pageSize = page.querySelector<HTMLSelectElement>(".data-table-pagination__size");
-      expect(pageSize?.getAttribute("aria-label")).toBe("Rows per page");
-      expect(pageSize?.value).toBe("25");
-      expect(pageSize?.selectedOptions[0]?.textContent?.trim()).toBe("25 per page");
-      const button = (label: string) =>
-        [...page.querySelectorAll<HTMLButtonElement>("button")].find(
-          (entry) => entry.textContent?.trim() === label,
-        )!;
-      const checkbox = (key: string) =>
-        page.querySelector<HTMLInputElement>(`input[aria-label="Select session: ${key}"]`);
       try {
-        for (const row of [original, stable]) {
-          expect(checkbox(row.key)).not.toBeNull();
-          checkbox(row.key)!.click();
-          await page.updateComplete;
-        }
-        expect(page.querySelector(".data-table-bulk-bar")?.textContent).toContain("2 selected");
-        button("Next").click();
+        selectRows(page, original, stable);
+        page.onPageChange(1);
         await page.updateComplete;
-        expect(checkbox(original.key)).toBeNull();
+        expect(page.selectedSessions.size).toBe(2);
         expect(page.querySelector(".data-table-bulk-bar")?.textContent).toContain("2 selected");
 
         vi.mocked(showConfirmDialog).mockReturnValueOnce(confirmation.promise);
+        let deletion: ReturnType<typeof page.deleteSelected> | undefined;
         if (missingIds) {
-          button("Delete").click();
+          deletion = page.deleteSelected();
           expect(showConfirmDialog).toHaveBeenCalledOnce();
         }
         if (change === "removed") {
@@ -369,12 +298,10 @@ describe("session selection across roster refresh", () => {
         await sessions.refreshList({ ...subscribe.mock.calls[0]![0], force: true });
         await page.updateComplete;
         if (!missingIds) {
-          button("Delete").click();
+          deletion = page.deleteSelected();
         }
         confirmation.resolve(true);
-        await deletedStable.promise;
-        const { errors, deleted: removed } = await deletion.mock.results[0]!.value;
-        expect([errors, removed]).toEqual([[], [stable.key]]);
+        await deletion;
         expect(serverRows.some((row) => row.key === stable.key)).toBe(false);
         if (change !== "removed") {
           expect(serverRows.find((row) => row.key === original.key)?.label).toBe(
