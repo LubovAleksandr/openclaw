@@ -160,7 +160,6 @@ it("uses each prepared owner for params and stream wrapping with shared config",
     });
     await agent.streamFn(model, { messages: [] });
   }
-  expect(base).toHaveBeenCalledTimes(3);
   expect(base.mock.calls.map((args) => [args[2]?.temperature, args[2]?.headers])).toEqual([
     [0.1, { owner: "first", preparedBy: "first" }],
     [0.1, { owner: "replacement", preparedBy: "replacement" }],
