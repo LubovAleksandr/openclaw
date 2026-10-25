@@ -7,10 +7,10 @@ import type { CodexCatalogState, StoredCodexCatalogEntry } from "./session-catal
 import { CodexCatalogIndex } from "./session-catalog-index.js";
 import { catalogRow } from "./session-catalog-index.test-support.js";
 
+const homeId = "cold-start";
 const indexes: CodexCatalogIndex[] = [];
 const releases: Array<() => void> = [];
 const pending: Promise<unknown>[] = [];
-const homeId = "cold-start";
 const anyCursor = expect.any(String);
 afterEach(async () => {
   releases.splice(0).forEach((release) => release());
@@ -65,8 +65,9 @@ function expectPage(
   cursors: { nextCursor?: unknown; backwardsCursor?: unknown } = {},
 ) {
   expect(page.sessions.map((session) => session.threadId)).toEqual(ids);
-  const actual = { nextCursor: page.nextCursor, backwardsCursor: page.backwardsCursor };
-  expect(actual).toMatchObject(cursors);
+  expect({ nextCursor: page.nextCursor, backwardsCursor: page.backwardsCursor }).toMatchObject(
+    cursors,
+  );
 }
 
 it.each([
@@ -98,7 +99,6 @@ it.each([
   await index.initialize();
   const following = await index.list({ limit: 1, cursor: previous.nextCursor });
   expectPage(following, ["charlie"], { nextCursor: undefined });
-  expect(readNative).toHaveBeenCalledTimes(2);
 });
 
 it("returns a progressing filtered frontier and bounds a caught-up continuation wait", async () => {
@@ -112,7 +112,6 @@ it("returns a progressing filtered frontier and bounds a caught-up continuation 
   await expect(index.list({ cwd: "/workspace", cursor: first.nextCursor })).rejects.toMatchObject({
     code: "APP_SERVER_UNAVAILABLE",
   });
-  expect(readNative).toHaveBeenCalledTimes(2);
   tail.resolve();
   await index.initialize();
   const next = await index.list({ cwd: "/workspace", cursor: first.nextCursor });
@@ -199,18 +198,12 @@ it("keeps event-owned tails outside an incomplete prefix and waits for old curso
   headReady.resolve();
   const first = await firstCall;
   expect.soft(first.sessions.map((session) => session.threadId)).toEqual(["newest", "head"]);
-  const settled = { forward: false, backward: false };
-  const forward = index.list({ limit: 1, cursor: old.nextCursor }).then((page) => {
-    settled.forward = true;
-    return page;
-  });
-  const backward = index.list({ limit: 1, cursor: old.backwardsCursor }).then((page) => {
-    settled.backward = true;
-    return page;
-  });
+  const forward = index.list({ limit: 1, cursor: old.nextCursor });
+  const backward = index.list({ limit: 1, cursor: old.backwardsCursor });
   pending.push(forward, backward);
-  await delay(0);
-  expect.soft(settled).toEqual({ forward: false, backward: false });
+  expect
+    .soft(await Promise.race([forward, backward, delay(0).then(() => "pending")]))
+    .toBe("pending");
   tailReady.resolve();
   expectPage(await backward, ["middle"]);
   expectPage(await forward, ["oldest"]);

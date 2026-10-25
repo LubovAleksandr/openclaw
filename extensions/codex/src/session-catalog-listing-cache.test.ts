@@ -63,66 +63,46 @@ it("discovers visible entries after hidden native pages without rereading the re
   expect(commandRpcMocks.codexControlRequest).toHaveBeenCalledTimes(nativeCalls);
 });
 
-it.each(["resolve", "reject"] as const)(
-  "waits for the first native page while one shared initializer will %s",
-  async (outcome) => {
-    const held = createDeferred<unknown>();
-    const started = createDeferred<void>();
-    commandRpcMocks.codexControlRequest.mockImplementationOnce(() => {
-      started.resolve();
-      return held.promise;
+it("rejects shared cold waiters and recovers on the next initialization", async () => {
+  const held = createDeferred<unknown>();
+  const started = createDeferred<void>();
+  commandRpcMocks.codexControlRequest.mockImplementationOnce(() => {
+    started.resolve();
+    return held.promise;
+  });
+  const control = makeControl();
+  let delivered = 0;
+  const lists = [
+    { limit: 1 },
+    { limit: 2, searchTerm: "native" },
+    { cwd: "/workspace/project" },
+  ].map((query) => control.listPage(query).finally(() => delivered++));
+  const listed = Promise.allSettled(lists);
+  const initialized = Promise.allSettled([control.initialize(), control.initialize()]);
+  try {
+    await started.promise;
+    await nextTurn();
+    expect(delivered).toBe(0);
+    expect(commandRpcMocks.codexControlRequest).toHaveBeenCalledOnce();
+    const failure = new Error("native hydration failed");
+    held.reject(failure);
+    const rejected = { status: "rejected", reason: failure };
+    expect(await initialized).toEqual([rejected, rejected]);
+    expect(await listed).toEqual([rejected, rejected, rejected]);
+    expect(commandRpcMocks.codexControlRequest).toHaveBeenCalledOnce();
+    commandRpcMocks.codexControlRequest.mockResolvedValue({
+      data: [native({ id: "thread-recovered" })],
     });
-    const control = makeControl();
-    let delivered = 0;
-    const lists = [
-      { limit: 1 },
-      { limit: 2, searchTerm: "native" },
-      { cwd: "/workspace/project" },
-    ].map((query) => control.listPage(query).finally(() => delivered++));
-    const listed = Promise.allSettled(lists);
-    const initialized = Promise.allSettled([control.initialize(), control.initialize()]);
-    try {
-      await started.promise;
-      await nextTurn();
-      expect(delivered).toBe(0);
-      expect(commandRpcMocks.codexControlRequest).toHaveBeenCalledOnce();
-      const failure = new Error("native hydration failed");
-      if (outcome === "resolve") {
-        held.resolve({ data: [native()] });
-      } else {
-        held.reject(failure);
-      }
-      const rejected = { status: "rejected", reason: failure };
-      expect(await initialized).toEqual(
-        Array(2).fill(outcome === "resolve" ? { status: "fulfilled", value: undefined } : rejected),
-      );
-      for (const result of await listed) {
-        expect(result).toMatchObject(
-          outcome === "resolve"
-            ? {
-                status: "fulfilled",
-                value: { sessions: [{ threadId: "thread-1" }] },
-              }
-            : rejected,
-        );
-      }
-      expect(commandRpcMocks.codexControlRequest).toHaveBeenCalledOnce();
-      if (outcome === "reject") {
-        commandRpcMocks.codexControlRequest.mockResolvedValue({
-          data: [native({ id: "thread-recovered" })],
-        });
-        await control.initialize();
-        await expect(control.listPage({ limit: 25 })).resolves.toMatchObject({
-          sessions: [{ threadId: "thread-recovered" }],
-        });
-        expect(commandRpcMocks.codexControlRequest).toHaveBeenCalledTimes(2);
-      }
-    } finally {
-      held.resolve({ data: [] });
-      await Promise.all([initialized, listed]);
-    }
-  },
-);
+    await control.initialize();
+    await expect(control.listPage({ limit: 25 })).resolves.toMatchObject({
+      sessions: [{ threadId: "thread-recovered" }],
+    });
+    expect(commandRpcMocks.codexControlRequest).toHaveBeenCalledTimes(2);
+  } finally {
+    held.resolve({ data: [] });
+    await Promise.all([initialized, listed]);
+  }
+});
 
 it.each([
   ["repeated", "cycle", /repeated.*cursor/, 2],

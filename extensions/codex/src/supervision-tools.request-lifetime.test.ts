@@ -126,20 +126,12 @@ describe("Codex supervision request lifetime", () => {
           assertCurrent() {},
         }),
     });
-    const result = await Promise.resolve(tool.execute("read", sessionParams)).catch(
-      (error: unknown) => {
-        expect(error).toBeInstanceOf(Error);
-        expect(error).toHaveProperty(
-          "message",
-          expect.stringMatching(/Codex (?:supervision|session reads).*disabled/),
-        );
-      },
-    );
-    expect(result !== undefined && !pluginConfig.supervision.enabled).toBe(false);
-    expect(
-      JSON.stringify(result)?.includes(privateText) &&
-        !pluginConfig.supervision.allowRawTranscripts,
-    ).not.toBe(true);
+    const result = tool.execute("read", sessionParams);
+    if (toolName === "codex_sessions_list") {
+      expect(JSON.stringify(await result)).not.toContain(privateText);
+    } else {
+      await expect(result).rejects.toThrow(/Codex (?:supervision|session reads).*disabled/);
+    }
   });
 
   it.each([
