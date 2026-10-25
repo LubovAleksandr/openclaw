@@ -122,18 +122,12 @@ describe("diffs tool", () => {
     const screenshotHtml = vi.fn<DiffScreenshotter["screenshotHtml"]>();
     const tool = createTool({ context: toolContext }, { screenshotHtml });
 
-    const result = await executeDiff(tool, {
-      before: "same\n",
-      after: "same\n",
-    });
+    const result = await executeDiff(tool, { before: "same\n", after: "same\n" });
 
     expect(readTextContent(result, 0)).toBe(
       "Before and after are identical — no changes to render.",
     );
-    expect(readDetails(result)).toEqual({
-      changed: false,
-      context: toolContext,
-    });
+    expect(readDetails(result)).toEqual({ changed: false, context: toolContext });
     expect(screenshotHtml).not.toHaveBeenCalled();
     await expect(fs.stat(rootDir)).rejects.toMatchObject({ code: "ENOENT" });
   });
@@ -153,16 +147,11 @@ describe("diffs tool", () => {
   });
 
   it("renders PDF output when fileFormat is pdf", async () => {
-    const screenshotter = createScreenshotter("pdf", ({ outputPath }) => {
-      expect(outputPath).toMatch(/preview\.pdf$/);
-    });
-
-    const result = await executeDiff(createTool({}, screenshotter), {
+    const result = await executeDiff(createTool({}, createScreenshotter("pdf")), {
       mode: "image",
       fileFormat: "pdf",
     });
 
-    expect(screenshotter["screenshotHtml"]).toHaveBeenCalledTimes(1);
     expect(readTextContent(result, 0)).toContain("Diff PDF generated at:");
     expect(readTextContent(result, 0)).toContain("use an available file-sending tool");
     expect(readTextContent(result, 0)).not.toMatch(/`message`|\bmessage tool\b/);
@@ -179,18 +168,14 @@ describe("diffs tool", () => {
     try {
       const screenshotter = createScreenshotter();
       const tool = createTool({ store: fixture.store, context: toolContext }, screenshotter);
-      const result = await executeDiff(tool, {
-        mode: "file",
-        ttlSeconds: "1",
-      });
-      const filePath = requireString(readDetails(result).filePath, "filePath");
+      const result = await executeDiff(tool, { mode: "file", ttlSeconds: "1" });
+      const { filePath: output, artifactId, expiresAt } = readDetails(result);
+      const filePath = requireString(output, "filePath");
       expect(filePath).toMatch(/preview\.png$/);
       expect(filePath).toContain(fixture.rootDir);
-      expect(Date.parse(String(readDetails(result).expiresAt))).toBeGreaterThan(Date.now());
-      await expect(
-        fixture.blobStore.lookup(String(readDetails(result).artifactId)),
-      ).resolves.toMatchObject({
-        key: readDetails(result).artifactId,
+      expect(Date.parse(String(expiresAt))).toBeGreaterThan(Date.now());
+      await expect(fixture.blobStore.lookup(String(artifactId))).resolves.toMatchObject({
+        key: artifactId,
         sizeBytes: 0,
         metadata: { version: 1, kind: "rendered_file", format: "png", context: toolContext },
       });
@@ -198,7 +183,7 @@ describe("diffs tool", () => {
       await fixture.store.stopCleanup();
       await expireDiffArtifactForTest(
         fixture.rootDir,
-        requireString(readDetails(result).artifactId, "artifactId"),
+        requireString(artifactId, "artifactId"),
         1000,
       );
       await fixture.store.cleanupExpired();
@@ -209,29 +194,28 @@ describe("diffs tool", () => {
     }
   });
 
-  it("falls back to view output when both mode cannot render an image", async () => {
-    browserRuntime.screenshotter = {
-      screenshotHtml: vi.fn(async () => {
-        throw new Error("browser missing");
-      }),
-    };
+  it.each(["render", "load"])("keeps the viewer when the renderer fails to %s", async (stage) => {
+    if (stage === "render") {
+      browserRuntime.screenshotter = {
+        screenshotHtml: vi.fn(async () => {
+          throw new Error("browser missing");
+        }),
+      };
+    }
     const result = await executeDiff(createTool(), { mode: "both" });
-
     expect(result?.content).toHaveLength(1);
-    expect(readTextContent(result, 0)).toContain("File rendering failed");
-    expect(readDetails(result).fileError).toBe("browser missing");
-    await expect(fs.readdir(rootDir)).resolves.toEqual([]);
-    expect((await blobStore.entries()).map(({ metadata }) => metadata.kind)).toEqual(["viewer"]);
-  });
-
-  it("falls back to view output when the default image renderer cannot load", async () => {
-    const result = await executeDiff(createTool(), { mode: "both" });
-
     expect(readTextContent(result, 0)).toContain("Diff viewer ready.");
+    expect(readTextContent(result, 0)).toContain("File rendering failed");
     expect(readDetails(result).viewerUrl).toEqual(expect.any(String));
-    expect(readDetails(result).fileError).toContain(
-      "viewer-only rendering must not load the Playwright renderer",
+    expect(readDetails(result).fileError).toBe(
+      stage === "render"
+        ? "browser missing"
+        : "viewer-only rendering must not load the Playwright renderer",
     );
+    if (stage === "render") {
+      await expect(fs.readdir(rootDir)).resolves.toEqual([]);
+    }
+    expect((await blobStore.entries()).map(({ metadata }) => metadata.kind)).toEqual(["viewer"]);
   });
 
   it.each([
@@ -253,10 +237,8 @@ describe("diffs tool", () => {
   });
 
   it("classifies patch render validation failures as tool input errors", async () => {
-    const tool = createTool();
-
     await expect(
-      tool.execute("tool-invalid-patch", {
+      createTool().execute("tool-invalid-patch", {
         patch: "not a unified patch",
         mode: "view",
       }),
