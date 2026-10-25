@@ -810,7 +810,6 @@
 ["extensions/qa-lab/src/live-transports/matrix/cli.test.ts","../shared/live-transport-suite.runtime.js","f88ed0e92dff0b18af10c843e5a19a284569f08b5ae23f0376db8c6c7d9e100c",1]
 ["extensions/qa-lab/src/live-transports/matrix/scenarios/scenario-environment.observation.test.ts","./scenario-runtime-room.js","189afd8daa2d923cffd340b6f236e41d6eef4c34fbdb0e01a7bd50c04126e51e",1]
 ["extensions/qa-lab/src/live-transports/matrix/scenarios/scenario-environment.test.ts","../substrate/config.js","894ac2d7552df08558697812274623587c1ae32cf639e9bafe1e1c81c095b1ae",1]
-["extensions/qa-lab/src/live-transports/matrix/scenarios/scenario-environment.test.ts","./scenario-runtime-room.js","189afd8daa2d923cffd340b6f236e41d6eef4c34fbdb0e01a7bd50c04126e51e",1]
 ["extensions/qa-lab/src/live-transports/matrix/scenarios/scenario-runtime-e2ee-cli-account.test.ts","./scenario-runtime-e2ee-cli-runtime.js","b0c81f6b652699abc4b5695c9d625f960bace6c7eda4bcff64d2cabc001a301c",1]
 ["extensions/qa-lab/src/live-transports/matrix/scenarios/scenario-runtime-e2ee-cli-recovery.test.ts","../substrate/client.js","ec6857a3d0018177260295e94efe51daf6ddcb0be615b1e62a0cd455127edaba",1]
 ["extensions/qa-lab/src/live-transports/matrix/scenarios/scenario-runtime-e2ee-cli-recovery.test.ts","../substrate/e2ee-client.js","ebc62dce40acf3190afc4f9846b2465cac2a52ac4df8679ab4fec5ffeb7e1afc",1]
