@@ -4,6 +4,7 @@ const buildMatrixQaConfig = vi.hoisted(() =>
   vi.fn(() => ({ channels: { matrix: { execApprovals: { enabled: true } } } })),
 );
 vi.mock("../substrate/config.js", () => ({ buildMatrixQaConfig }));
+// mock-isolation: Keep canary room traffic synthetic while exercising environment preparation.
 vi.mock("./scenario-runtime-room.js", () => ({ runMatrixQaCanary: vi.fn() }));
 
 import { createMatrixQaScenarioEnvironment } from "./scenario-environment.js";

@@ -126,7 +126,10 @@ it.each(["text", "json", "unresolved"] as const)(
         expect.objectContaining({
           agentId: "main",
           purpose: "status",
-          context: { authority: { kind: "host", operation: "status" } },
+          context: {
+            authority: { kind: "host", operation: "status" },
+            assertCurrent: expect.any(Function),
+          },
           ...(mode === "json" ? { cfg: providerConfig("fixture-resolved-token") } : {}),
         }),
       );

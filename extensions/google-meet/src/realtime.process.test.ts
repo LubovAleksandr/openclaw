@@ -138,13 +138,22 @@ function writeCommand(source: string): string {
   return scriptPath;
 }
 
-const BRIDGE_SCRIPT = `process.on('SIGTERM', () => process.exit(0));
+const BRIDGE_SCRIPT = `process.on('SIGTERM', () => {
+  process.exit(0);
+});
 process.stdin.resume();
+setInterval(() => {}, 1000);
 `;
 
-const SIGTERM_RESISTANT_SCRIPT = `process.on('SIGTERM', () => process.stderr.write('sigterm\\n'));
+const SIGTERM_RESISTANT_SCRIPT = `process.stderr.write(\`starting:\${process.argv[2]}\\n\`);
 process.stdin.resume();
-process.stderr.write(\`ready:\${process.argv[2]}\\n\`);
+setTimeout(() => {
+  process.on('SIGTERM', () => {
+    process.stderr.write('sigterm\\n');
+  });
+  process.stderr.write(\`ready:\${process.argv[2]}\\n\`);
+}, 50);
+setInterval(() => {}, 1000);
 `;
 
 async function waitForBridgeReady(
