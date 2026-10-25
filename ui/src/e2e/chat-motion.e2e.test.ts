@@ -14,11 +14,13 @@ type SendMotionFrame = {
   y: number | null;
   opacity: string | null;
   same: boolean;
+  height: number | null;
   scrollTop: number;
   scrollHeight: number;
   clientHeight: number;
   blockTop: number | null;
   blockHeight: number | null;
+  transform: string | null;
 };
 type SendMotionScroll = { behavior?: ScrollBehavior; jump: number; remaining: number };
 type SendMotionProbe = { frames: SendMotionFrame[]; scrolls: SendMotionScroll[]; stop: () => void };
@@ -53,15 +55,19 @@ async function observeSendMotion(page: Page, prompt: string) {
       );
       firstBubble ??= bubble;
       const block = bubble?.closest<HTMLElement>(".chat-virtual-block");
+      const bounds = bubble?.getBoundingClientRect();
+      const style = bubble ? getComputedStyle(bubble) : undefined;
       probe.frames.push({
-        y: bubble?.getBoundingClientRect().top ?? null,
-        opacity: bubble ? getComputedStyle(bubble).opacity : null,
+        y: bounds?.top ?? null,
+        opacity: style?.opacity ?? null,
         same: bubble === firstBubble,
+        height: bounds?.height ?? null,
         scrollTop: thread.scrollTop,
         scrollHeight: thread.scrollHeight,
         clientHeight: thread.clientHeight,
         blockTop: block?.getBoundingClientRect().top ?? null,
         blockHeight: block?.getBoundingClientRect().height ?? null,
+        transform: style?.transform ?? null,
       });
       frame = requestAnimationFrame(sample);
     };
@@ -107,6 +113,7 @@ async function finishSendMotion(page: Page, reducedMotion: string) {
       JSON.stringify({
         scrolls,
         endDistance,
+        frames,
         reversals: visible.flatMap((frame, index) => {
           const previous = visible[index - 1];
           return previous && frame.y !== null && previous.y !== null && frame.y > previous.y + 1
