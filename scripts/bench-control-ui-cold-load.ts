@@ -1901,6 +1901,12 @@ try {
           rowKeys: rows?.map((row) => row.getAttribute("data-virtual-row-key")) ?? null,
           sessionKey: pane ? Reflect.get(pane, "sessionKey") : null,
           ready: pane ? Reflect.get(pane, "transcriptReady") === true : false,
+          reactionRows: pane
+            ? [...pane.querySelectorAll<HTMLElement>(".chat-message-reactions")].map((element) => ({
+                messageId: element.dataset.messageId,
+                visible: element.checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }),
+              }))
+            : [],
         },
       };
     });

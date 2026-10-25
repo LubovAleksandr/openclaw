@@ -10,7 +10,16 @@ import {
   waitForChatScrollIdle,
 } from "./chat-flow.test-support.ts";
 const suite = createChatFlowE2eSuite();
-type SendMotionFrame = { y: number | null; opacity: string | null; same: boolean };
+type SendMotionFrame = {
+  y: number | null;
+  opacity: string | null;
+  same: boolean;
+  scrollTop: number;
+  scrollHeight: number;
+  clientHeight: number;
+  blockTop: number | null;
+  blockHeight: number | null;
+};
 type SendMotionScroll = { behavior?: ScrollBehavior; jump: number; remaining: number };
 type SendMotionProbe = { frames: SendMotionFrame[]; scrolls: SendMotionScroll[]; stop: () => void };
 
@@ -43,10 +52,16 @@ async function observeSendMotion(page: Page, prompt: string) {
         (element) => element.dataset.messageText === text,
       );
       firstBubble ??= bubble;
+      const block = bubble?.closest<HTMLElement>(".chat-virtual-block");
       probe.frames.push({
         y: bubble?.getBoundingClientRect().top ?? null,
         opacity: bubble ? getComputedStyle(bubble).opacity : null,
         same: bubble === firstBubble,
+        scrollTop: thread.scrollTop,
+        scrollHeight: thread.scrollHeight,
+        clientHeight: thread.clientHeight,
+        blockTop: block?.getBoundingClientRect().top ?? null,
+        blockHeight: block?.getBoundingClientRect().height ?? null,
       });
       frame = requestAnimationFrame(sample);
     };
@@ -89,7 +104,16 @@ async function finishSendMotion(page: Page, reducedMotion: string) {
           (scroll) => scroll.behavior === "smooth" && scroll.remaining > 8,
         ),
       },
-      JSON.stringify({ scrolls, endDistance }),
+      JSON.stringify({
+        scrolls,
+        endDistance,
+        reversals: visible.flatMap((frame, index) => {
+          const previous = visible[index - 1];
+          return previous && frame.y !== null && previous.y !== null && frame.y > previous.y + 1
+            ? [{ previous, frame }]
+            : [];
+        }),
+      }),
     ).toEqual({ noInstantJump: true, monotonic: true, smoothFromDistance: true });
     expect(endDistance).toBeLessThanOrEqual(8);
   }
