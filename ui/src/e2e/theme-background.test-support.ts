@@ -31,9 +31,9 @@ export async function expectComposerSurface(composer: Locator, accessible = fals
   });
 }
 
-export async function readArtwork(shell: Locator) {
+export async function readArtwork(shell: Locator, detail?: "fingerprint" | "color-spread") {
   await shell.evaluate(finishElementAnimations);
-  return shell.evaluate(async (element) => {
+  return shell.evaluate(async (element, detail) => {
     const style = getComputedStyle(element);
     const probe = document.createElement("div");
     probe.style.backgroundImage = "var(--app-background-image)";
@@ -70,7 +70,7 @@ export async function readArtwork(shell: Locator) {
       throw new Error("Cannot inspect decoded app artwork");
     }
     pixels.drawImage(image, 0, 0);
-    const fingerprint = canvas.toDataURL();
+    const fingerprint = detail === "fingerprint" ? canvas.toDataURL() : null;
     const data = pixels.getImageData(0, 0, canvas.width, canvas.height).data;
     let paintedPixels = 0;
     let maxColorSpread = 0;
@@ -78,7 +78,7 @@ export async function readArtwork(shell: Locator) {
       const alpha = data[offset + 3]!;
       paintedPixels += alpha > 0 ? 1 : 0;
       // Ignore unpremultiplication noise in almost-transparent antialiasing.
-      if (alpha >= 8) {
+      if (detail === "color-spread" && alpha >= 8) {
         const channels = [data[offset]!, data[offset + 1]!, data[offset + 2]!];
         maxColorSpread = Math.max(maxColorSpread, Math.max(...channels) - Math.min(...channels));
       }
@@ -251,7 +251,7 @@ export async function readArtwork(shell: Locator) {
         ...opaqueAncestors.map((name) => `opaque ancestor: ${name}`),
       ],
     };
-  });
+  }, detail);
 }
 
 export function expectAppArtwork(artwork: Awaited<ReturnType<typeof readArtwork>>, label: string) {

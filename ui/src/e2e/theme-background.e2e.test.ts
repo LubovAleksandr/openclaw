@@ -117,7 +117,8 @@ suite.define(() => {
               }
             }
             const label = `${resolved}-${route.replace("/", "-")}-${viewport}`;
-            const artwork = await readArtwork(shell);
+            const fingerprint = route === "new" && viewport === "desktop";
+            const artwork = await readArtwork(shell, fingerprint ? "fingerprint" : undefined);
             expectAppArtwork(artwork, label);
             expect(artwork.canvasOwner, label).toBe(
               route === "chat" && viewport === "mobile" ? "native-mobile" : "shell-artwork",
@@ -137,7 +138,10 @@ suite.define(() => {
                 `${label}: conversation text on artwork`,
               ).toBeGreaterThanOrEqual(4.5);
             }
-            if (route === "new" && viewport === "desktop") {
+            if (fingerprint) {
+              if (artwork.pixels === null) {
+                throw new Error(`Missing decoded artwork fingerprint for ${label}`);
+              }
               images.set(resolved, artwork.backgroundImage);
               decoded.add(artwork.pixels);
             } else {
@@ -218,7 +222,7 @@ suite.define(() => {
       for (const mode of ["dark", "light"] as const) {
         const resolved = mode === "dark" ? "custom" : "custom-light";
         await changeTheme(page, gateway, { family: "custom", mode }, resolved);
-        const artwork = await readArtwork(page.locator(".shell"));
+        const artwork = await readArtwork(page.locator(".shell"), "color-spread");
         expectAppArtwork(artwork, `custom ${mode}`);
         await expectComposerSurface(composer);
         expect(artwork.maxColorSpread).toBeLessThanOrEqual(32);
