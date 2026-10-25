@@ -70,8 +70,15 @@ export async function readArtwork(shell: Locator, artworkDetail?: "fingerprint" 
       throw new Error("Cannot inspect decoded app artwork");
     }
     pixels.drawImage(image, 0, 0);
-    const fingerprint = detail === "fingerprint" ? canvas.toDataURL() : null;
     const data = pixels.getImageData(0, 0, canvas.width, canvas.height).data;
+    // Compare decoded artwork without PNG encoding or transporting full images.
+    const fingerprint =
+      detail === "fingerprint"
+        ? `${canvas.width}x${canvas.height}:${Array.from(
+            new Uint8Array(await crypto.subtle.digest("SHA-256", data)),
+            (byte) => byte.toString(16).padStart(2, "0"),
+          ).join("")}`
+        : null;
     let paintedPixels = 0;
     let maxColorSpread = 0;
     for (let offset = 0; offset < data.length; offset += 4) {

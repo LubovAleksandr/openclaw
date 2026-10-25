@@ -113,7 +113,6 @@ const UI_E2E_SHARED_WORKER_FILES = new Set([
   "ui/src/e2e/post-deploy-session-entry.e2e.test.ts",
   "ui/src/e2e/question-guest.e2e.test.ts",
   "ui/src/e2e/screen-requester-routing.e2e.test.ts",
-  "ui/src/e2e/stale-build-recovery.e2e.test.ts",
 ]);
 
 function estimateFileSeconds(moduleId: string): number {

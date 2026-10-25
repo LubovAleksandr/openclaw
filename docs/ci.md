@@ -121,7 +121,7 @@ retaining 24 aggregate worker slots while removing two checkouts and setups.
 Private source-server projects stay serial. The conditional browser-extension
 row, noncompact plans, and real-Gateway worker limits retain their existing rules.
 
-The mocked Control UI sharder keeps five measured source fixtures that need
+The mocked Control UI sharder keeps four measured source fixtures that need
 compiled subprocesses together in one existing shard. Their combined timing
 weight participates in normal packing, so preparation is shared without adding
 jobs or changing test selection, isolation, or worker limits. The group is an
@@ -133,11 +133,12 @@ browser cases do not load backend stores or Gateway policy. The shared E2E
 cleanup hook reads the canonical admission state through its thin state module;
 policy and logging remain owned by the Gateway admission module.
 
-When artifact reuse is enabled, the service-worker-update and phone stale-build
-fixtures run in `build-artifacts`. Each copies the
-verified production UI artifact and refreshes its own build identity before
-serving it. Local, compatibility, and frozen targets retain their ordinary build
-path.
+When artifact reuse is enabled, service-worker-update, phone stale-build, and
+real protocol-mismatch recovery fixtures run in `build-artifacts`. Each copies
+the verified production UI artifact and refreshes its own build identity before
+serving it. Protocol recovery also uses the producer’s built Gateway and retains
+its incompatible-protocol UI build. Local, compatibility, and frozen targets
+retain their ordinary preparation path.
 
 Real-Gateway UI shards have a 30-minute whole-job budget on the normal Blacksmith
 path. Successful 16-class jobs reached 19:04, leaving too little margin under the
