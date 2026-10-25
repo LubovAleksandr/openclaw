@@ -235,16 +235,12 @@ it.each<[string, number]>([
 
 it("keeps provenance out of the public link span while exposing it to renderers", () => {
   const ir = markdownToIR("README.md [main.ts](https://main.ts)");
-  const links: Array<{ href: string; label: string; origin: "authored" | "linkify" }> = [];
+  const links: [string, string, "authored" | "linkify"][] = [];
   renderMarkdownWithMarkers(ir, {
     styleMarkers: {},
     escapeText: (text) => text,
     buildLink: (span, text, context) => {
-      links.push({
-        href: span.href,
-        label: text.slice(span.start, span.end),
-        origin: context.origin,
-      });
+      links.push([span.href, text.slice(span.start, span.end), context.origin]);
       return null;
     },
   });
@@ -253,8 +249,8 @@ it("keeps provenance out of the public link span while exposing it to renderers"
     { start: 10, end: 17, href: "https://main.ts" },
   ]);
   expect(links).toEqual([
-    { href: "http://README.md", label: "README.md", origin: "linkify" },
-    { href: "https://main.ts", label: "main.ts", origin: "authored" },
+    ["http://README.md", "README.md", "linkify"],
+    ["https://main.ts", "main.ts", "authored"],
   ]);
 });
 
@@ -328,10 +324,9 @@ it.each(["plain", "rendered", "unsorted"] as const)(
     const links = chunks.flatMap((chunk) => chunk.links);
     expect(new Set(links).size).toBe(links.length);
     expect(links.every((span) => !input.links.includes(span))).toBe(true);
-    const first = links[0];
-    expect(first).toBeDefined();
-    if (first) {
-      first.href = "https://example.org/changed";
+    expect(links.length).toBeGreaterThan(0);
+    for (const span of links) {
+      span.href = "https://example.org/changed";
     }
     expect(projectMetadata(input)).toEqual(before);
   },
