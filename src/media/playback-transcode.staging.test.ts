@@ -3,7 +3,7 @@ import fs, { type FileHandle } from "node:fs/promises";
 import type { Root } from "@openclaw/fs-safe";
 import type { TempWorkspace, TempWorkspaceOptions } from "@openclaw/fs-safe/temp";
 import { __setFsSafeTestHooksForTest } from "@openclaw/fs-safe/test-hooks";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import {
   observePlaybackSourceOpen,
   usePlaybackFixture,
@@ -69,9 +69,6 @@ afterEach(async () => {
     await fs.rm(quarantine, { recursive: true, force: true });
   }
   quarantine = undefined;
-});
-
-beforeEach(() => {
   runFfmpeg.mockReset();
 });
 
@@ -92,114 +89,108 @@ async function transcode(source: Awaited<ReturnType<typeof createSource>>) {
   return await resolveTranscode(source);
 }
 
-describe("playback input staging", () => {
-  it("passes every staged input byte to ffmpeg before publishing the rendition", async () => {
-    const contents = Buffer.alloc(1024 * 1024 + 19).map((_, index) => index % 251);
-    const source = await createSource("complete-input.caf", contents);
-    let inputPath: string | undefined;
-    runFfmpeg.mockImplementationOnce(async (args: string[]) => {
-      inputPath = args[args.indexOf("-i") + 1];
-      expect(inputPath).toBeDefined();
-      expect(await fs.readFile(inputPath!), "complete staged ffmpeg input").toEqual(contents);
-      await fs.writeFile(args.at(-1) ?? "", "normalized-audio");
-      return "";
-    });
-    expect(await transcode(source)).toMatchObject({
-      kind: "transcoded",
-      contentType: "audio/mp4",
-    });
-    expect(runFfmpeg).toHaveBeenCalledOnce();
-    await expect(fs.stat(inputPath!)).rejects.toMatchObject({ code: "ENOENT" });
+it("passes every staged input byte to ffmpeg before publishing the rendition", async () => {
+  const contents = Buffer.alloc(1024 * 1024 + 19).map((_, index) => index % 251);
+  const source = await createSource("complete-input.caf", contents);
+  let inputPath: string | undefined;
+  runFfmpeg.mockImplementationOnce(async (args: string[]) => {
+    inputPath = args[args.indexOf("-i") + 1];
+    expect(inputPath).toBeDefined();
+    expect(await fs.readFile(inputPath!), "complete staged ffmpeg input").toEqual(contents);
+    await fs.writeFile(args.at(-1) ?? "", "normalized-audio");
+    return "";
   });
-
-  it.each(["grow", "truncate", "rewrite", "replace"] as const)(
-    "falls back when the source changes after open via %s before starting ffmpeg",
-    async (change) => {
-      const source = await createSource(`changed-${change}.caf`);
-      await expect(resolveMetadata(source)).resolves.toMatchObject({
-        playback: "transcode",
-      });
-      let changed = false;
-      __setFsSafeTestHooksForTest({
-        afterOpenedPathIdentityCheck: async (filePath) => {
-          if (filePath !== source.sourcePath || changed) {
-            return;
-          }
-          changed = true;
-          if (change === "grow") {
-            await fs.appendFile(filePath, "growth");
-          } else if (change === "truncate") {
-            await fs.truncate(filePath, 1);
-          } else if (change === "rewrite") {
-            const beforeRewrite = await fs.stat(filePath);
-            await fs.writeFile(filePath, "edited-source");
-            await fs.utimes(
-              filePath,
-              beforeRewrite.atime,
-              new Date(source.sourceStat.mtimeMs + 2000),
-            );
-            expect((await fs.stat(filePath)).mtimeMs).not.toBe(source.sourceStat.mtimeMs);
-          } else {
-            await fs.rename(filePath, `${filePath}.old`);
-            await fs.writeFile(filePath, "stable-source");
-          }
-        },
-      });
-      await expect(transcode(source)).resolves.toEqual({ kind: "fallback" });
-      expect(changed).toBe(true);
-      expect(runFfmpeg).not.toHaveBeenCalled();
-      expect(await resolveTranscode(source)).toEqual({ kind: "fallback" });
-    },
-  );
-
-  it("falls back when a moved input no longer names its staging descriptor", async () => {
-    const source = await createSource("replaced-staging.caf");
-    let writer: FileHandle | undefined;
-    let writerWasOpenAtMove = false;
-    let replaced = false;
-    observeWorkspaceRoot.mockImplementationOnce((root, workspace) => {
-      const openWritable = root.openWritable.bind(root);
-      const move = root.move.bind(root);
-      root.openWritable = async (...args) => {
-        const opened = await openWritable(...args);
-        if (args[0] === ".input.caf.stage") {
-          writer = opened.handle;
-        }
-        return opened;
-      };
-      root.move = async (...args) => {
-        if (args[0] !== ".input.caf.stage" || args[1] !== "input.caf") {
-          return await move(...args);
-        }
-        // Observe the producer's handle without opening another one that would pin the inode.
-        writerWasOpenAtMove = writer !== undefined && writer.fd >= 0;
-        await move(...args);
-        const inputPath = workspace.path(args[1]);
-        await fs.unlink(inputPath);
-        await fs.writeFile(inputPath, "stable-source", { mode: 0o600 });
-        replaced = true;
-      };
-    });
-    await expect(transcode(source)).resolves.toEqual({ kind: "fallback" });
-    expect([writerWasOpenAtMove, replaced, writer?.fd]).toEqual([true, true, -1]);
-    expect(runFfmpeg).not.toHaveBeenCalled();
+  expect(await transcode(source)).toMatchObject({
+    kind: "transcoded",
+    contentType: "audio/mp4",
   });
+  await expect(fs.stat(inputPath!)).rejects.toMatchObject({ code: "ENOENT" });
+});
 
-  it("does not publish a cache entry when workspace cleanup fails", async () => {
-    const source = await createSource("cleanup-failed.caf");
-    const cleanupError = new Error("synthetic workspace cleanup failure");
+const changes = {
+  grow: (file: string) => fs.appendFile(file, "growth"),
+  truncate: (file: string) => fs.truncate(file, 1),
+  rewrite: async (file: string, mtimeMs: number) => {
+    const { atime } = await fs.stat(file);
+    await fs.writeFile(file, "edited-source");
+    await fs.utimes(file, atime, new Date(mtimeMs + 2000));
+    expect((await fs.stat(file)).mtimeMs).not.toBe(mtimeMs);
+  },
+  replace: async (file: string) => {
+    await fs.rename(file, `${file}.old`);
+    await fs.writeFile(file, "stable-source");
+  },
+};
+it.each(Object.entries(changes))(
+  "falls back when the source changes after open via %s before starting ffmpeg",
+  async (change, mutate) => {
+    const source = await createSource(`changed-${change}.caf`);
+    await expect(resolveMetadata(source)).resolves.toMatchObject({
+      playback: "transcode",
+    });
+    let changed = false;
     __setFsSafeTestHooksForTest({
-      beforeTempWorkspaceNativeRemoval: (target) => {
-        quarantine = target;
-        throw cleanupError;
+      afterOpenedPathIdentityCheck: async (filePath) => {
+        if (filePath !== source.sourcePath || changed) {
+          return;
+        }
+        changed = true;
+        await mutate(filePath, source.sourceStat.mtimeMs);
       },
     });
-    runFfmpeg.mockImplementationOnce(async (args: string[]) => {
-      await fs.writeFile(args.at(-1) ?? "", "normalized-audio");
-      return "";
-    });
-    expect(await transcode(source)).toEqual({ kind: "fallback" });
-    expect(runFfmpeg).toHaveBeenCalledOnce();
-    expect(quarantine).toBeDefined();
+    await expect(transcode(source)).resolves.toEqual({ kind: "fallback" });
+    expect(changed).toBe(true);
+    expect(runFfmpeg).not.toHaveBeenCalled();
+  },
+);
+
+it("falls back when a moved input no longer names its staging descriptor", async () => {
+  const source = await createSource("replaced-staging.caf");
+  let writer: FileHandle | undefined;
+  let writerWasOpenAtMove = false;
+  let replaced = false;
+  observeWorkspaceRoot.mockImplementationOnce((root, workspace) => {
+    const openWritable = root.openWritable.bind(root);
+    const move = root.move.bind(root);
+    root.openWritable = async (...args) => {
+      const opened = await openWritable(...args);
+      if (args[0] === ".input.caf.stage") {
+        writer = opened.handle;
+      }
+      return opened;
+    };
+    root.move = async (...args) => {
+      if (args[0] !== ".input.caf.stage" || args[1] !== "input.caf") {
+        return await move(...args);
+      }
+      // Observe the producer's handle without opening another one that would pin the inode.
+      writerWasOpenAtMove = writer !== undefined && writer.fd >= 0;
+      await move(...args);
+      const inputPath = workspace.path(args[1]);
+      await fs.unlink(inputPath);
+      await fs.writeFile(inputPath, "stable-source", { mode: 0o600 });
+      replaced = true;
+    };
   });
+  await expect(transcode(source)).resolves.toEqual({ kind: "fallback" });
+  expect([writerWasOpenAtMove, replaced, writer?.fd]).toEqual([true, true, -1]);
+  expect(runFfmpeg).not.toHaveBeenCalled();
+});
+
+it("does not publish a cache entry when workspace cleanup fails", async () => {
+  const source = await createSource("cleanup-failed.caf");
+  const cleanupError = new Error("synthetic workspace cleanup failure");
+  __setFsSafeTestHooksForTest({
+    beforeTempWorkspaceNativeRemoval: (target) => {
+      quarantine = target;
+      throw cleanupError;
+    },
+  });
+  runFfmpeg.mockImplementationOnce(async (args: string[]) => {
+    await fs.writeFile(args.at(-1) ?? "", "normalized-audio");
+    return "";
+  });
+  expect(await transcode(source)).toEqual({ kind: "fallback" });
+  expect(runFfmpeg).toHaveBeenCalledOnce();
+  expect(quarantine).toBeDefined();
 });
