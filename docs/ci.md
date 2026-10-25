@@ -128,7 +128,7 @@ cleanup hook reads the canonical admission state through its thin state module;
 policy and logging remain owned by the Gateway admission module.
 
 When artifact reuse is enabled, the service-worker-update and phone stale-build
-fixtures run in the existing browser-extension artifact job. Each copies the
+fixtures run in `build-artifacts`. Each copies the
 verified production UI artifact and refreshes its own build identity before
 serving it. Local, compatibility, and frozen targets retain their ordinary build
 path.

@@ -442,7 +442,6 @@ export function createControlUiE2eSuite(options: ControlUiE2eSuiteOptions): Cont
         new ControlUiE2eAcquisitionClosedError("Control UI E2E context acquisition is closed"),
       );
     }
-    const finishPhase = beginUiE2ePhase("context-setup");
     const acquisition = Promise.resolve()
       .then(async () => {
         const context = await currentBrowser.newContext(contextOptions);
@@ -459,7 +458,7 @@ export function createControlUiE2eSuite(options: ControlUiE2eSuiteOptions): Cont
         context.setDefaultTimeout(controlUiE2eWaitTimeoutMs);
         return context;
       })
-      .finally(finishPhase);
+      .finally(beginUiE2ePhase("context-setup"));
     contextAcquisitions.set(acquisition, owner);
     void acquisition.then(
       () => contextAcquisitions.delete(acquisition),
