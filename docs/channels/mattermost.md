@@ -243,6 +243,7 @@ Notes:
 - Default: `channels.mattermost.groupPolicy = "allowlist"` (mention-gated).
 - Allowlist senders with `channels.mattermost.groupAllowFrom` (user IDs recommended).
 - `channels.mattermost.groupAllowFrom` accepts `accessGroup:<name>` entries. See [Access groups](/channels/access-groups).
+- Bot-authored messages are allowed by default. Set `channels.mattermost.allowBots: "mentions"` to require an explicit mention for bot senders, including in threads where the receiving bot already participates; human thread follow-ups remain governed by `implicitMentions.threadParticipation`. Set `allowBots: false` to disable bot-triggered turns. Per-channel overrides live under `groups.<channelId>.allowBots` or `groups["*"].allowBots`.
 - Per-channel mention overrides live under `channels.mattermost.groups.<channelId>.requireMention` or `channels.mattermost.groups["*"].requireMention` for a default.
 - Text commands can follow the mention: `@<bot-username> /new` runs `/new` while `commands.text` is enabled (the default). Mattermost itself executes a bare `/new` as a Mattermost slash command instead of posting it.
 - `@username` matching is mutable and only enabled when `channels.mattermost.dangerouslyAllowNameMatching: true`.

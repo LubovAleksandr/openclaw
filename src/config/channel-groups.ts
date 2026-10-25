@@ -9,6 +9,8 @@ export type ChannelGroupConfig = Pick<
   "requireMention" | "tools" | "toolsBySender"
 > & {
   requireMentionInBotThreads?: boolean;
+  /** Channel-owned bot admission override; interpreted by channels that support it. */
+  allowBots?: boolean | "mentions";
   ingest?: boolean;
 };
 

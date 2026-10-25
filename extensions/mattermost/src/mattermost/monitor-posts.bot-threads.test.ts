@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { setMattermostRuntime } from "../runtime.js";
 import type { MattermostConfig } from "../types.js";
 import { resolveMattermostAccount } from "./accounts.js";
+import type { MattermostUser } from "./client.js";
 import type { MattermostIngressPost } from "./monitor-ingress.js";
 import { createMattermostPostHandler } from "./monitor-posts.js";
 import type { MattermostMonitorContext } from "./monitor-types.js";
@@ -66,6 +67,11 @@ describe("Mattermost bot-owned thread mention policy", () => {
       }
       return root;
     });
+    const resolveUserInfo = vi.fn(async (id: string): Promise<MattermostUser | null> => ({
+      id,
+      username: id,
+      is_bot: id === "bot-sender",
+    }));
     const monitor = {
       cfg,
       account,
@@ -77,7 +83,7 @@ describe("Mattermost bot-owned thread mention policy", () => {
       pairing: { readAllowFromStore: async () => [] },
       resources: {
         resolveChannelInfo: async () => ({ id: "room", type: "O" }),
-        resolveUserInfo: async (id: string) => ({ id, username: id }),
+        resolveUserInfo,
         resolveMattermostMedia: async () => [],
       },
       runtime: { log: vi.fn(), error: vi.fn() },
@@ -89,6 +95,7 @@ describe("Mattermost bot-owned thread mention policy", () => {
       core,
       root,
       request,
+      resolveUserInfo,
       receive: (post: Partial<MattermostIngressPost> = {}) =>
         handler(
           {
@@ -197,5 +204,101 @@ describe("Mattermost bot-owned thread mention policy", () => {
 
     expect(dispatch).not.toHaveBeenCalled();
     expect(f.request).not.toHaveBeenCalled();
+  });
+
+  it("requires an explicit mention from bot senders in an engaged thread", async () => {
+    const f = setup({ allowBots: "mentions" });
+    hasParticipation.mockResolvedValue(true);
+
+    await f.receive({ user_id: "bot-sender" });
+    expect(dispatch).not.toHaveBeenCalled();
+
+    await f.receive({ id: "bot-mentioned", user_id: "bot-sender", message: "@bot continue" });
+    expect(dispatch).toHaveBeenCalledOnce();
+
+    await f.receive({ id: "human-follow-up" });
+    expect(dispatch).toHaveBeenCalledTimes(2);
+  });
+
+  it("supports disabling bot-authored posts without changing human activation", async () => {
+    const f = setup({ allowBots: false });
+
+    await f.receive({ user_id: "bot-sender", message: "@bot continue" });
+    expect(dispatch).not.toHaveBeenCalled();
+
+    await f.receive({ message: "@bot continue" });
+    expect(dispatch).toHaveBeenCalledOnce();
+  });
+
+  it("does not resolve sender metadata for the default policy when sender_name is present", async () => {
+    const f = setup();
+
+    await f.receive();
+
+    expect(f.resolveUserInfo).not.toHaveBeenCalled();
+  });
+
+  it("preserves default bot admission without a sender lookup", async () => {
+    const f = setup();
+
+    await f.receive({ user_id: "bot-sender", message: "@bot continue" });
+
+    expect(dispatch).toHaveBeenCalledOnce();
+    expect(f.resolveUserInfo).not.toHaveBeenCalled();
+  });
+
+  it.each([true, "true"] as const)(
+    "honors from_bot=%s when sender metadata is unavailable",
+    async (fromBot) => {
+      const f = setup({ allowBots: "mentions" });
+      f.resolveUserInfo.mockResolvedValue(null);
+      hasParticipation.mockResolvedValue(true);
+
+      await f.receive({ user_id: "webhook-sender", props: { from_bot: fromBot } });
+      expect(dispatch).not.toHaveBeenCalled();
+
+      await f.receive({
+        id: "mentioned-webhook",
+        user_id: "webhook-sender",
+        props: { from_bot: fromBot },
+        message: "@bot continue",
+      });
+      expect(dispatch).toHaveBeenCalledOnce();
+    },
+  );
+
+  it("honors string from_bot when bot messages are disabled and lookup fails", async () => {
+    const f = setup({ allowBots: false });
+    f.resolveUserInfo.mockResolvedValue(null);
+
+    await f.receive({
+      user_id: "webhook-sender",
+      props: { from_bot: "true" },
+      message: "@bot continue",
+    });
+
+    expect(dispatch).not.toHaveBeenCalled();
+  });
+
+  it("applies an exact group bot policy over wildcard and account settings", async () => {
+    const f = setup({
+      allowBots: false,
+      groups: { "*": { allowBots: false }, room: { allowBots: "mentions" } },
+    });
+    hasParticipation.mockResolvedValue(true);
+
+    await f.receive({ user_id: "bot-sender" });
+    expect(dispatch).not.toHaveBeenCalled();
+
+    await f.receive({ id: "group-mentioned", user_id: "bot-sender", message: "@bot continue" });
+    expect(dispatch).toHaveBeenCalledOnce();
+  });
+
+  it("applies a wildcard group bot policy over the account setting", async () => {
+    const f = setup({ allowBots: false, groups: { "*": { allowBots: true } } });
+
+    await f.receive({ user_id: "bot-sender", message: "@bot continue" });
+
+    expect(dispatch).toHaveBeenCalledOnce();
   });
 });

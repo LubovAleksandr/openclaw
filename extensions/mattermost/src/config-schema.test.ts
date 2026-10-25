@@ -155,6 +155,24 @@ describe("MattermostConfigSchema", () => {
     expect(result.success).toBe(true);
   });
 
+  it("accepts bot-authored message policy at root, account, and group scope", () => {
+    const result = MattermostConfigSchema.safeParse({
+      allowBots: "mentions",
+      groups: { "*": { allowBots: false } },
+      accounts: { work: { allowBots: "mentions" }, inherited: {} },
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data).toMatchObject({
+        allowBots: "mentions",
+        groups: { "*": { allowBots: false } },
+        accounts: { work: { allowBots: "mentions" } },
+      });
+      expect(result.data.accounts?.inherited).not.toHaveProperty("allowBots");
+    }
+    expect(MattermostConfigSchema.safeParse({ allowBots: "invalid" }).success).toBe(false);
+  });
+
   it("rejects unknown properties inside groups entry", () => {
     const result = MattermostConfigSchema.safeParse({
       groups: {

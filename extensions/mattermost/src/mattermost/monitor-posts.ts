@@ -85,6 +85,13 @@ export function createMattermostPostHandler(monitor: MattermostMonitorContext) {
       return;
     }
     const allMessageIds = messageIds?.length ? messageIds : [post.id];
+    const allowBotsSetting =
+      groups?.[channelId]?.allowBots ??
+      groups?.["*"]?.allowBots ??
+      account.config.allowBots ??
+      true;
+    const allowBotsMode: "off" | "all" | "mentions" =
+      allowBotsSetting === "mentions" ? "mentions" : allowBotsSetting ? "all" : "off";
     const senderId = post.user_id;
     if (senderId === botUserId) {
       monitor.logVerboseMessage(`mattermost: drop post (self sender=${senderId})`);
@@ -112,10 +119,21 @@ export function createMattermostPostHandler(monitor: MattermostMonitorContext) {
       return;
     }
     const { channelDisplay, kind, roomLabel, route, thread } = eventPlan;
+    const payloadSenderName = normalizeOptionalString(payload.data?.sender_name);
+    const senderInfo =
+      allowBotsMode === "all" && payloadSenderName ? undefined : await resolveUserInfo(senderId);
     const senderName =
-      normalizeOptionalString(payload.data?.sender_name) ??
-      normalizeOptionalString((await resolveUserInfo(senderId))?.username) ??
-      senderId;
+      payloadSenderName ?? normalizeOptionalString(senderInfo?.username) ?? senderId;
+    const fromBot = post.props?.from_bot;
+    const isBotMessage =
+      allowBotsMode !== "all" &&
+      (fromBot === true || fromBot === "true" || senderInfo?.is_bot === true);
+    if (isBotMessage && allowBotsMode === "off") {
+      monitor.logVerboseMessage(
+        `mattermost: drop bot post (allowBots=false sender=${senderId} channel=${channelId})`,
+      );
+      return;
+    }
     const rawPostText = post.message ?? "";
     const rawText = normalizeOptionalString(rawPostText) ?? "";
     // "@bot /new" addresses the bot, then issues a command: strip the mention before
@@ -340,6 +358,20 @@ export function createMattermostPostHandler(monitor: MattermostMonitorContext) {
       },
     });
     const { shouldBypassMention } = mentionDecision;
+
+    if (
+      isBotMessage &&
+      allowBotsMode === "mentions" &&
+      kind !== "direct" &&
+      !wasMentioned &&
+      !shouldBypassMention
+    ) {
+      monitor.logVerboseMessage(
+        `mattermost: drop bot post (missing explicit mention sender=${senderId} channel=${channelId})`,
+      );
+      recordPendingHistory();
+      return;
+    }
 
     if (
       mentionDecision.shouldSkip &&

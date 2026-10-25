@@ -60,6 +60,7 @@ export type MattermostUser = {
   nickname?: string | null;
   first_name?: string | null;
   last_name?: string | null;
+  is_bot?: boolean;
   update_at?: number;
 };
 

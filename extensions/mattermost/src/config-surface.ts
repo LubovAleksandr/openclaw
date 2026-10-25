@@ -16,6 +16,14 @@ const mattermostChannelConfigUiHints = {
     label: "Mention in Bot Threads",
     help: "Override bot-created thread mention policy for this Mattermost channel. Exact channel settings override the wildcard, then the account setting.",
   },
+  allowBots: {
+    label: "Mattermost Allow Bot Messages",
+    help: 'Allow bot-authored messages to trigger Mattermost replies (default: true). Set false to disable bot-triggered turns, or "mentions" to require an explicit mention even in participated threads.',
+  },
+  "groups.*.allowBots": {
+    label: "Mattermost Channel Allow Bot Messages",
+    help: 'Override bot-authored message activation for this Mattermost channel. Use "mentions" to require an explicit mention even in participated threads.',
+  },
   ...createChannelConfigUiHints({
     channelLabel: "Mattermost",
     dmPolicy: { channelKey: "mattermost" },

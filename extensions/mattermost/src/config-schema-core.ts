@@ -7,6 +7,7 @@ import {
   DmPolicySchema,
   GroupPolicySchema,
   MarkdownConfigSchema,
+  buildChannelAllowBotsSchema,
   buildGroupEntrySchema,
   buildMultiAccountChannelSchema,
   requireOpenAllowFrom,
@@ -16,6 +17,7 @@ import { z } from "zod";
 
 const MattermostGroupSchema = buildGroupEntrySchema({
   requireMentionInBotThreads: z.boolean().optional(),
+  allowBots: buildChannelAllowBotsSchema({ allowMentions: true }),
 }).omit({
   tools: true,
   toolsBySender: true,
@@ -104,6 +106,7 @@ export const MattermostAccountSchemaBase = z
     oncharPrefixes: z.array(z.string()).optional(),
     requireMention: z.boolean().optional(),
     requireMentionInBotThreads: z.boolean().optional(),
+    allowBots: buildChannelAllowBotsSchema({ allowMentions: true }),
     implicitMentions: ChannelImplicitMentionsSchema.optional(),
     dmPolicy: DmPolicySchema.optional().default("pairing"),
     allowFrom: z.array(z.union([z.string(), z.number()])).optional(),
