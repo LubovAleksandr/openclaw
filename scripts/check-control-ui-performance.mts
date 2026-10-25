@@ -62,10 +62,10 @@ const controlUiPerformanceBudgets = {
   // sheets. Approved 2026-10-22: 57,154 B plus the prior 53,400 / 52,337 headroom.
   largestCssGzipBytes: 58_315,
   // Reserve reaction/footer geometry to remove reload layout shifts (2026-10-24).
-  // Measured complete bundle: +63 B gzip / +1,195 B raw over this change's base.
+  // Measured complete bundle after preserving the current Details composition.
   // Fixed bundle ceilings, not a repeatable per-PR growth allowance.
-  totalCssGzipBytes: 303_624,
-  totalCssRawBytes: 1_596_316,
+  totalCssGzipBytes: 303_308,
+  totalCssRawBytes: 1_596_597,
 } satisfies Record<string, number>;
 export const CONTROL_UI_PERFORMANCE_BUDGETS = Object.freeze(controlUiPerformanceBudgets);
 

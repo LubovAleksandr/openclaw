@@ -1,5 +1,26 @@
 # Team-shaped synthetic state
 
+## System prompt report retention
+
+`node --expose-gc --import ./scripts/tsx.mjs scripts/perf/system-prompt-report-retention.ts`
+retains 200 real reports from distinct synthetic 80-skill catalogs after dropping
+the inputs, then releases the reports as a control. It reports forced-GC heap
+deltas and a digest of every report. `--expect-detached` fails if compact reports
+retain their large input catalogs; `--snapshot <path>` captures synthetic heap
+parents for independent inspection. Compare at least five alternating baseline
+and candidate samples. This owner proof does not predict production savings when
+another owner still retains the same catalog.
+
+Use `--mode timing --operations 100000` for untraced construction CPU and GC;
+`--mode allocation` separately samples allocation including collected objects.
+`--owner <path>` selects a saved report module (or its bundle). Paired runs use
+separate `--ready-file` paths and a common `--start-file` containing a future epoch
+in milliseconds after both warmups finish. Apply the shared quiet-slot guard,
+counterbalanced launch order and swapped interleaved CPU sets. Acceptance:
+unchanged report digest, discarded catalog backing storage released, and no
+material construction regression under the campaign's paired rules. Timing in
+allocation and forced-GC modes is not acceptance evidence.
+
 ## Device pairing publication
 
 `device-pairing-publication-measure.ts` seeds 64 synthetic paired nodes, then
@@ -133,6 +154,58 @@ snapshot and run the streaming analyzer in aggregate-only mode with bounded host
 resources. It covers dominators, collections, duplicate strings, and session-key
 scaling without exporting snapshot payloads.
 
+### Main-isolate module census
+
+`scripts/gateway-heap-rig.mjs --module-census` records each loaded main-isolate
+script's URL, hash, UTF-8 source bytes (or separate WebAssembly binary bytes), and
+V8 code statistics after seeding and
+after the mixed-turn workload. It uses the rig's private child IPC descriptor;
+workers are excluded and no inspector network listener is opened. Run the dist
+build on the authorized benchmark host with a fresh synthetic root, for example:
+
+```sh
+node --import ./scripts/tsx.mjs scripts/gateway-heap-rig.mjs \
+  --root /path/to/fresh-run --minutes 10 --sessions 500 --clients 4 \
+  --port 41673 --turn-interval-ms 20000 --snapshot-minutes 10 --module-census
+```
+
+Use `--coverage` in a separate attribution run to record exact function/range
+execution during the workload. Coverage can retain code and change optimization;
+its timings and code residency are not uninstrumented performance evidence.
+Use `--idle-minutes 5` without coverage to stop workload traffic while leaving
+normal Gateway maintenance active, sample code statistics each minute, and
+capture a final idle snapshot. Use `--snapshot-minutes none` for paired timing
+and natural-GC observations without heap exports; it also skips the idle snapshot.
+Run retained-size captures separately and serially to avoid concurrent bulk writes.
+Census inspectors disconnect after each capture.
+Source bytes and V8 code statistics are not dominator-retained bytes: use the
+heap snapshot analyzer for retained-size attribution. All fixtures and mock
+provider responses are synthetic; this workload does not reproduce a private
+production plugin configuration or measure provider-network latency.
+
+### Summary identity strings
+
+`session-summary-id-retention.ts` prepares 10,000 synthetic sessions with observer
+digests and restart-recovery sources, 8,000 settled runs, 2,000 archived sessions,
+and 40 synthetic plugins. Capture pages through the real roster, completes ten
+mock-provider turns across five dashboards, applies label churn, then requests a
+main-isolate heap snapshot from the built Gateway. Use fresh state for each side:
+
+```sh
+node --import ./scripts/tsx.mjs scripts/perf/session-summary-id-retention.ts \
+  --prepare --state-dir /path/to/new-summary-fixture
+node --import ./scripts/tsx.mjs scripts/perf/session-summary-id-retention.ts \
+  --capture --state-dir /path/to/new-summary-fixture --output /path/to/new-capture
+```
+
+Build the selected revision first. Both commands accept matching `--port` and
+`--mock-port` values (defaults 41697 and 41698, loopback only); capture accepts
+`--entry` for its built JavaScript entry. Analyze the path in `capture.json` with
+`scripts/heap-snapshot-diff.mjs --summary`. Compare physical duplicate-string
+nodes/bytes and family populations under identical churn; JavaScript equality
+does not prove string sharing. Forced-GC snapshots establish retention, not CPU,
+GC-throughput, or production-wide savings. Keep snapshots local and synthetic.
+
 ## Released session authority
 
 ### Pending-input timer retention
@@ -164,6 +237,41 @@ owner module beside its original source so relative imports remain canonical.
 Run at least five alternating samples at 100 and 1,000 reads on the approved
 benchmark host. This is forced-GC owner retention proof, not a latency, allocation,
 promotion, or production GC benchmark.
+
+## SQLite reply decoding
+
+Add `--sqlite-reply-census` to a synthetic `transcript-broadcast-measure.ts` run
+with `--workload-cpu-profile` or `--allocations`. Each active CPU/heap window writes
+`<profile>.sqlite-replies.json` with reply counts, total/max bytes, framed replies,
+and failures grouped by the real SQLite command. It also saves the first successful
+ordinary reply per method as `<profile>.reply-<method>.bin`, limited to 8 MiB per
+sample and 32 MiB per capture. Labels are bounded; admission messages are excluded.
+The preload retains the original deserializer so command attribution does not
+pollute the profile's existing `.deserialize.json` observer. Counts and samples
+are diagnostic evidence; these instrumented runs are not timing gates.
+
+`node scripts/perf/sqlite-reply-transfer-measure.mjs <source-root> --shape 16384
+--operations 500000 --start-at <epoch-ms>` exercises the complete transfer receiver
+with prepared synthetic session-entry frames. The source capsule needs the receiver,
+SQLite lifecycle errors, and normalization-core record helpers; it needs no
+dependency installation. The receiver remains whole; the two required cleanup
+functions are extracted between checked unique source anchors before TypeScript
+stripping. Complete input source hashes are included in each JSON result.
+Shapes are 1024, 16384, 131072, and 9437184 bytes of prompt content;
+the last shape protects fragmented-record behavior. Omit `--shape` to run all four.
+
+Run baseline and candidate in separate processes under the approved host's guard
+and exclusive slot, with the same start time and swapped interleaved CPUs in the
+next pair. Each side warms before the synchronized start and verifies the decoded
+values and record counts. Compare fixed-work process/main-thread CPU, elapsed time,
+GC totals and maxima, and event-loop distributions with their sample counts.
+Use the campaign's absolute-delta and control rules for acceptance.
+
+Use `--allocations` only in separate diagnostic passes. Inspector samples include
+collected objects but exclude external backing buffers; they cannot quantify the
+full byte-buffer allocation saved by avoiding reassembly. The reported payload
+size identifies the copy size for a single-frame record. This is receiver-owner
+proof, excluding producer serialization, IPC, SQL, and whole-Gateway latency.
 
 ## Session-fork snapshots
 
@@ -870,8 +978,13 @@ writer alternates an unrelated session's category through `sessions.patch`;
 patch commit path and emit canonical replacement notifications. These commits
 exercise the stored-row notification path even when PR
 snapshots remain unchanged. The child counts eligible row notifications, samples
-all main-isolate allocations (including collected objects), and captures GC and
-promotion. Controller and socket-driver allocation is excluded. Notify RPC
+all main-isolate allocations (including collected objects), and captures GC.
+Default runs omit V8 GC tracing; collect promotion separately with `--trace-gc`
+and compare it only with another traced run. Use `--warmup-ms 65000` to declare
+an additional fixed warmup before synchronized measurement. A future `--start-at`
+also extends the startup-ready wait beyond its default 180 seconds when needed;
+setup and warmup must still finish before that declared start. Controller and
+socket-driver allocation is excluded. Notify RPC
 latency reports the mutation round trip; notify settlement latency continues
 through the native subscription owner's idle barrier. Settlement is an upper
 bound including controller and IPC overhead. Each mutation settles before the
@@ -3529,6 +3642,57 @@ Gateway turn separately. The recovery scenario prepares profile-database access
 outside capture and measures only the warm resident owner. This probe does not
 include other access policies, contextual-ingress callbacks, or transport allocation.
 
+Use `--timing-only` for an untraced CPU/time pass without allocation sampling.
+Keep its CPU results separate from the default allocation pass. Timing mode
+reports observed GC count, total, maximum, and p95/p99 per kind, filtered to the
+synchronous workload window; every percentile includes its collection count.
+It does not report promotion or event-loop delay. Allocation mode does not
+report GC acceptance statistics.
+
+For a separate recovery owner count pass, generate the same source observer used
+by the Gateway driver and load it before the probe. The output reports exact
+`assertPolicy`, `readCurrentFacts`, profile-owner `assertCurrent` (including
+revision reads), and GitHub fact projections under `host.counts`, with instrumented
+sites under `host.installed`.
+These counts exclude warmup and do not provide timing or allocation evidence.
+
+```sh
+node --import ./scripts/tsx.mjs --input-type=module -e \
+  'import { writeGatewayAuthorityCountsPreload } from "./scripts/lib/gateway-bench-runtime.ts"; writeGatewayAuthorityCountsPreload("/path/to/authority-counts-preload.mjs");'
+node --import /path/to/authority-counts-preload.mjs --import ./scripts/tsx.mjs \
+  scripts/perf/operator-authority-measure.ts --scenario recovery-source \
+  --counts-only --iterations 20000 --warmup 5000 --output /path/to/counts.json
+```
+
+To count actual restarted operator runs, use the existing crash/restart workload:
+
+```sh
+node --import ./scripts/tsx.mjs scripts/perf/post-restart-burst-measure.ts \
+  --state-dir /path/to/new-team-shape --entry src/entry.ts --authority-counts \
+  --port 41688 --mock-port 41689 --clients 1 --runs 1 --seconds 300 --poll-ms 10000
+```
+
+The observer runs only in the restarted Gateway, beginning at preload before
+recovery, without the transcript driver's caller-stack collection. A recovery
+arrival matches the exact original current-cohort user message anywhere in the
+request history because recovery appends a continuation message. Activity recap
+and session-observer requests are excluded even if they quote that marker.
+Arrivals count unique cohort indexes, not every provider request or completed turn. The existing private IPC snapshot stops counting after its usual
+window (capped at 120 seconds), extended in count mode until all expected recovery
+arrivals appear, bounded by `--seconds` since restart. Allow enough time for cold
+startup within that deadline. `recoveryAuthority` records actual start/finish
+wall timestamps, raw counts, installed sites, and primary recovery arrivals at
+that snapshot. Divide recovery policy counts by these arrivals; they are not
+completed-turn counts. The driver refuses a count result without every expected
+recovery arrival and a nonzero recovery-policy count. This pass includes startup
+and polling work and cannot supply acceptance timing. Run the same workload
+without `--authority-counts` using `--entry dist/entry.js` for built Gateway proof.
+Source count runs also accept `--authority-source-preload <overlay.mjs>` before
+the count observer. Its SHA-256 is recorded alongside the overlay's optional
+`globalThis[Symbol.for("openclaw.benchmark.sourceOverlay")]` attestation. Use the
+same loader and source module set on both sides and verify every expected module
+was applied in the restarted Gateway PID.
+
 For real turn counts, add `--operator-access-policy` to the existing streaming
 driver's `chat.send --stress-tools` scenario. A small isolated fixture is enough
 to exercise this path before the larger deployment-shaped comparison:
@@ -3576,7 +3740,10 @@ intersections, and stable-stringify call sites in the auth-policy and tool-overr
 owners. A generated benchmark-only source loader inserts counters; it does not
 alter the checkout or add production hooks. Each round records `host.counts` and
 `host.installed` under `operatorAccessPolicy`: the latter names every instrumented
-site, including zero-call sites. Divide counts by the completed turn count. These
+site, including zero-call sites. Recovery-policy assertions and profile fact/revision
+reads are included when those owners execute. Ordinary new chat turns do not
+prove restart recovery: require nonzero recovery counters before reporting them
+as recovery work. Divide counts by the completed turn count. These
 are nested invocations, not distinct permission decisions, and the named closures
 do not include every anonymous callback. The mode rejects allocation, CPU, GC,
 and diagnostics profiling; its timing is not acceptance evidence.
@@ -3626,6 +3793,16 @@ counts exported `path.resolve` and `path.join` calls. These are owner-level
 operation counts, not Gateway calls per turn. Run both revisions with identical
 arguments, interleave samples, and compare with the `chat.send` allocation
 workload below before drawing an end-to-end conclusion.
+
+The `default-admission` and `prepared-admission` cases compare admission reads
+with a home-selected root and the same root resolved once by its owner. They
+exercise live refusal lookup without opening databases. For the built Gateway
+comparison, generate a fixture at `<synthetic-home>/.openclaw` and pass
+`--default-state-dir` to `transcript-broadcast-measure.ts`. This starts the child
+with the isolated `OPENCLAW_HOME` and no state-directory override, so startup
+must prepare the default itself. Its generated config is written beside the
+fixture config, keeping the config and state roots aligned without overwriting
+`openclaw.json`. The ordinary mode retains its explicit override.
 
 ## Tool schema preparation
 
@@ -5030,6 +5207,35 @@ barrier before warmup. Use identical work counts, the shared quiet-slot lock and
 and swap the interleaved CPU placements in the second pair. Keep maintenance
 settings identical. Apply the campaign's absolute-delta and sample-count rules;
 run matched identical-source controls before interpreting adverse GC or promotion.
+
+## Session replica listener installation
+
+`session-actor-listener-measure.ts` sends 32 prepared, immutable full-entry
+postimages through the real row-change dispatcher and replica installation owner.
+Each entry has a saved instruction snapshot and nested plugin results. It checks
+content, frozen nested values, and mutation rejection, and reports full-entry
+clones separately from other clones during a separate 32-install diagnostic pass.
+Serialized clone bytes describe copied payload size, not V8 allocation.
+
+```sh
+node --import ./scripts/tsx.mjs scripts/perf/session-actor-listener-measure.ts \
+  --state-dir /path/to/private-state --iterations 100000 \
+  --start-at <shared-future-epoch-ms> --output listener.json
+```
+
+Save an unchanged owner beside the current source and select it with
+`--replica-owner src/config/sessions/session-actor-replica.baseline.ts` for the
+baseline. Run concurrent pairs under one quiet lock and the shared guard, with
+separate state directories, synchronized warm starts, and swapped interleaved
+CPUs in the second pair. Default runs measure untraced CPU, installation latency,
+event-loop delay, and per-kind GC totals/tails/maxima with sample counts. Use
+`--allocations` in separate paired runs to sample allocation including collected
+objects; do not gate timing on those instrumented runs. Apply the campaign's
+absolute-delta and sample-count rules, including matched identical-source
+controls before interpreting adverse GC. Acceptance is unchanged immutable
+contents and reduced copying/allocation without a material CPU or tail regression.
+This measures prepared native-style notification installation, excluding producer
+decoding, worker cold-freezing, Gateway traffic, and RPC latency.
 
 ## Native worker CPU sampling
 

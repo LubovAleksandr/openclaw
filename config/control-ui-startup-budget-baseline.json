@@ -1,5 +1,5 @@
 {
-  "startupJsGzipBytes": 281427,
-  "reason": "Reserve chat reload geometry: 32 reload cells below 0.02 CLS; startup raw JS unchanged, gzip +16 B, same requests",
-  "updatedAt": "2026-10-24"
+  "startupJsGzipBytes": 281823,
+  "reason": "Reserve geometry during chat reloads while retaining lazy boundaries and 7 startup JS plus 1 CSS requests",
+  "updatedAt": "2026-10-25"
 }
