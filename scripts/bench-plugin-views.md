@@ -27,12 +27,14 @@ Workboard covers search, clearing search, selecting, scrolling, opening a card,
 dragging to another column, and a live update. Memory covers search, expansion and
 scrolling. Every meaningful state change has a visible assertion; drag waits for
 the move RPC and the card rendered in its destination within the timed interval.
-Cold load starts with a new browser context; warm load remounts
-the route in the same document with resident modules, after New Session's
-committed composer and admitted lazy pet renderer finish loading. After the warm
-interval, interaction measurements wait for the host's naturally admitted New
-Session prefetch assets: observed link completion, or a completed resource when
-the owner already loaded it. Descriptor responses are observed without refetching.
+Cold load starts with a new browser context. After that interval, the harness
+waits on the plugin route for the host's naturally admitted New Session prefetch
+assets: observed link completion, or a completed resource when the owner already
+loaded it. Waiting before navigation avoids racing the owner's deliberate removal
+of the current route from pending prefetch. Descriptor responses are observed
+without refetching. Warm load remounts the plugin route in the same document with
+resident modules, after New Session's committed composer and admitted lazy pet
+renderer finish loading.
 Playwright routing disables
 HTTP cache, so warm load is not described as an HTTP-cache hit.
 

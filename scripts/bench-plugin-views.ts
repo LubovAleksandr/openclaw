@@ -611,34 +611,7 @@ try {
                 window.dispatchEvent(new PopStateEvent("popstate"));
               }, pathname);
             };
-            await navigate("/new");
-            await expect(
-              page.locator(".workboard-board--page, .memory-memories, openclaw-channels-page"),
-            ).toHaveCount(0);
-            await expect(page.locator(".new-session-page__message")).toBeVisible();
-            await expect(page.locator(".new-session-page__message")).toBeEditable();
-            await page.waitForFunction(() => {
-              const readiness = window.openclawControlUi?.snapshot();
-              return (
-                readiness?.ready &&
-                readiness.route?.matches.some((match) => match.routeId === "new-session")
-              );
-            });
-            // Finish the warm-up route's admitted lazy renderer before measuring the remount.
-            await expect(
-              page.locator("openclaw-new-session-page openclaw-lobster-pet"),
-            ).toHaveCount(1);
-            await frames(page);
-            if (values.coverage) {
-              await page.coverage.startJSCoverage({ resetOnNavigation: false });
-            }
-            await step("warm-route-load", async () => {
-              await navigate(`/${route}`);
-              await ready();
-            });
-            if (values.coverage) {
-              sample.warmCoverage = await stopCoverage("warm");
-            }
+            // Let native prefetch finish before New Session can remove itself from pending.
             await expect.poll(() => navigationManifest !== undefined).toBe(true);
             const manifest = await navigationManifest!;
             if (manifest.error) {
@@ -697,6 +670,34 @@ try {
               }),
               { hrefs: preloadHrefs, descriptor: manifest.url },
             );
+            await navigate("/new");
+            await expect(
+              page.locator(".workboard-board--page, .memory-memories, openclaw-channels-page"),
+            ).toHaveCount(0);
+            await expect(page.locator(".new-session-page__message")).toBeVisible();
+            await expect(page.locator(".new-session-page__message")).toBeEditable();
+            await page.waitForFunction(() => {
+              const readiness = window.openclawControlUi?.snapshot();
+              return (
+                readiness?.ready &&
+                readiness.route?.matches.some((match) => match.routeId === "new-session")
+              );
+            });
+            // Finish the warm-up route's admitted lazy renderer before measuring the remount.
+            await expect(
+              page.locator("openclaw-new-session-page openclaw-lobster-pet"),
+            ).toHaveCount(1);
+            await frames(page);
+            if (values.coverage) {
+              await page.coverage.startJSCoverage({ resetOnNavigation: false });
+            }
+            await step("warm-route-load", async () => {
+              await navigate(`/${route}`);
+              await ready();
+            });
+            if (values.coverage) {
+              sample.warmCoverage = await stopCoverage("warm");
+            }
             if (plugin === "workboard") {
               const menuTrigger = page.locator(".workboard-card__menu-trigger").nth(1);
               await menuTrigger.focus();
@@ -860,6 +861,50 @@ try {
             sample.status = "passed";
           } catch (error) {
             sample.error = error instanceof Error ? (error.stack ?? error.message) : String(error);
+            const failureManifest = navigationManifest ? await navigationManifest : undefined;
+            const failureHrefs = (failureManifest?.entries["new-session"] ?? []).map(
+              (file) => new URL(file, new URL("../", failureManifest!.url)).href,
+            );
+            Object.assign(sample, {
+              failureSetup: await page
+                .evaluate((hrefs) => {
+                  const settled = (
+                    window as Window & {
+                      pluginBenchmarkPreloadState?: WeakMap<HTMLLinkElement, string>;
+                    }
+                  ).pluginBenchmarkPreloadState;
+                  const links = Array.from(document.querySelectorAll<HTMLLinkElement>("link")).map(
+                    (link) => ({
+                      href: link.href,
+                      rel: link.rel,
+                      state: settled?.get(link) ?? "none",
+                    }),
+                  );
+                  const completedResources = performance
+                    .getEntriesByType("resource")
+                    .map((entry) => ({
+                      name: entry.name,
+                      responseEnd: (entry as PerformanceResourceTiming).responseEnd,
+                    }));
+                  const readiness = window.openclawControlUi?.snapshot();
+                  return {
+                    url: location.href,
+                    readiness,
+                    expectedHrefs: hrefs,
+                    links,
+                    completedResources,
+                    pendingExpectedHrefs: hrefs.filter((href) => {
+                      const matching = links.filter((link) => link.href === href);
+                      return matching.length
+                        ? matching.some((link) => link.state !== "load")
+                        : !completedResources.some(
+                            (entry) => entry.name === href && entry.responseEnd > 0,
+                          );
+                    }),
+                  };
+                }, failureHrefs)
+                .catch((diagnosticError: unknown) => ({ error: String(diagnosticError) })),
+            });
             await page
               .screenshot({ path: path.join(output, `${prefix}-failure.png`) })
               .catch(() => undefined);
