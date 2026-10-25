@@ -47,12 +47,14 @@ const { values } = parseArgs({
     samples: { type: "string", default: "10" },
     warmup: { type: "string", default: "2" },
     "rtt-ms": { type: "string", default: "0" },
+    "remote-ingress": { type: "boolean", default: false },
     providers: { type: "string", default: "10" },
     models: { type: "string", default: "100" },
     "history-key": { type: "string", default: "agent:main:team-shape-session-0" },
     "history-limit": { type: "string", default: "80" },
     method: { type: "string", multiple: true },
     profile: { type: "boolean", default: false },
+    "profile-samples": { type: "string", default: "5" },
     help: { type: "boolean", default: false },
   },
 });
@@ -62,10 +64,12 @@ if (values.help) {
   --entry src/entry.ts|dist/entry.js  Real Gateway CLI; source mode uses the repository tsx loader.
   --samples 10 --warmup 2           Serial requests; cold first, warmup and measured kept separate.
   --rtt-ms 0|100                    TCP proxy delays each direction by half the RTT.
+  --remote-ingress                 Paired token auth through trusted loopback proxy attribution; asserts compression.
   --providers 10 --models 100       Synthetic config catalog: models per provider; no credentials.
   --history-key <key> --history-limit 80  Existing 2,000-message fixture; protocol pagination retained.
   --method <case>                  Repeatable case filter (case names appear in result JSON).
   --profile                       Main-isolate CPU profile per selected RPC case, outside timing samples.
+  --profile-samples 5              Requests per profile; synchronized profiles start after every timed cell.
   --sync <dir> --cohort <nonce> --side base|control|head
                                   Three live Gateways, serial setup and interleaved measured cells.
 Seed with team-shape-fixture.ts: --sessions 1000 --runs 0 --cron 1000 --projects 0
@@ -90,6 +94,8 @@ assert(port >= 40000 && port < 65535, "isolated ports must be 40000..65534");
 const samples = parsePositiveInt(values.samples, 10, "--samples");
 const warmup = parseNonNegativeInt(values.warmup, 2, "--warmup");
 const rttMs = parseNonNegativeInt(values["rtt-ms"], 0, "--rtt-ms");
+const remoteIngress = values["remote-ingress"];
+const profileSamples = parsePositiveInt(values["profile-samples"], 5, "--profile-samples");
 const providerCount = parseNonNegativeInt(values.providers, 10, "--providers");
 const modelsPerProvider = parsePositiveInt(values.models, 100, "--models");
 const historyLimit = parsePositiveInt(values["history-limit"], 80, "--history-limit");
@@ -97,6 +103,7 @@ assert(
   samples <= 1000 &&
     warmup <= 100 &&
     rttMs <= 1000 &&
+    profileSamples <= 1000 &&
     providerCount <= 100 &&
     modelsPerProvider <= 1000,
 );
@@ -119,6 +126,7 @@ cfg.gateway = {
   port,
   auth: { mode: "token", token },
   controlUi: { enabled: false, allowedOrigins: origins },
+  ...(remoteIngress ? { trustedProxies: ["127.0.0.1", "::1"] } : {}),
 };
 cfg.diagnostics = { ...cfg.diagnostics, enabled: true };
 cfg.cron = { ...cfg.cron, enabled: true };
@@ -194,6 +202,7 @@ type Sample = {
 type Peer = ReturnType<typeof createGatewayWsClient>;
 let child: ChildProcess | undefined;
 const peers = new Set<Peer>();
+const negotiatedExtensions = new Set<string>();
 const records: Sample[] = [];
 let proxy: Awaited<ReturnType<typeof startProxy>> | undefined;
 const pair = generateKeyPairSync("ed25519");
@@ -310,7 +319,6 @@ if (values.sync) {
     sideIndex >= 0 && values.cohort && /^[a-zA-Z0-9_-]{1,80}$/.test(values.cohort),
     "--sync requires --side base|control|head and a fresh --cohort nonce",
   );
-  assert(!values.profile, "Run profiles separately from an interleaved timing cohort");
   syncRoot = path.join(path.resolve(values.sync), values.cohort);
   mkdirSync(syncRoot, { recursive: true });
   writeFileSync(
@@ -319,7 +327,17 @@ if (values.sync) {
       output,
       fingerprint: createHash("sha256")
         .update(
-          JSON.stringify({ selected, samples, warmup, rttMs, providerCount, modelsPerProvider }),
+          JSON.stringify({
+            selected,
+            samples,
+            warmup,
+            rttMs,
+            remoteIngress,
+            profile: values.profile,
+            profileSamples,
+            providerCount,
+            modelsPerProvider,
+          }),
         )
         .digest("hex"),
     }),
@@ -397,12 +415,15 @@ async function control(action: string, extra: Record<string, unknown> = {}): Pro
     });
   });
 }
-async function connectPeer(): Promise<{ peer: Peer; params: Record<string, unknown> }> {
+async function connectPeer(
+  directPairing = false,
+): Promise<{ peer: Peer; params: Record<string, unknown> }> {
   const challenge = Promise.withResolvers<{ nonce: string; ts: number }>();
-  const clientPort = proxy ? port + 1 : port;
+  const clientPort = proxy && !directPairing ? port + 1 : port;
   const peer = createGatewayWsClient({
     url: `ws://127.0.0.1:${clientPort}`,
     origin: origins[proxy ? 1 : 0],
+    ...(remoteIngress && !directPairing ? { headers: { "X-Forwarded-For": "203.0.113.1" } } : {}),
     openTimeoutMs: timeoutMs,
     handshakeTimeoutMs: timeoutMs,
     onEvent(event) {
@@ -418,6 +439,15 @@ async function connectPeer(): Promise<{ peer: Peer; params: Record<string, unkno
   });
   peers.add(peer);
   await peer.waitOpen();
+  const expectedExtensions = remoteIngress && !directPairing ? "permessage-deflate" : "";
+  assert.equal(
+    peer.ws.extensions,
+    expectedExtensions,
+    "unexpected Gateway compression negotiation",
+  );
+  if (!directPairing) {
+    negotiatedExtensions.add(peer.ws.extensions);
+  }
   const timer = setTimeout(
     () => challenge.reject(new Error("connect challenge timed out")),
     timeoutMs,
@@ -597,12 +627,17 @@ async function startProxy() {
   const sockets = new Set<Socket>();
   const timers = new Set<ReturnType<typeof setTimeout>>();
   const forward = (from: Socket, to: Socket) => {
+    let waitingForDrain = false;
     from.on("data", (data) => {
       const timer = setTimeout(() => {
         timers.delete(timer);
-        if (!to.destroyed && !to.write(data)) {
+        if (!to.destroyed && !to.write(data) && !waitingForDrain) {
+          waitingForDrain = true;
           from.pause();
-          to.once("drain", () => from.resume());
+          to.once("drain", () => {
+            waitingForDrain = false;
+            from.resume();
+          });
         }
       }, rttMs / 2);
       timers.add(timer);
@@ -642,10 +677,14 @@ function summaries() {
   return Object.fromEntries(
     selected.map(({ id, method }) => {
       const rows = records.filter((row) => row.case === id && row.phase === "measured");
-      const metric = (read: (sample: Sample) => number | undefined) =>
-        summarizeNumbers(
-          rows.map(read).filter((value): value is number => typeof value === "number"),
-        );
+      const metric = (read: (sample: Sample) => number | undefined) => {
+        const observations = rows
+          .map(read)
+          .filter((value): value is number => typeof value === "number");
+        return observations.length
+          ? { observations: observations.length, ...summarizeNumbers(observations) }
+          : undefined;
+      };
       const rpcMetric = (phase: string, key: string) =>
         metric((sample) => {
           const value = sample.server.events.find(
@@ -672,16 +711,15 @@ function summaries() {
               sample.server.events.filter((event) => event.source === "openclaw.worker.task")
                 .length,
           ),
-          workerThreadCpuMs: metric((sample) =>
-            sample.server.events.reduce(
-              (sum, event) =>
-                sum +
-                (event.source === "openclaw.worker.task" && typeof event.threadCpuMs === "number"
-                  ? event.threadCpuMs
-                  : 0),
-              0,
-            ),
-          ),
+          workerThreadCpuMs: metric((sample) => {
+            const cpu = sample.server.events
+              .filter((event) => event.source === "openclaw.worker.task")
+              .map((event) => event.threadCpuMs);
+            if (!cpu.every((value): value is number => typeof value === "number")) {
+              return undefined;
+            }
+            return cpu.reduce((sum, value) => sum + value, 0);
+          }),
           workerRunMs: metric((sample) =>
             sample.server.events.reduce(
               (sum, event) =>
@@ -772,7 +810,7 @@ try {
     proxy = await startProxy();
   }
   // Auto-pair and warm authentication once, outside all measured requests.
-  const setup = await connectPeer();
+  const setup = await connectPeer(true);
   const paired = await setup.peer.request("connect", setup.params, timeoutMs);
   assert(paired.ok, `synthetic device pairing failed: ${JSON.stringify(paired.error)}`);
   await closePeer(setup.peer);
@@ -812,6 +850,7 @@ try {
     }
   }
   if (syncRoot) {
+    // No side can start profiling until the head completes the final measured cell.
     await waitMarker("head", `cell-${cell - 1}`);
   }
   assertWatcherHealthy();
@@ -819,7 +858,7 @@ try {
     if (values.profile) {
       await control("profile-start");
       try {
-        for (let index = 0; index < samples; index++) {
+        for (let index = 0; index < profileSamples; index++) {
           if (candidate.method === "connect") {
             const pending = await connectPeer();
             try {
@@ -873,6 +912,8 @@ try {
       samples,
       warmup,
       rttMs,
+      remoteIngress,
+      profileSamples: values.profile ? profileSamples : 0,
       providerCount,
       modelsPerProvider,
       historyKey: values["history-key"],
@@ -880,7 +921,9 @@ try {
     },
     measurement: {
       transport: "real Gateway CLI and WebSocket",
-      serialRequests: true,
+      ingress: remoteIngress ? "synthetic trusted loopback proxy" : "direct-local",
+      negotiatedExtensions: [...negotiatedExtensions],
+      serialTimedRequests: true,
       receiveToResponse:
         "existing gateway.rpc response duration: admitted frame receipt through socket acceptance; no TCP delivery wait",
       cpuScope:
@@ -890,8 +933,14 @@ try {
       framingScope:
         "socketWrite is native enqueue only; use CPU profiles for compression/header/segmentation attribution",
       profile: values.profile
-        ? "separate unmeasured per-case request loop, main isolate only"
-        : "disabled",
+        ? {
+            samplesPerCase: profileSamples,
+            scope: "unmeasured per-case request loops; main isolate only",
+            scheduling: syncRoot
+              ? "concurrent across sides after every interleaved timed request completes"
+              : "after every timed request completes",
+          }
+        : { enabled: false },
     },
     summaries: summaries(),
     records,
