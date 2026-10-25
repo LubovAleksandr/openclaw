@@ -92,11 +92,15 @@ export async function readArtwork(shell: Locator, artworkDetail?: "fingerprint" 
     };
     let ancestorCount = 0;
     const opaqueAncestors: string[] = [];
-    const composer = element.querySelector<HTMLElement>(".agent-chat__input");
-    const description = element.querySelector<HTMLElement>(".settings-section__desc");
+    // SPA navigation retains hidden chat panes and their unsent drafts.
+    const visible = (surface: HTMLElement) => surface.checkVisibility({ visibilityProperty: true });
+    const composer = [...element.querySelectorAll<HTMLElement>(".agent-chat__input")].find(visible);
+    const description = [...element.querySelectorAll<HTMLElement>(".settings-section__desc")].find(
+      visible,
+    );
     const transcript = [
       ...element.querySelectorAll<HTMLElement>(".chat-group.assistant .chat-text"),
-    ].at(-1);
+    ].findLast(visible);
     const anchor = composer?.parentElement ?? description;
     if (!anchor) {
       throw new Error("Expected a real composer or Appearance description on the app canvas");

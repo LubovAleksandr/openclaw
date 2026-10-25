@@ -81,7 +81,11 @@ suite.define(() => {
           await page.goto(`${suite.server.baseUrl}${route}`);
         } else {
           const routeId = route === "chat" ? "chat" : "appearance";
-          await evaluateControlUiContext(page, (app, target) => app.navigate(target), routeId);
+          await evaluateControlUiContext(
+            page,
+            (app, target: "chat" | "appearance") => app.navigate(target),
+            routeId,
+          );
           await waitForControlUiRoute(page, { routeId });
         }
         await gateway.waitForRequest("config.get");

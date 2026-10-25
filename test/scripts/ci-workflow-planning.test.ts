@@ -297,6 +297,7 @@ function renderCiGateEnvironment(
     ),
     run_check_plan: "false",
     reuse_browser_extension_build: "false",
+    reuse_control_ui_i18n_setup: "false",
     shared_sdk_declarations: "false",
     compatibility_target: "false",
     release_scope: "full",
@@ -304,17 +305,23 @@ function renderCiGateEnvironment(
   };
   const jobResults: string = step.env.JOB_RESULTS;
   return jobResults.replace(/\$\{\{[\s\S]*?\}\}/gu, (expression) => {
-    const result = expression.match(/^\$\{\{\s*needs\.([\w-]+)\.result\s*\}\}$/u);
-    if (result) {
-      return results[expectDefined(result[1], expression)] ?? "success";
-    }
+    const rendered = expression.replace(/\bneeds\.([\w-]+)\.result\b/gu, (_, job: string) =>
+      JSON.stringify(results[job] ?? "success"),
+    );
     return String(
-      evaluateWorkflowExpression(expression, {
+      evaluateWorkflowExpression(rendered, {
         eventName: "workflow_dispatch",
         repository: "openclaw/openclaw",
         runAttempt: 1,
         failureReportResult: results["pr-failure-report"] ?? "success",
         ...context,
+        additionalNeeds: {
+          "build-artifacts": {
+            result: "success",
+            outputs: { control_ui_i18n_result: "success" },
+          },
+          ...context.additionalNeeds,
+        },
         preflightOutputs,
       }) ?? "",
     );
@@ -5893,10 +5900,15 @@ describe("ci workflow guards", () => {
       const coverage = (outputs: Record<string, string>) =>
         Object.fromEntries(
           Object.entries(outputs).filter(
-            ([key]) => !key.startsWith("hybrid_hosted_") && key !== "check_additional_matrix",
+            ([key]) =>
+              !key.startsWith("hybrid_hosted_") &&
+              key !== "check_additional_matrix" &&
+              key !== "reuse_control_ui_i18n_setup",
           ),
         );
       expect(coverage(qualification.outputs)).toEqual(coverage(ordinaryPush.outputs));
+      expect(ordinaryPush.outputs.reuse_control_ui_i18n_setup).toBe("true");
+      expect(qualification.outputs.reuse_control_ui_i18n_setup).toBe("false");
       const rows = JSON.parse(qualification.outputs.checks_node_core_nondist_matrix!).include;
       expect(rows).toHaveLength(1);
       expect(rows[0].test_runtime_policy).toBe("bun-all");
@@ -11537,6 +11549,8 @@ describe("ci workflow guards", () => {
     { source: "failure", parity: "success", strict: "false", result: "failure" },
     { source: "skipped", parity: "skipped", strict: "false", result: "failure" },
     { source: "success", parity: "skipped", strict: "false", result: "failure" },
+    { source: "", parity: "success", strict: "false", result: "failure" },
+    { source: "success", parity: "", strict: "false", result: "failure" },
   ])("settles shared i18n proof ($source/$parity, strict=$strict)", (entry) => {
     const step = readCiWorkflow().jobs["build-artifacts"].steps.find(
       (candidate: WorkflowStep) => candidate.id === "control_ui_i18n_result",
@@ -11555,11 +11569,67 @@ describe("ci workflow guards", () => {
       },
     });
     expect(run.status, `${run.stdout}${run.stderr}`).toBe(entry.result === "success" ? 0 : 1);
-    expect(readWorkflowOutputs(output)).toEqual({ result: entry.result });
+    const outputs = readWorkflowOutputs(output);
+    expect(outputs).toEqual({ result: entry.result });
     expect(readFileSync(summary, "utf8")).toContain(
       `source=${entry.source}, parity=${entry.parity}, strict=${entry.strict}`,
     );
+    const gateRow = renderCiGateEnvironment(
+      {
+        preflightOutputs: {
+          run_control_ui_i18n: "true",
+          reuse_control_ui_i18n_setup: "true",
+        },
+        additionalNeeds: {
+          "build-artifacts": {
+            result: "success",
+            outputs: { control_ui_i18n_result: expectDefined(outputs.result, "i18n result") },
+          },
+        },
+      },
+      { "control-ui-i18n": "skipped" },
+    )
+      .split("\n")
+      .find((row) => row.startsWith("control-ui-i18n="));
+    const gate = runCiGateFixture(
+      `preflight=success|true\n${expectDefined(gateRow, "i18n gate row")}`,
+    );
+    expect(gate.status, `${gate.stdout}${gate.stderr}`).toBe(entry.result === "success" ? 0 : 1);
   });
+
+  it.each([
+    { reuse: "false", selected: "true", dedicated: "success", built: "failure", exitCode: 0 },
+    { reuse: "false", selected: "true", dedicated: "failure", built: "success", exitCode: 1 },
+    { reuse: "false", selected: "true", dedicated: "skipped", built: "success", exitCode: 1 },
+    { reuse: "true", selected: "true", dedicated: "success", built: "", exitCode: 1 },
+    { reuse: "true", selected: "true", dedicated: "success", built: "skipped", exitCode: 1 },
+    { reuse: "false", selected: "false", dedicated: "skipped", built: "", exitCode: 0 },
+  ])(
+    "gates i18n selected=$selected reuse=$reuse dedicated=$dedicated built=$built",
+    ({ reuse, selected, dedicated, built, exitCode }) => {
+      const gateRow = renderCiGateEnvironment(
+        {
+          preflightOutputs: {
+            run_control_ui_i18n: selected,
+            reuse_control_ui_i18n_setup: reuse,
+          },
+          additionalNeeds: {
+            "build-artifacts": {
+              result: "success",
+              outputs: { control_ui_i18n_result: built },
+            },
+          },
+        },
+        { "control-ui-i18n": dedicated },
+      )
+        .split("\n")
+        .find((row) => row.startsWith("control-ui-i18n="));
+      const gate = runCiGateFixture(
+        `preflight=success|true\n${expectDefined(gateRow, "i18n gate row")}`,
+      );
+      expect(gate.status, `${gate.stdout}${gate.stderr}`).toBe(exitCode);
+    },
+  );
 
   it.each([
     { selected: false, exitCode: 0 },
@@ -12573,6 +12643,12 @@ describe("ci workflow guards", () => {
       requiredJobs.map((job) => `${job}=\${{ needs.${job}.result }}|true`),
     );
     for (const job of selectedJobs) {
+      if (job === "control-ui-i18n") {
+        expect(verifyStep.env.JOB_RESULTS).toContain(
+          "control-ui-i18n=${{ needs.preflight.outputs.reuse_control_ui_i18n_setup == 'true' && (needs.build-artifacts.outputs.control_ui_i18n_result || 'missing') || needs.control-ui-i18n.result }}|",
+        );
+        continue;
+      }
       expect(verifyStep.env.JOB_RESULTS).toContain(
         job === "pr-failure-report"
           ? "pr-failure-report=${{ (github.run_attempt != 1 || needs.preflight.outputs.run_checks_node_core_nondist != 'true') && 'skipped' || needs.pr-failure-report.result }}|"
@@ -12596,6 +12672,13 @@ describe("ci workflow guards", () => {
       const job = expectDefined(match[1], row);
       const selection = expectDefined(match[3], row);
       expect(match[2], row).toBe(job);
+      if (job === "control-ui-i18n") {
+        expect(selection).toBe("needs.preflight.outputs.run_control_ui_i18n");
+        expect(workflow.jobs[job].if).toBe(
+          "needs.preflight.outputs.run_control_ui_i18n == 'true' && needs.preflight.outputs.reuse_control_ui_i18n_setup != 'true'",
+        );
+        continue;
+      }
       if (job === "pr-failure-report") {
         // Reporting covers every PR; gate eligibility preserves the original allowance.
         expect(selection).toBe(
