@@ -1,4 +1,3 @@
-import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
@@ -13,6 +12,7 @@ import { expect, vi } from "vitest";
 import type { createQaGatewayChild, QaGatewayChild } from "../../../../extensions/qa-lab/api.js";
 import type { NodePluginToolDescriptor } from "../../../../packages/gateway-protocol/src/schema/nodes.js";
 import type { McpServerConfig } from "../../../../src/config/types.mcp.js";
+import type { OpenClawConfig } from "../../../../src/config/types.openclaw.js";
 import { hasErrnoCode } from "../../../../src/infra/errno.js";
 import { signalProcessTree } from "../../../../src/process/kill-tree.js";
 import { awaitGateBeforeSettlement, withinTest } from "../../../helpers/promise.js";
@@ -32,6 +32,7 @@ export type CapturedChild = {
   signalTree: (signal: "SIGTERM" | "SIGKILL") => Promise<void>;
 };
 export type HttpFixture = CapturedChild & {
+  pid: number;
   urls: Record<"streamableHttp" | "sse", string>;
 };
 type NodeRead = {
@@ -42,21 +43,41 @@ type NodeRead = {
   connected?: boolean;
   nodePluginTools?: NodePluginToolDescriptor[];
 };
+export type ProbeResult = {
+  label: string;
+  marker: string;
+  pid: number;
+};
 const CHILD_ENV_KEYS = ["PATH", "PATHEXT", "SystemRoot", "WINDIR", "ComSpec"] as const;
 
-export async function createMcpPlacement(root: string, placement: "node") {
+export async function createMcpPlacement(root: string, placement: "node" | "session") {
   const at = (name: string) => path.join(root, placement, name);
   const home = at("home"),
     tempDir = at("tmp");
-  const stateDir = at("state");
+  const stateDir = at("state"),
+    workspaceDir = at("workspace");
   const configPath = at("openclaw.json");
-  await Promise.all([home, tempDir, stateDir].map((dir) => fs.mkdir(dir, { recursive: true })));
+  await Promise.all(
+    [home, tempDir, placement === "node" ? stateDir : workspaceDir].map((dir) =>
+      fs.mkdir(dir, { recursive: true }),
+    ),
+  );
   const env = (extra?: Record<string, string>) => createChildEnv({ home, tempDir, extra });
   return {
     configPath,
+    workspaceDir,
     env,
     servers: (fixture: HttpFixture, extra?: Record<string, string>) =>
-      createMcpServers(placement, fixture, env(extra)),
+      createMcpServers({
+        placement,
+        fixture,
+        stdioEnv: env(extra),
+        repoRoot: process.cwd(),
+        fixturePath: path.join(
+          process.cwd(),
+          "test/e2e/qa-lab/runtime/gateway-node-mcp.fixture.mjs",
+        ),
+      }),
     hostEnv: (token: string) =>
       env({
         OPENCLAW_HOME: home,
@@ -72,6 +93,7 @@ export async function createMcpPlacement(root: string, placement: "node") {
 
 export function startMcpGateway(
   owner: ReturnType<typeof createQaGatewayChild>,
+  configure: (cfg: OpenClawConfig) => OpenClawConfig = (cfg) => cfg,
 ): Promise<GatewayHandle> {
   const repoRoot = process.cwd();
   return owner.start({
@@ -89,14 +111,19 @@ export function startMcpGateway(
       OPENCLAW_SKIP_PROVIDERS: "1",
       OPENCLAW_TEST_MINIMAL_GATEWAY: "1",
     },
-    mutateConfig: (cfg) => {
-      cfg.plugins = { enabled: false };
-      cfg.gateway ??= {};
-      cfg.gateway.nodes ??= {};
-      cfg.gateway.nodes.commands = { allow: [NODE_MCP_COMMAND] };
-      cfg.gateway.nodes.pairing = { ...cfg.gateway.nodes.pairing, autoApproveLocal: false };
-      return cfg;
-    },
+    mutateConfig: (cfg) =>
+      configure({
+        ...cfg,
+        plugins: { enabled: false },
+        gateway: {
+          ...cfg.gateway,
+          nodes: {
+            ...cfg.gateway?.nodes,
+            commands: { allow: [NODE_MCP_COMMAND] },
+            pairing: { ...cfg.gateway?.nodes?.pairing, autoApproveLocal: false },
+          },
+        },
+      }),
   });
 }
 
@@ -165,17 +192,24 @@ export function descriptorFor(
   server: string,
 ): NodePluginToolDescriptor {
   const descriptor = descriptors.find((entry) => entry.mcp?.server === server);
-  assert(descriptor, `missing ${server} MCP descriptor`);
+  if (!descriptor) {
+    throw new Error(`missing ${server} MCP descriptor`);
+  }
   return descriptor;
 }
 
 function spawnCaptured(args: string[], env: NodeJS.ProcessEnv): CapturedChild {
-  const child = spawn(process.execPath, args, {
-    cwd: process.cwd(),
-    detached: process.platform !== "win32",
-    env,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
+  return captureChild(
+    spawn(process.execPath, args, {
+      cwd: process.cwd(),
+      detached: process.platform !== "win32",
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+    }),
+  );
+}
+
+function captureChild(child: ChildProcess): CapturedChild {
   let stdout = "";
   let stderr = "";
   child.stdout?.on("data", (chunk: Buffer) => {
@@ -250,7 +284,13 @@ export async function startHttpFixture(params: {
   let transferred = false;
   let lines: ReturnType<typeof createInterface> | undefined;
   try {
-    assert(captured.child.stdout, "HTTP MCP fixture stdout was not piped");
+    const pid = captured.child.pid;
+    if (pid === undefined) {
+      throw new Error("HTTP MCP fixture did not start");
+    }
+    if (!captured.child.stdout) {
+      throw new Error("HTTP MCP fixture stdout was not piped");
+    }
     lines = createInterface({ input: captured.child.stdout });
     const line = await withinTest(
       awaitGateBeforeSettlement(
@@ -277,6 +317,7 @@ export async function startHttpFixture(params: {
     transferred = true;
     return {
       ...captured,
+      pid,
       urls: { streamableHttp: value.urls.streamableHttp, sse: value.urls.sse },
     };
   } finally {
@@ -361,7 +402,10 @@ export async function approvePairing(
   return approvedId;
 }
 
-export async function readNode(gateway: GatewayHandle, nodeId: string) {
+export async function readNode(
+  gateway: GatewayHandle,
+  nodeId: string,
+): Promise<NodeRead | undefined> {
   const result = (await gateway.call("node.list", {})) as { nodes?: NodeRead[] };
   return result.nodes?.find((entry) => entry.nodeId === nodeId);
 }
@@ -385,26 +429,37 @@ export async function waitForNode(
       expect(node?.nodePluginTools ?? [], gateway.logs()).toHaveLength(toolCount);
     }
   }, WAIT_OPTIONS);
-  assert(node, `node ${nodeId} did not connect:\n${gateway.logs()}`);
+  if (!node) {
+    throw new Error(`node ${nodeId} did not connect:\n${gateway.logs()}`);
+  }
   return node;
 }
 
 export function parseNodeMcpTextRecord(value: unknown): Record<string, unknown> {
   const payload = isRecord(value) && isRecord(value.payload) ? value.payload : value;
-  assert(
-    isRecord(payload) && Array.isArray(payload.content),
-    `MCP result omitted content: ${JSON.stringify(value)}`,
-  );
+  if (!isRecord(payload) || !Array.isArray(payload.content)) {
+    throw new Error(`MCP result omitted content: ${JSON.stringify(value)}`);
+  }
   const text = payload.content.find(
     (item) => isRecord(item) && item.type === "text" && typeof item.text === "string",
   );
-  assert(
-    isRecord(text) && typeof text.text === "string",
-    `MCP result omitted text: ${JSON.stringify(value)}`,
-  );
+  if (!isRecord(text) || typeof text.text !== "string") {
+    throw new Error(`MCP result omitted text: ${JSON.stringify(value)}`);
+  }
   const parsed: unknown = JSON.parse(text.text);
-  assert(isRecord(parsed), `MCP text was not an object: ${text.text}`);
+  if (!isRecord(parsed)) {
+    throw new Error(`MCP text was not an object: ${text.text}`);
+  }
   return parsed;
+}
+
+function parseProbeResult(value: unknown): ProbeResult {
+  const parsed = parseNodeMcpTextRecord(value);
+  const { label, marker, pid } = parsed;
+  if (typeof label !== "string" || typeof marker !== "string" || typeof pid !== "number") {
+    throw new Error(`MCP result had invalid probe data: ${JSON.stringify(parsed)}`);
+  }
+  return { label, marker, pid };
 }
 
 export async function invokeNodeMcpPayload(params: {
@@ -432,20 +487,17 @@ export async function invokeNodeMcpPayload(params: {
 
 export async function invokeNodeMcp(
   params: Parameters<typeof invokeNodeMcpPayload>[0],
-): Promise<{ pid: number }> {
-  const parsed = parseNodeMcpTextRecord(await invokeNodeMcpPayload(params));
-  const { pid } = parsed;
-  assert(typeof pid === "number", `MCP result had invalid probe data: ${JSON.stringify(parsed)}`);
-  return { pid };
+): Promise<ProbeResult> {
+  return parseProbeResult(await invokeNodeMcpPayload(params));
 }
 
-function createMcpServers(
-  placement: "session" | "node",
-  fixture: HttpFixture,
-  stdioEnv: Record<string, string>,
-): Record<string, McpServerConfig> {
-  const repoRoot = process.cwd();
-  const fixturePath = path.join(repoRoot, "test/e2e/qa-lab/runtime/gateway-node-mcp.fixture.mjs");
+function createMcpServers(params: {
+  placement: "session" | "node";
+  fixture: HttpFixture;
+  stdioEnv: Record<string, string>;
+  fixturePath: string;
+  repoRoot: string;
+}): Record<string, McpServerConfig> {
   const common = {
     connectionTimeoutMs: WAIT_TIMEOUT_MS,
     requestTimeoutMs: WAIT_TIMEOUT_MS,
@@ -456,19 +508,19 @@ function createMcpServers(
       ...common,
       transport: "stdio",
       command: process.execPath,
-      args: [fixturePath, "stdio", "--label", `${placement}-stdio`],
-      cwd: repoRoot,
-      env: stdioEnv,
+      args: [params.fixturePath, "stdio", "--label", `${params.placement}-stdio`],
+      cwd: params.repoRoot,
+      env: params.stdioEnv,
     },
     streamableHttp: {
       ...common,
       transport: "streamable-http",
-      url: fixture.urls.streamableHttp,
+      url: params.fixture.urls.streamableHttp,
     },
     sse: {
       ...common,
       transport: "sse",
-      url: fixture.urls.sse,
+      url: params.fixture.urls.sse,
     },
   };
 }

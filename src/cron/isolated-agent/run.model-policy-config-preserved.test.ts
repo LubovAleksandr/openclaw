@@ -1,19 +1,20 @@
 import { describe, expect, it } from "vitest";
 import { resolveAgentConfig } from "../../agents/agent-scope.js";
 import { DEFAULT_PROVIDER } from "../../agents/defaults.js";
+import { resolveExtraParams } from "../../agents/embedded-agent-runner/extra-params.js";
+import { resolveFastModeState } from "../../agents/fast-mode.js";
+import { resolveMemorySearchConfig } from "../../agents/memory-search.js";
+import { resolveAllowedModelRefCore } from "../../agents/model-selection-resolve.js";
+import { resolveConfiguredThinkingDefault } from "../../agents/model-thinking-default.js";
+import { resolveSandboxConfigForAgent } from "../../agents/sandbox/config.js";
 import type { AgentDefaultsConfig } from "../../config/types.agent-defaults.js";
 import type { AgentEntryConfig } from "../../config/types.agents.js";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
+import type { MemorySearchConfig } from "../../config/types.tools.js";
 import { createPluginMetadataSnapshotFixture } from "../../plugins/plugin-metadata.test-support.js";
 import { withPluginRuntimeGenerationScope } from "../../plugins/runtime/generation-scope.js";
-import type { CronJob } from "../types.js";
-import { makeIsolatedAgentJobFixture } from "./job-fixtures.js";
 import { resolveCronModelSelection } from "./model-selection.js";
 import { resolveCronAgentConfig } from "./run-config.js";
-import {
-  prepareCronModelResolveInput,
-  resolveCronPreflightCandidates,
-} from "./run-fallback-policy.js";
 
 function config(defaults: AgentDefaultsConfig, worker: AgentEntryConfig = {}): OpenClawConfig {
   return { agents: { defaults, entries: { worker } } };
@@ -24,12 +25,12 @@ function buildCronConfig(cfg: OpenClawConfig): OpenClawConfig {
     agentConfigOverride: resolveAgentConfig(cfg, "worker"),
   }).cfgWithAgentDefaults;
 }
-function selectModel(
+type ModelOwner = NonNullable<Parameters<typeof resolveCronModelSelection>[0]["owner"]>;
+function modelOwner(
   cfg: OpenClawConfig,
   metadataSnapshot = createPluginMetadataSnapshotFixture({ plugins: [] }),
-  isGmailHook = false,
-) {
-  const owner = {
+): ModelOwner {
+  return {
     config: cfg,
     agentId: "worker",
     agentDir: "/tmp/cron-agent",
@@ -37,15 +38,30 @@ function selectModel(
     metadataSnapshot,
     modelCatalog: { entries: [], routeVariants: [] },
   };
+}
+function selectModel(owner: ModelOwner, isGmailHook = false) {
   return resolveCronModelSelection({
-    cfg,
+    cfg: owner.config,
     owner,
-    agentConfigOverride: resolveAgentConfig(cfg, owner.agentId),
+    agentConfigOverride: resolveAgentConfig(owner.config, owner.agentId),
     agentId: owner.agentId,
     agentDir: owner.agentDir,
     workspaceDir: owner.workspaceDir,
     sessionEntry: {},
     isGmailHook,
+  });
+}
+function resolveCronPayloadModel(cfg: OpenClawConfig, raw: string) {
+  return resolveAllowedModelRefCore({
+    cfg,
+    catalog: [
+      { provider: "openai", id: "gpt-5.5", name: "GPT 5.5" },
+      { provider: "openai", id: "gpt-5.6-sol", name: "GPT 5.6 Sol" },
+    ],
+    raw,
+    defaultProvider: "openai",
+    defaultModel: "baseline",
+    manifestPlugins: [],
   });
 }
 
@@ -61,7 +77,7 @@ describe("resolveCronAgentConfig preserves agent-aware config", () => {
       },
     );
     cfg.plugins = { enabled: false };
-    expect(await selectModel(cfg)).toMatchObject({
+    expect(await selectModel(modelOwner(cfg))).toMatchObject({
       ok: true,
       provider: "native",
       model: "primary",
@@ -71,28 +87,50 @@ describe("resolveCronAgentConfig preserves agent-aware config", () => {
     });
   });
 
-  it("leaves model, request, sandbox and memory scopes with their agent-aware owners", () => {
-    const defaults: AgentDefaultsConfig = {
-      models: { "openai/test": { params: { topP: 0.6, thinking: "high" } } },
-      params: { temperature: 0.1 },
-      sandbox: {
-        mode: "all",
-        docker: { network: "none" },
+  it("keeps per-agent model parameters and controls without flattening their catalog", () => {
+    const cfg = config(
+      {
+        model: "openai/test-model",
+        models: {
+          "openai/test-model": {
+            agentRuntime: { id: "openclaw" },
+            params: {
+              maxTokens: 2048,
+              topP: 0.6,
+              thinking: "high",
+              fastMode: false,
+              fastAutoOnSeconds: 60,
+            },
+          },
+        },
       },
+      {
+        models: {
+          "openai/test-model": {
+            params: { max_tokens: 1536, thinking: "low", fast_mode: "auto", fast_seconds: 20 },
+          },
+        },
+        params: { temperature: 0.4 },
+      },
+    );
+    const selection = {
+      cfg: buildCronConfig(cfg),
+      agentId: "worker",
+      provider: "openai",
+      model: "test-model",
     };
-    const worker: AgentEntryConfig = {
-      models: { "openai/test": { params: { thinking: "low" } } },
-      params: { temperature: 0.4 },
-      sandbox: { docker: { image: "sandbox:custom" } },
-      memory: { search: { rememberAcrossConversations: true } },
-    };
-    const runCfg = buildCronConfig(config(defaults, worker));
-    expect(runCfg.agents?.defaults).toEqual(defaults);
-    expect(runCfg.agents?.entries?.worker).toEqual(worker);
+    expect(resolveExtraParams({ ...selection, modelId: selection.model })).toMatchObject({
+      maxTokens: 1536,
+      topP: 0.6,
+      temperature: 0.4,
+    });
+    expect(resolveConfiguredThinkingDefault(selection)).toBe("low");
+    expect(resolveFastModeState(selection)).toMatchObject({ mode: "auto", fastAutoOnSeconds: 20 });
   });
 
   it.each([false, true])("resolves per-agent allowlist override=%s", (override) => {
     const allowed = override ? "openai/gpt-5.6-sol" : "openai/gpt-5.5";
+    const denied = override ? "openai/gpt-5.5" : "openai/gpt-5.6-sol";
     const cronCfg = buildCronConfig(
       config(
         { modelPolicy: { allow: ["openai/gpt-5.5"] } },
@@ -100,19 +138,29 @@ describe("resolveCronAgentConfig preserves agent-aware config", () => {
       ),
     );
     expect(cronCfg.agents?.defaults?.modelPolicy).toEqual({ allow: [allowed] });
+    expect(resolveCronPayloadModel(cronCfg, denied)).toEqual({
+      error: `model not allowed: ${denied}`,
+    });
+    if (override) {
+      expect(resolveCronPayloadModel(cronCfg, allowed)).toMatchObject({
+        ref: { provider: "openai", model: "gpt-5.6-sol" },
+      });
+    }
   });
 
   it.each(["agent", "hook"] as const)(
     "keeps the selected owner's metadata for the %s model",
     async (source) => {
-      const provider = source === "hook" ? DEFAULT_PROVIDER : "custom";
       const snapshot = (workspaceDir: string, model: string) => ({
         ...createPluginMetadataSnapshotFixture({
           plugins: [
             {
               id: "cron-model-policy",
               modelIdNormalization: {
-                providers: { [provider]: { aliases: { legacy: model } } },
+                providers: {
+                  custom: { aliases: { legacy: model } },
+                  [DEFAULT_PROVIDER]: { aliases: { legacy: model } },
+                },
               },
             },
           ],
@@ -123,86 +171,82 @@ describe("resolveCronAgentConfig preserves agent-aware config", () => {
       const cfg = config(
         {
           model: { primary: "custom/baseline" },
-          modelPolicy: { allow: [`${provider}/legacy`] },
+          modelPolicy: { allow: ["custom/legacy", `${DEFAULT_PROVIDER}/legacy`] },
         },
-        source === "agent" ? { model: "custom/legacy" } : {},
+        {
+          agentDir: "/tmp/cron-agent",
+          workspace: metadataSnapshot.workspaceDir,
+          ...(source === "agent" ? { model: "custom/legacy" } : {}),
+        },
       );
       if (source === "hook") {
         cfg.hooks = { gmail: { model: "legacy" } };
       }
-      expect(
-        await withPluginRuntimeGenerationScope(
-          { metadataSnapshot: snapshot("/tmp/other-owner", "other") },
-          () => selectModel(cfg, metadataSnapshot, source === "hook"),
-        ),
-      ).toMatchObject({
-        ok: true,
-        provider,
-        model: "selected",
-        modelSource: source,
-      });
+      const owner = modelOwner(cfg, metadataSnapshot);
+      for (const ambient of [metadataSnapshot, snapshot("/tmp/other-owner", "other")]) {
+        expect(
+          await withPluginRuntimeGenerationScope({ metadataSnapshot: ambient }, () =>
+            selectModel(owner, source === "hook"),
+          ),
+        ).toMatchObject({
+          ok: true,
+          provider: source === "hook" ? DEFAULT_PROVIDER : "custom",
+          model: "selected",
+          modelSource: source,
+        });
+      }
     },
   );
-});
 
-it.each([undefined, "cron", "event"] as const)(
-  "classifies model routing as %s from the caller, not the hook session key",
-  async (trigger) => {
-    const { modelResolve } = await prepareCronModelResolveInput({
-      cwd: "/tmp/event-model-routing",
-      prompt: "Synthetic immediate event",
-      cronSession: { sessionEntry: {} },
-      job: { id: "caller-classification" },
-      trigger,
-      runSessionKey: "agent:main:hook:caller-classification",
-      resolvedDelivery: {},
-      messageChannel: undefined,
-    });
-    expect(modelResolve.context?.trigger).toBe(trigger ?? "cron");
-  },
-);
-
-const job = (payload: Partial<Extract<CronJob["payload"], { kind: "agentTurn" }>> = {}) =>
-  makeIsolatedAgentJobFixture({ payload: { kind: "agentTurn", message: "summarize", ...payload } });
-const fallback = "openai/gpt-5.4";
-const fallbackConfig: OpenClawConfig = {
-  agents: { defaults: { model: { primary: "anthropic/claude-opus-4-6", fallbacks: [fallback] } } },
-};
-const user = { sessionModelOverrideSource: "user" } as const;
-const payloadModel = "google/gemini-2.0-flash";
-type Case = [
-  name: string,
-  options: Partial<Parameters<typeof resolveCronPreflightCandidates>[0]>,
-  fallbacks: string[],
-];
-it.each<Case>([
-  [
-    "unselected subagent",
-    {
-      cfg: {
-        agents: {
-          defaults: { ...fallbackConfig.agents?.defaults, subagents: { model: "kimi/kimi-code" } },
-        },
+  it("keeps global sandbox defaults when agent override is partial", () => {
+    const defaults = {
+      mode: "all",
+      workspaceAccess: "rw",
+      docker: {
+        network: "none",
+        dangerouslyAllowContainerNamespaceJoin: true,
+        dangerouslyAllowExternalBindSources: true,
       },
-      useSubagentFallbacks: false,
-    },
-    [fallback],
-  ],
-  ["payload model over user selection", { job: job({ model: payloadModel }), ...user }, [fallback]],
-  [
-    "payload fallbacks over user selection",
-    { job: job({ fallbacks: ["jobfallback/model-c"] }), ...user },
-    ["jobfallback/model-c"],
-  ],
-])("preflights %s", (_name, options, fallbacks) => {
-  expect(
-    resolveCronPreflightCandidates({
-      cfg: fallbackConfig,
-      job: job(),
-      agentId: "main",
-      provider: "ollama",
-      model: "qwen3:32b",
-      ...options,
-    }).map(({ provider, model }) => `${provider}/${model}`),
-  ).toEqual(["ollama/qwen3:32b", ...fallbacks]);
+      browser: { enabled: true, autoStart: false },
+      prune: { maxAgeDays: 7 },
+    } as const;
+    const sandbox = {
+      docker: { image: "ghcr.io/openclaw/sandbox:custom" },
+      browser: { image: "ghcr.io/openclaw/browser:custom" },
+      prune: { idleHours: 1 },
+    };
+    const runCfg = buildCronConfig(config({ sandbox: structuredClone(defaults) }, { sandbox }));
+    expect(runCfg.agents?.defaults?.sandbox).toEqual(defaults);
+    expect(resolveSandboxConfigForAgent(runCfg, "worker")).toMatchObject({
+      mode: "all",
+      workspaceAccess: "rw",
+      docker: { ...defaults.docker, ...sandbox.docker },
+      browser: { ...defaults.browser, ...sandbox.browser },
+      prune: { ...defaults.prune, ...sandbox.prune },
+    });
+  });
+
+  it("keeps global memory search defaults when the agent override is partial", () => {
+    const defaults = {
+      enabled: true,
+      provider: "openai",
+      model: "text-embedding-3-large",
+      sources: ["memory", "sessions"],
+      remote: { apiKey: "redacted" },
+      query: { maxResults: 6 },
+    } satisfies MemorySearchConfig;
+    const search = {
+      rememberAcrossConversations: true,
+      query: { maxResults: 10 },
+    } satisfies MemorySearchConfig;
+    const worker = { memory: { search } };
+    const { agentDefaults } = resolveCronAgentConfig({ config: {}, agentConfigOverride: worker });
+    const runCfg = {
+      ...config(agentDefaults, worker),
+      plugins: { enabled: false },
+      memory: { search: defaults },
+    };
+    expect(agentDefaults).not.toHaveProperty("memory");
+    expect(resolveMemorySearchConfig(runCfg, "worker")).toMatchObject({ ...defaults, ...search });
+  });
 });

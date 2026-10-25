@@ -40,10 +40,14 @@ vi.mock("./server-context.js", () => ({
     _profile: unknown,
     signal: AbortSignal | undefined,
     run: (signal: AbortSignal, runtime: { running: { userDataDir: string } }) => Promise<unknown>,
-  ) =>
-    run(signal ?? new AbortController().signal, {
+    options?: { commit?: (result: unknown) => Promise<void> },
+  ) => {
+    const result = await run(signal ?? new AbortController().signal, {
       running: { userDataDir: profileMocks.managedUserDataDir },
-    }),
+    });
+    await options?.commit?.(result);
+    return result;
+  },
 }));
 
 const { listSystemProfiles, readSystemProfileCookies, importSystemProfileCookies } =

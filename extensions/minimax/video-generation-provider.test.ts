@@ -18,8 +18,10 @@ import {
 const {
   resolveApiKeyForProviderMock: auth,
   postJsonRequestMock: post,
+  executeProviderOperationWithRetryMock: retry,
   fetchWithTimeoutMock: download,
   fetchWithTimeoutGuardedMock: guarded,
+  resolveProviderHttpRequestConfigMock: httpConfig,
 } = getMinimaxProviderHttpMocks();
 
 let buildMinimaxVideoGenerationProvider: Awaited<
@@ -45,7 +47,10 @@ function videoConfig(provider = "minimax", baseUrl = "https://api.minimax.io") {
 }
 
 function mockDownload(mimeType = "video/mp4", bytes = "mp4-bytes") {
-  download.mockResolvedValueOnce(new Response(bytes, { headers: { "content-type": mimeType } }));
+  download.mockResolvedValueOnce({
+    headers: new Headers({ "content-type": mimeType }),
+    arrayBuffer: async () => Buffer.from(bytes),
+  });
 }
 
 function expectPolicyFetch(index: number, url: string) {
@@ -55,39 +60,44 @@ function expectPolicyFetch(index: number, url: string) {
 }
 
 function generateVideo(overrides: Partial<VideoGenerationRequest> = {}) {
-  return buildMinimaxVideoGenerationProvider(overrides.provider).generateVideo({
+  const request: VideoGenerationRequest = {
     provider: "minimax",
     model: "MiniMax-Hailuo-2.3",
-    prompt: "A fox",
+    prompt: "A fox sprints across snowy hills",
     cfg: {},
     ...overrides,
-  });
+  };
+  return buildMinimaxVideoGenerationProvider(request.provider).generateVideo(request);
 }
 
-const videoUrl = "https://example.com/out.mp4";
-const taskId = "task-123";
-function mockVideoTask(completed: Record<string, unknown>): void {
+function mockVideoTask(taskId: string, completed: Record<string, unknown>): void {
   mockJson({ task_id: taskId });
   download.mockResolvedValueOnce(
     Response.json({
+      task_id: taskId,
       status: "Success",
+      base_resp: { status_code: 0 },
       ...completed,
     }),
   );
 }
 
-it.each([generateVideo, generateMusic])(
-  "rejects invalid media origins before I/O",
-  async (generate) => {
-    const provider = "minimax-portal";
-    await expect(
-      generate({ provider, cfg: mediaConfig(provider, "https://[") }),
-    ).rejects.toBeInstanceOf(TypeError);
-    expect(auth).not.toHaveBeenCalled();
-    expect(post).not.toHaveBeenCalled();
-    expect(download).not.toHaveBeenCalled();
-  },
-);
+describe.each([
+  ["video", generateVideo],
+  ["music", generateMusic],
+] as const)("%s media origin", (_kind, generate) => {
+  it.each(["minimax", "minimax-portal"])(
+    "rejects invalid %s origins before I/O",
+    async (provider) => {
+      await expect(
+        generate({ provider, cfg: mediaConfig(provider, "https://[") }),
+      ).rejects.toBeInstanceOf(TypeError);
+      expect(auth).not.toHaveBeenCalled();
+      expect(post).not.toHaveBeenCalled();
+      expect(download).not.toHaveBeenCalled();
+    },
+  );
+});
 
 describe("minimax video generation provider", () => {
   it("rejects a duration that rounds to zero before submission", async () => {
@@ -97,19 +107,42 @@ describe("minimax video generation provider", () => {
     expect(post).not.toHaveBeenCalled();
   });
 
-  it("preserves options without inherited model constraints", async () => {
-    const model = "__proto__";
-    mockVideoTask({ video_url: videoUrl });
-    mockDownload("video/mp4", "synthetic-video");
-    await generateVideo({ model, durationSeconds: 5, resolution: "720P" });
-    expect(mockCallArg(post).body).toMatchObject({ model, duration: 5, resolution: "720P" });
+  it.each(["constructor", "__proto__", "hasOwnProperty", "unknown-model"])(
+    "preserves requested options for unknown model %s without inherited constraints",
+    async (model) => {
+      mockVideoTask("unknown-model-task", { video_url: "https://example.com/out.mp4" });
+      mockDownload("video/mp4", "synthetic-video");
+      await generateVideo({ model, durationSeconds: 5, resolution: "720P" });
+      expect(mockCallArg(post).body).toMatchObject({
+        model,
+        duration: 5,
+        resolution: "720P",
+      });
+    },
+  );
+
+  it("creates a task, polls status, and downloads the generated video", async () => {
+    mockVideoTask("task-123", { video_url: "https://example.com/out.mp4", file_id: "file-1" });
+    mockDownload("video/webm", "webm-bytes");
+
+    const result = await generateVideo({ durationSeconds: 5, resolution: "720P" });
+
+    const request = mockCallArg(post);
+    expect(request).toMatchObject({
+      url: "https://api.minimax.io/v1/video_generation",
+      body: { duration: 6, resolution: "768P" },
+    });
+    expect(result).toMatchObject({
+      videos: [{ fileName: "video-1.webm" }],
+      metadata: { taskId: "task-123", fileId: "file-1" },
+    });
   });
 
   it("downloads via file_id with a missing filename when status omits video_url", async () => {
-    mockVideoTask({ file_id: "file-9" });
+    mockVideoTask("task-456", { file_id: "file-9" });
     download.mockResolvedValueOnce(
       Response.json({
-        file: { file_id: "file-9", download_url: videoUrl },
+        file: { file_id: "file-9", download_url: "https://example.com/download.mp4" },
         base_resp: { status_code: 0 },
       }),
     );
@@ -117,25 +150,44 @@ describe("minimax video generation provider", () => {
 
     const result = await generateVideo({ cfg: videoConfig() });
 
-    expectPolicyFetch(0, `https://api.minimax.io/v1/query/video_generation?task_id=${taskId}`);
+    expectPolicyFetch(0, "https://api.minimax.io/v1/query/video_generation?task_id=task-456");
     expectPolicyFetch(1, "https://api.minimax.io/v1/files/retrieve?file_id=file-9");
-    expectAllowPrivateNetworkPolicy(expectMinimaxGuardedFetchCall(2, videoUrl).options);
-    expect(result).toMatchObject({
-      videos: [
-        { buffer: Buffer.from("webm-bytes"), mimeType: "video/webm", fileName: "video-1.webm" },
-      ],
-      metadata: { taskId, fileId: "file-9" },
-    });
+    expectAllowPrivateNetworkPolicy(
+      expectMinimaxGuardedFetchCall(2, "https://example.com/download.mp4").options,
+    );
     expect(result.videos).toHaveLength(1);
+    expect(result.videos[0]).toMatchObject({
+      buffer: Buffer.from("webm-bytes"),
+      mimeType: "video/webm",
+      fileName: "video-1.webm",
+    });
+    expect(result.metadata).toMatchObject({ taskId: "task-456", fileId: "file-9" });
     expect(result.metadata?.videoUrl).toBeUndefined();
   });
 
+  it("retries guarded video status polling while preserving request policy", async () => {
+    download.mockRejectedValueOnce(new Error("request timeout"));
+    mockVideoTask("task-retry", { video_url: "https://example.com/retry.mp4" });
+    mockDownload();
+
+    const result = await generateVideo({ cfg: videoConfig() });
+
+    expectPolicyFetch(0, "https://api.minimax.io/v1/query/video_generation?task_id=task-retry");
+    expectPolicyFetch(1, "https://api.minimax.io/v1/query/video_generation?task_id=task-retry");
+    expect(result.videos).toHaveLength(1);
+    expect(retry.mock.calls.map(([params]) => (params as { stage: string }).stage)).toContain(
+      "poll",
+    );
+  });
+
   it("rejects oversized file_id metadata JSON before downloading", async () => {
-    mockVideoTask({ file_id: "file-too-large" });
+    mockVideoTask("task-metadata-too-large", { file_id: "file-too-large" });
     download.mockResolvedValueOnce(
       createStreamingResponse({
         chunkCount: Infinity,
         chunkSize: 1024 * 1024,
+        byte: 0x20,
+        headers: { "content-type": "application/json" },
       }).response,
     );
 
@@ -150,54 +202,52 @@ describe("minimax video generation provider", () => {
     expect(download).toHaveBeenCalledTimes(2);
   });
 
-  it.each([
-    ["minimax-portal", "https://api.minimaxi.com", false],
-    ["minimax", "https://api.minimax.io", true],
-  ] as const)("generates %s video at %s (retry %s)", async (provider, origin, retry) => {
-    if (retry) {
-      download.mockRejectedValueOnce(new Error("request timeout"));
-    }
-    mockVideoTask({ video_url: videoUrl, file_id: "file-1" });
-    mockDownload("video/webm", "webm-bytes");
-    const result = await generateVideo({
-      provider,
-      durationSeconds: 5,
-      resolution: "720P",
+  it("routes portal video generation through minimax-portal auth and HTTP config", async () => {
+    mockVideoTask("task-portal", { video_url: "https://example.com/portal.mp4" });
+    mockDownload();
+
+    await generateVideo({
+      provider: "minimax-portal",
+      prompt: "A neon city street at night",
       cfg: {
         models: {
           providers: {
             minimax: { baseUrl: "https://wrong.example/anthropic", models: [] },
-            ...videoConfig(provider, origin + "/anthropic").models.providers,
+            ...videoConfig("minimax-portal", "https://api.minimaxi.com/anthropic").models.providers,
           },
         },
       },
     });
-    expect(mockCallArg(auth).provider).toBe(provider);
-    const request = mockCallArg(post);
-    expect(request).toMatchObject({
-      allowPrivateNetwork: true,
-      url: origin + "/v1/video_generation",
-      body: { duration: 6, resolution: "768P" },
+
+    expect(mockCallArg(auth).provider).toBe("minimax-portal");
+    const httpConfigParams = mockCallArg(httpConfig);
+    expect(httpConfigParams).toMatchObject({
+      baseUrl: "https://api.minimaxi.com",
+      provider: "minimax-portal",
+      capability: "video",
+      transport: "http",
     });
-    expect((request.headers as Headers).get("x-minimax-video-policy")).toBe("enabled");
-    for (let attempt = 0; attempt <= Number(retry); attempt++) {
-      expectPolicyFetch(attempt, origin + "/v1/query/video_generation?task_id=" + taskId);
-    }
+    expect(httpConfigParams.request).toEqual(requestOverrides);
+    const postParams = mockCallArg(post);
+    expect(postParams.allowPrivateNetwork).toBe(true);
+    expect((postParams.headers as Headers).get("x-minimax-video-policy")).toBe("enabled");
+    expect(postParams.url).toBe("https://api.minimaxi.com/v1/video_generation");
+    expectPolicyFetch(0, "https://api.minimaxi.com/v1/query/video_generation?task_id=task-portal");
     expectAllowPrivateNetworkPolicy(
-      expectMinimaxGuardedFetchCall(Number(retry) + 1, videoUrl).options,
+      expectMinimaxGuardedFetchCall(1, "https://example.com/portal.mp4").options,
     );
-    expect(result.videos).toHaveLength(1);
   });
 });
 
 function generateMusic(overrides: Partial<MusicGenerationRequest> = {}) {
-  return buildMinimaxMusicGenerationProvider(overrides.provider).generateMusic({
+  const request: MusicGenerationRequest = {
     provider: "minimax",
     model: "music-2.6",
-    prompt: "dance-pop",
+    prompt: "upbeat dance-pop with female vocals",
     cfg: {},
     ...overrides,
-  });
+  };
+  return buildMinimaxMusicGenerationProvider(request.provider).generateMusic(request);
 }
 
 function mediaConfig(
@@ -223,6 +273,19 @@ function streamFrame(data: Record<string, unknown>, status_code = 0, status_msg?
   return `data: ${JSON.stringify({ data, base_resp: { status_code, status_msg } })}\n\n`;
 }
 
+function expectDownloadFetchTimeout(url: string, totalTimeoutMs: number): void {
+  const call = download.mock.calls[0];
+  if (!call) {
+    throw new Error("expected generated music download");
+  }
+  const [actualUrl, init, timeoutMs, fetchFn] = call;
+  expect(actualUrl).toBe(url);
+  expect(init).toEqual({ method: "GET" });
+  expect(timeoutMs).toBeGreaterThan(totalTimeoutMs - 1_000);
+  expect(timeoutMs).toBeLessThanOrEqual(totalTimeoutMs);
+  expect(fetchFn).toBe(fetch);
+}
+
 describe("minimax music generation provider", () => {
   it("streams generated music chunks from MiniMax", async () => {
     using clock = vi.spyOn(Date, "now");
@@ -242,13 +305,16 @@ describe("minimax music generation provider", () => {
     });
     const request = mockCallArg(post);
     expect(request.url).toBe("https://api.minimax.io/v1/music_generation");
-    expect(request.body).toMatchObject({
+    expect(request.body).toEqual({
       model: "music-2.6",
+      prompt: "upbeat dance-pop with female vocals",
       lyrics: "our city wakes",
       stream: true,
       output_format: "hex",
+      audio_setting: { sample_rate: 44100, bitrate: 256000, format: "mp3" },
     });
     expect(request.timeoutMs).toBe(300000);
+    expect(request?.headers).toBeInstanceOf(Headers);
     expect((request.headers as Headers).get("content-type")).toBe("application/json");
     expect(result.tracks).toHaveLength(1);
     expect(result.tracks[0]?.buffer).toEqual(Buffer.concat([chunkA, chunkB]));
@@ -265,17 +331,17 @@ describe("minimax music generation provider", () => {
     const release = vi.fn(async () => {
       canceledAtRelease = tracked.wasCanceled();
     });
-    const audioUrl = "https://example.com/invalid-open.mp3";
-    mockJson({ data: { audio_url: audioUrl } });
+    mockJson({ data: { audio_url: "https://example.com/invalid-open.mp3" } });
     guarded.mockResolvedValueOnce({
       response: tracked.response,
-      finalUrl: audioUrl,
+      finalUrl: "https://example.com/invalid-open.mp3",
       release,
     });
 
-    await expect(generateMusic()).rejects.toThrow(
+    await expect(generateMusic({ prompt: "invalid download" })).rejects.toThrow(
       "MiniMax generated music download: malformed audio response",
     );
+    expect(release).toHaveBeenCalledOnce();
     expect(canceledAtRelease).toBe(true);
   });
 
@@ -293,40 +359,28 @@ describe("minimax music generation provider", () => {
     await expect(generateMusic()).rejects.toThrow(message);
   });
 
-  it("rejects oversized inline music before decoding", async () => {
+  it("rejects inline generated music that exceeds the configured media cap before decoding", async () => {
     mockJson({ data: { audio: Buffer.from("too-large").toString("hex") } });
     await expect(
       generateMusic({ cfg: { agents: { defaults: { mediaMaxMb: 0.000001 } } } }),
     ).rejects.toThrow("MiniMax generated music download exceeds 1 bytes");
   });
 
-  it.each([false, true])("downloads music URL output (portal: %s)", async (portal) => {
-    const url = "https://example.com/track.mp3";
-    const policy = { allowPrivateNetwork: true, headers: { "X-MiniMax-Music-Policy": "enabled" } };
-    mockJson(
-      portal
-        ? { task_id: "task", audio_url: url }
-        : {
-            task_id: " task ",
-            lyrics: "our city wakes",
-            data: { audio: " " + url + " " },
-          },
-    );
-    mockDownload("audio/mpeg", "mp3-bytes");
-    const result = await generateMusic({
-      provider: portal ? "minimax-portal" : "minimax",
-      cfg: portal ? mediaConfig("minimax-portal", "https://api.minimaxi.com", policy) : {},
+  it("downloads tracks when url output is returned in data.audio", async () => {
+    mockJson({
+      task_id: " task-url ",
       lyrics: "our city wakes",
+      data: { audio: " https://example.com/url-audio.mp3 " },
     });
-    expect(result.tracks[0]?.buffer).toEqual(Buffer.from("mp3-bytes"));
-    expect(result.metadata).toMatchObject({ taskId: "task", audioUrl: url });
-    if (portal) {
-      expectAllowPrivateNetworkPolicy(expectMinimaxGuardedFetchCall(0, url).options);
-    } else {
-      expect(download.mock.calls[0]?.[2]).toBeGreaterThan(119_000);
-      expect(download.mock.calls[0]?.[2]).toBeLessThanOrEqual(120_000);
-      expect(result.lyrics).toEqual(["our city wakes"]);
-    }
+    mockDownload("audio/mpeg", "mp3-bytes");
+    const result = await generateMusic({ lyrics: "our city wakes" });
+    expectDownloadFetchTimeout("https://example.com/url-audio.mp3", 120_000);
+    expect(result.tracks[0]?.buffer.byteLength).toBeGreaterThan(0);
+    expect(result.lyrics).toEqual(["our city wakes"]);
+    expect(result.metadata).toMatchObject({
+      taskId: "task-url",
+      audioUrl: "https://example.com/url-audio.mp3",
+    });
   });
 
   it("applies explicit caller timeouts while reading streaming response bodies", async () => {
@@ -334,6 +388,19 @@ describe("minimax music generation provider", () => {
     try {
       let cancelled = false;
       const stream = new ReadableStream<Uint8Array>({
+        start(controller) {
+          setTimeout(() => {
+            if (cancelled) {
+              return;
+            }
+            controller.enqueue(
+              new TextEncoder().encode(
+                streamFrame({ status: 2, audio: Buffer.from("late-mp3").toString("hex") }),
+              ),
+            );
+            controller.close();
+          }, 200);
+        },
         cancel() {
           cancelled = true;
         },
@@ -356,5 +423,30 @@ describe("minimax music generation provider", () => {
     await expect(
       generateMusic({ prompt: "driving techno", instrumental: true, lyrics: "do not sing this" }),
     ).rejects.toThrow("cannot use lyrics when instrumental=true");
+  });
+
+  it("retries guarded music URL downloads while preserving request policy", async () => {
+    const musicPolicy = {
+      allowPrivateNetwork: true,
+      headers: { "X-MiniMax-Music-Policy": "enabled" },
+    };
+    mockJson({ task_id: "task-retry", audio_url: "https://example.com/retry.mp3" });
+    download.mockRejectedValueOnce(new Error("request timeout"));
+    mockDownload("audio/mpeg", "mp3-bytes");
+    const result = await generateMusic({
+      provider: "minimax-portal",
+      prompt: "upbeat dance-pop",
+      cfg: mediaConfig("minimax-portal", "https://api.minimaxi.com", musicPolicy),
+    });
+
+    for (const attempt of [0, 1]) {
+      expectAllowPrivateNetworkPolicy(
+        expectMinimaxGuardedFetchCall(attempt, "https://example.com/retry.mp3").options,
+      );
+    }
+    expect(result.tracks).toHaveLength(1);
+    expect(retry.mock.calls.map(([params]) => (params as { stage: string }).stage)).toContain(
+      "download",
+    );
   });
 });

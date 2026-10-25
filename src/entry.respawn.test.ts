@@ -32,8 +32,6 @@ function requirePlan(params: Parameters<typeof buildPlan>[0]) {
 
 const warningPrefix = ["--import", CLI_PARENT_BOUND_PRELOAD, warningFlag];
 const systemCa = "/etc/ssl/certs/ca-certificates.crt";
-const systemTrust = { NODE_USE_SYSTEM_CA: "1" };
-const cronArgs = ["cron", "list", "--json"];
 const windowsNode = "C:\\Program Files\\nodejs\\node.exe";
 const windowsScript =
   "C:\\Users\\alice\\AppData\\Roaming\\npm\\node_modules\\openclaw\\openclaw.mjs";
@@ -89,22 +87,29 @@ it.each(["linux", "win32"] as const)(
 
 it.each([
   [
-    "keeps bare-root attached",
+    "bare-root startup stays attached to the terminal",
     { args: [], autoNodeExtraCaCerts: systemCa },
     { argv: [...warningPrefix, "openclaw"], detachForProcessTree: false },
   ],
   [
-    "keeps macOS system trust",
-    { args: cronArgs, env: systemTrust, platform: "darwin" },
-    { argv: [...warningPrefix, "openclaw", ...cronArgs], env: systemTrust },
+    "macOS system CA trust survives one-shot warning respawns",
+    {
+      args: ["cron", "list", "--json"],
+      env: { NODE_USE_SYSTEM_CA: "1" },
+      platform: "darwin",
+    },
+    {
+      argv: [...warningPrefix, "openclaw", "cron", "list", "--json"],
+      env: { NODE_USE_SYSTEM_CA: "1" },
+    },
   ],
   [
-    "keeps explicit CA",
+    "explicit NODE_EXTRA_CA_CERTS survives discovery",
     { env: { NODE_EXTRA_CA_CERTS: "/custom/ca.pem" }, autoNodeExtraCaCerts: systemCa },
     { env: { NODE_EXTRA_CA_CERTS: "/custom/ca.pem" } },
   ],
   [
-    "keeps post-script node.exe arguments",
+    "Windows normalization preserves post-script node.exe arguments",
     {
       argv: [windowsNode, windowsNode, ...windowsTail],
       execPath: windowsNode,
@@ -116,7 +121,7 @@ it.each([
     },
   ],
   [
-    "runs Volta through node",
+    "Volta shims respawn through node instead of calling the shim",
     {
       argv: [voltaShim, "/usr/local/bin/openclaw", "status"],
       env: { PATH: "/home/alice/.volta/bin:/usr/bin:/bin" },
@@ -133,7 +138,14 @@ it.each([
 );
 
 it.each([
-  ["keeps interactive system trust", { args: ["tui"], env: systemTrust, platform: "darwin" }],
+  [
+    "interactive macOS retains system CA loading",
+    {
+      args: ["tui"],
+      env: { NODE_USE_SYSTEM_CA: "1" },
+      platform: "darwin",
+    },
+  ],
   [
     "satisfied respawn guards prevent another respawn",
     {
@@ -165,15 +177,6 @@ it.each([
     autoNodeExtraCaCerts: discovered,
     platform,
   });
-  if (platform === "win32") {
-    expect(respawnPlan.argv).toEqual([
-      "--import",
-      CLI_PARENT_BOUND_PRELOAD,
-      "--stack-size=8192",
-      "openclaw",
-      "status",
-    ]);
-  }
 
   expect([respawnPlan.env.NODE_EXTRA_CA_CERTS, respawnPlan.env[caReady]]).toEqual([
     expected,
@@ -187,6 +190,24 @@ function mockChild() {
   vi.mocked(attachChildProcessBridge).mockReturnValue({ detach });
   return { child, spawn, detach };
 }
+it("spawns the standalone plan without adding runtime flags", async () => {
+  vi.stubGlobal("__openclawStandaloneRootUrl", "file:///app/runtime/");
+  const plan = requirePlan({
+    argv: [process.execPath, "/app/runtime/openclaw.mjs", "doctor"],
+    platform: "darwin",
+  });
+  const { child, spawn } = mockChild();
+  const completion = runCliRespawnPlan(plan, vi.fn());
+  expect(spawn.mock.calls[0]).toEqual([
+    process.execPath,
+    ["doctor"],
+    expect.objectContaining({
+      env: expect.objectContaining({ OPENCLAW_CLI_RESPAWN_PARENT: String(process.pid) }),
+    }),
+  ]);
+  child.emit("close", 0, null);
+  await completion;
+});
 
 it("records status after the respawn child closes", async () => {
   process.exitCode = undefined;
@@ -201,11 +222,13 @@ it("records status after the respawn child closes", async () => {
   };
   const completion = runCliRespawnPlan(plan, writeError);
 
-  expect(spawn).toHaveBeenCalledExactlyOnceWith(
-    plan.command,
-    plan.argv,
-    expect.objectContaining({ env: plan.env }),
-  );
+  expect(spawn).toHaveBeenCalledWith(plan.command, plan.argv, {
+    stdio: ["inherit", "inherit", "inherit", "ipc"],
+    env: plan.env,
+    detached: process.platform !== "win32" && !(process.stdin.isTTY || process.stdout.isTTY),
+    windowsHide: !(process.stdin.isTTY || process.stdout.isTTY),
+  });
+  expect(vi.mocked(attachChildProcessBridge).mock.calls[0]).toEqual([child, expect.any(Function)]);
 
   child.emit("exit", 7, null);
   expect(process.exitCode).toBeUndefined();

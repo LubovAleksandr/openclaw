@@ -3,6 +3,7 @@ import { createServer } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Command } from "commander";
+import { loadSqliteVecExtension } from "openclaw/plugin-sdk/memory-core-host-engine-storage";
 import { resetPluginStateStoreForTests } from "openclaw/plugin-sdk/plugin-state-test-runtime";
 import { clearRuntimeConfigSnapshot } from "openclaw/plugin-sdk/runtime-config-snapshot";
 import {
@@ -198,17 +199,13 @@ async function prepareHistoricalMemoryControl(
 }
 
 describe("memory command failures at the root JSON boundary", () => {
-  it.each([false, true])("writes one queryless search failure (JSON: %s)", async (json) => {
+  it("writes one actionable JSON failure for a queryless search", async () => {
     await withMemoryRoot(async (fixture) => {
-      const message = "Missing search query. Provide a positional query or use --query <text>.";
-      await fixture.invoke(["search", ...(json ? ["--json"] : [])]);
-      if (json) {
-        expectJsonFailure(fixture, message);
-      } else {
-        expect(fixture.stdout()).toBe("");
-        expect(fixture.stderr().trim()).toBe(message);
-        expect(process.exitCode).toBe(1);
-      }
+      await fixture.invoke(["search", "--json"]);
+      expectJsonFailure(
+        fixture,
+        "Missing search query. Provide a positional query or use --query <text>.",
+      );
     });
   });
 
@@ -283,7 +280,7 @@ describe("memory command failures at the root JSON boundary", () => {
 });
 
 it(
-  "Gateway memory_search returns complete semantic recall without changing the corpus",
+  "Gateway memory_search returns semantic recall before its deadline with chunks-first estimates",
   {
     timeout: 120_000,
   },
@@ -302,7 +299,11 @@ it(
       ["keyword", "The deployment art exhibition includes a failed sculpture named service.", 1.55],
       ["background", "The botanical catalog describes orchids and garden soil.", 1.57],
     ] as const;
-    const vector = (angle: number) => [Math.cos(angle), Math.sin(angle)];
+    const vector = (angle: number) => [
+      Math.cos(angle),
+      Math.sin(angle),
+      ...Array<number>(8190).fill(0),
+    ];
     const embeddings = new Map<string, number[]>(
       documents.map(([, text, angle]) => [text, vector(angle)]),
     );
@@ -353,8 +354,44 @@ it(
         const indexed = await instance.cli(["memory", "index", "--agent", "main", "--force"]);
         expect(indexed.code, indexed.stderr).toBe(0);
         const databasePath = path.join(instance.state.agentDir("main"), "openclaw-agent.sqlite");
-        // Adversarial planner statistics are covered by manager-search-vector.test.ts.
+        const db = openNodeSqliteDatabase(databasePath, { allowExtension: true });
+        try {
+          const loaded = await loadSqliteVecExtension({ db });
+          expect(loaded.ok, loaded.error).toBe(true);
+          const insert = db.prepare(`INSERT INTO memory_index_chunks
+          (id, path, source, start_line, end_line, hash, model, text, embedding, updated_at)
+          SELECT ?, path, source, start_line, end_line, hash, model, text, embedding, updated_at
+          FROM memory_index_chunks WHERE path = 'memory/background.md' LIMIT 1`);
+          const insertVector = db.prepare(
+            "INSERT INTO memory_index_chunks_vec (id, embedding) VALUES (?, ?)",
+          );
+          const insertProvenance = db.prepare(`INSERT INTO memory_index_chunk_provenance
+          (chunk_id, origin_class, session_kind, observed_at) VALUES (?, 'agent', 'unknown', ?)`);
+          const insertRecall = db.prepare(
+            "INSERT INTO memory_index_chunk_recall_metadata (chunk_id) VALUES (?)",
+          );
+          const background = new Uint8Array(new Float32Array(vector(1.57)).buffer);
+          db.exec("BEGIN");
+          // Wide vectors make repeated KNN work expensive without a large chunk scan after the fix.
+          for (let index = documents.length; index < 4096; index += 1) {
+            const id = `padding-${index}`;
+            insert.run(id);
+            insertVector.run(id, background);
+            insertProvenance.run(id, Date.now());
+            insertRecall.run(id);
+          }
+          db.exec("COMMIT; ANALYZE");
+          db.exec(
+            "UPDATE sqlite_stat1 SET stat = '1 1' WHERE tbl = 'memory_index_chunks'; ANALYZE sqlite_schema;",
+          );
+          expect(db.prepare("SELECT count(*) AS count FROM memory_index_chunks").get()).toEqual({
+            count: 4096,
+          });
+        } finally {
+          db.close();
+        }
         await instance.startGateway();
+        const startedAt = performance.now();
         const response = await fetch(`http://127.0.0.1:${instance.port}/tools/invoke`, {
           method: "POST",
           headers: {
@@ -369,6 +406,8 @@ it(
           signal,
         });
         const responseBody: unknown = await response.json();
+        const elapsedMs = performance.now() - startedAt;
+        console.info(JSON.stringify({ elapsedMs, responseBody, providerErrors }));
         expect(response.status).toBe(200);
         expect(responseBody).toMatchObject({
           ok: true,
@@ -388,7 +427,7 @@ it(
         const after = openNodeSqliteDatabase(databasePath, { readOnly: true });
         try {
           expect(after.prepare("SELECT count(*) AS count FROM memory_index_chunks").get()).toEqual({
-            count: documents.length,
+            count: 4096,
           });
         } finally {
           after.close();

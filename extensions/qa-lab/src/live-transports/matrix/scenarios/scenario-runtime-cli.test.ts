@@ -27,17 +27,20 @@ async function writeCli(root: string, lines: string[]) {
   await mkdir(path.join(root, "dist"));
   await writeFile(path.join(root, "dist", "index.mjs"), lines.join("\n"));
 }
+function killRemainingPids(pids: number[]) {
+  for (const pid of pids.toReversed()) {
+    if (isProcessRunning(pid)) {
+      process.kill(pid, "SIGKILL");
+    }
+  }
+}
 async function withCliFixture(exercise: (root: string, pids: number[]) => Promise<void>) {
   const root = await mkdtemp(path.join(resolvePreferredOpenClawTmpDir(), "matrix-qa-cli-"));
   const pids: number[] = [];
   try {
     await exercise(root, pids);
   } finally {
-    for (const pid of pids.toReversed()) {
-      if (isProcessRunning(pid)) {
-        process.kill(pid, "SIGKILL");
-      }
-    }
+    killRemainingPids(pids);
     await rm(root, { force: true, recursive: true });
   }
 }
@@ -47,6 +50,9 @@ const cliParams = (cwd: string, timeoutMs = 500) => ({
   env: process.env,
   timeoutMs,
 });
+const waitForText = (session: ReturnType<typeof startMatrixQaOpenClawCli>, text: string) =>
+  session.waitForOutput((output) => output.stdout.includes(text), text, 5_000);
+
 async function readPidFile(pathToCheck: string): Promise<number> {
   const value = (await readFile(pathToCheck, "utf8")).trim();
   const pid = Number(value);
@@ -132,6 +138,7 @@ describe("Matrix QA CLI runtime", () => {
 
       killMatrixQaCliChild(child, "SIGTERM", runTaskkill);
 
+      expect(runTaskkill).toHaveBeenCalledTimes(2);
       expect(killMock.mock.calls).toEqual(fallsBack ? [["SIGTERM"]] : []);
     } finally {
       if (platformDescriptor) {
@@ -198,50 +205,74 @@ describe("Matrix QA CLI runtime", () => {
     });
   });
 
-  it.each([false, true])(
-    "kills an uncooperative CLI and retains diagnostics (late waiter: %s)",
-    async (late, { signal }) => {
-      await withCliFixture(async (root, pids) => {
-        const pidPath = path.join(root, "cli.pid");
-        const marker = late ? "late wait timeout marker" : "waiting despite graceful shutdown";
-        const handler = late ? "" : "process.stdout.write('ignored sigterm\\n');";
-        await writeCli(root, [
-          "import { writeFileSync } from 'node:fs';",
-          `writeFileSync(${JSON.stringify(pidPath)}, String(process.pid));`,
-          `process.on('SIGTERM', () => { ${handler} });`,
-          "process.stderr.write('matrix sdk still syncing\\n');",
-          `process.stdout.write('${marker}\\n');`,
-          "setInterval(() => {}, 1000);",
-        ]);
+  it("includes timed-out CLI output in diagnostics", async () => {
+    await withCliFixture(async (root) => {
+      await writeCli(root, [
+        "process.stdout.write('waiting for verification\\n');",
+        "process.stderr.write('matrix sdk still syncing\\n');",
+        "setInterval(() => {}, 1000);",
+      ]);
 
-        await withReadyCliTimeout(
-          cliParams(root),
-          async (session) => {
-            await session.waitForOutput(
-              (output) =>
-                output.stdout.includes(marker) &&
-                output.stderr.includes("matrix sdk still syncing"),
-              "timeout diagnostics ready",
-              5_000,
-            );
-            pids.push(await readPidFile(pidPath));
-          },
-          async (session) => {
-            const [pid] = pids;
-            assert(pid !== undefined, "expected the ready CLI PID");
-            if (late) {
-              await waitForProcessExit(pid, signal);
-            }
-            await expect(session.wait()).rejects.toThrow(/timed out after 500ms/u);
-            await expect(session.wait()).rejects.toThrow(
-              new RegExp(`stderr:\\nmatrix sdk still syncing[\\s\\S]*stdout:\\n${marker}`, "u"),
-            );
-            expect(isProcessRunning(pid)).toBe(false);
-          },
-        );
-      });
-    },
-  );
+      await withReadyCliTimeout(
+        cliParams(root, 250),
+        async (session) => {
+          await session.waitForOutput(
+            (output) =>
+              output.stdout.includes("waiting for verification") &&
+              output.stderr.includes("matrix sdk still syncing"),
+            "timeout diagnostics ready",
+            5_000,
+          );
+        },
+        async (session) => {
+          await expect(session.wait()).rejects.toThrow(
+            /stderr:\nmatrix sdk still syncing[\s\S]*stdout:\nwaiting for verification/u,
+          );
+        },
+      );
+    });
+  });
+
+  async function assertUncooperativeCli(late: boolean, signal: AbortSignal) {
+    await withCliFixture(async (root, pids) => {
+      const pidPath = path.join(root, "cli.pid");
+      const marker = late ? "late wait timeout marker" : "waiting despite graceful shutdown";
+      const handler = late ? "" : "process.stdout.write('ignored sigterm\\n');";
+      await writeCli(root, [
+        "import { writeFileSync } from 'node:fs';",
+        `writeFileSync(${JSON.stringify(pidPath)}, String(process.pid));`,
+        `process.on('SIGTERM', () => { ${handler} });`,
+        `process.stdout.write('${marker}\\n');`,
+        "setInterval(() => {}, 1000);",
+      ]);
+
+      await withReadyCliTimeout(
+        cliParams(root),
+        async (session) => {
+          await waitForText(session, marker);
+          pids.push(await readPidFile(pidPath));
+        },
+        async (session) => {
+          const [pid] = pids;
+          assert(pid !== undefined, "expected the ready CLI PID");
+          if (late) {
+            await waitForProcessExit(pid, signal);
+          }
+          await expect(session.wait()).rejects.toThrow(/timed out after 500ms/u);
+          if (late) {
+            await expect(session.wait()).rejects.toThrow(marker);
+          }
+          expect(isProcessRunning(pid)).toBe(false);
+        },
+      );
+    });
+  }
+  it("kills an uncooperative CLI with an immediate waiter", async ({ signal }) => {
+    await assertUncooperativeCli(false, signal);
+  });
+  it("preserves timeout diagnostics for a late waiter", async ({ signal }) => {
+    await assertUncooperativeCli(true, signal);
+  });
 
   it("settles and kills descendants that keep timed-out CLI stdio open", async () => {
     await withCliFixture(async (root, pids) => {

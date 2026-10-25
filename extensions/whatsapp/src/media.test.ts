@@ -96,6 +96,14 @@ describe("web media loading", () => {
     mockPinnedHostnameResolution();
   });
 
+  it("optimizes images when options object omits optimizeImages", async () => {
+    const cap = Math.max(1, Math.floor(largeJpegBuffer.length * 0.8));
+    const result = await loadWebMedia(largeJpegFile, { maxBytes: cap });
+
+    expect(result.buffer.length).toBeLessThanOrEqual(cap);
+    expect(result.buffer.length).toBeLessThan(largeJpegBuffer.length);
+  });
+
   it("blocks SSRF URLs before fetch", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch");
     for (const [url, expectedMessage] of [

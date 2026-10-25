@@ -2268,6 +2268,7 @@ export const PR_PROTECTED_RUNTIME_TEST_FILES: readonly string[] = [
   "src/cron/isolated-agent/current-session-completion.test.ts",
   "src/cron/isolated-agent/delivery-dispatch.double-announce.test.ts",
   "src/cron/isolated-agent/model-preflight.runtime.test.ts",
+  "src/cron/isolated-agent/run-fallback-policy.test.ts",
   "src/cron/isolated-agent/run.account-policy.test.ts",
   "src/cron/isolated-agent/run.cron-model-override-forwarding.test.ts",
   "src/cron/isolated-agent/run.delivery-formatting.test.ts",

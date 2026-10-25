@@ -34,7 +34,13 @@ const runtime = { cwd: "/workspace/runtime", modelProvider: "runtime-provider" }
 const live = { cwd: "/workspace/live", modelProvider: "live-provider" };
 
 function nativeThread(overrides: Partial<CodexThread> = {}): CodexThread {
-  return { ...threadStartResult().thread, ...catalogThread(persisted), ...overrides };
+  return {
+    ...threadStartResult().thread,
+    ...catalogThread(persisted),
+    status: { type: "idle" },
+    source: "cli",
+    ...overrides,
+  };
 }
 
 async function fixture(overflow = false, evicted = false, source = false) {
@@ -114,6 +120,7 @@ async function fixture(overflow = false, evicted = false, source = false) {
       }
       cursor = page.nextCursor;
     } while (cursor);
+    return undefined;
   };
   return { a, b, index, inventory, homeId, resume, abandonClient, sessions, session };
 }

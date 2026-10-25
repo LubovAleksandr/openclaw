@@ -1,5 +1,5 @@
 import path from "node:path";
-import { setImmediate } from "node:timers/promises";
+import { setImmediate } from "node:timers";
 import type { OpenKeyedStoreOptions } from "openclaw/plugin-sdk/plugin-state-runtime";
 import {
   createPluginStateKeyedStoreForTests,
@@ -144,17 +144,21 @@ test("supports existing keyed-store adapters without range reads", async () => {
 test.each(["replacement", "cleanup", "clear"] as const)(
   "workspace %s lets queued event-loop work observe committed progress",
   async (phase) => {
-    const firstMutation = Promise.withResolvers<void>();
-    let observing = false;
-    const { scope, database } = createFixture((operation) => {
-      if (observing && (phase === "replacement" || operation === "delete")) {
-        firstMutation.resolve();
+    let observeMutation: (() => void) | undefined;
+    const { scope, foreignWorkspace, foreignNamespace, database } = createFixture((operation) => {
+      if (phase === "replacement" || operation === "delete") {
+        observeMutation?.();
       }
     });
-    const originals = Array.from({ length: 64 }, (_, i) => ({ key: `entry-${i}`, value: "old" }));
+    const originals = Array.from({ length: 64 }, (_, index) => ({
+      key: `entry-${index}`,
+      value: "old",
+    }));
     const initial =
       phase === "replacement" ? [...originals, { key: "stale", value: "old" }] : originals;
     await writeMemoryCoreWorkspaceEntries({ ...scope, entries: initial });
+    await writeValue(foreignWorkspace, "entry-0", "foreign");
+    await writeValue(foreignNamespace, "stale", "other");
     const entries =
       phase === "clear"
         ? []
@@ -162,12 +166,24 @@ test.each(["replacement", "cleanup", "clear"] as const)(
           ? originals.map(({ key }) => ({ key, value: "new" }))
           : [{ key: "retained", value: "new" }];
     let completed = false;
-    observing = true;
-    const observation = firstMutation.promise.then(async () => {
-      // Initial worker reads can yield before progress; wait for a durable mutation first.
-      await setImmediate();
-      const snapshot = { completed, transactionOpen: database.db.isTransaction };
-      return { ...snapshot, entries: await readMemoryCoreWorkspaceEntries<string>(scope) };
+    const observation = new Promise<{
+      completed: boolean;
+      transactionOpen: boolean;
+      entries: Array<{ key: string; value: string }>;
+    }>((resolve, reject) => {
+      // Queue after the first durable mutation; initial worker reads can yield before progress.
+      observeMutation = () => {
+        observeMutation = undefined;
+        setImmediate(() => {
+          const completedAtCallback = completed;
+          const transactionOpen = database.db.isTransaction;
+          void readMemoryCoreWorkspaceEntries<string>(scope).then(
+            (current) =>
+              resolve({ completed: completedAtCallback, transactionOpen, entries: current }),
+            reject,
+          );
+        });
+      };
     });
     const operation = (
       phase === "clear"
@@ -175,13 +191,16 @@ test.each(["replacement", "cleanup", "clear"] as const)(
         : writeMemoryCoreWorkspaceEntries({ ...scope, entries })
     ).finally(() => {
       completed = true;
-      firstMutation.resolve();
+      observeMutation?.();
     });
     try {
       const [, observed] = await Promise.all([operation, observation]);
       expect(await readValues(scope)).toEqual(
         Object.fromEntries(entries.map(({ key, value }) => [key, value])),
       );
+      expect(await readValues(foreignWorkspace)).toEqual({ "entry-0": "foreign" });
+      expect(await readValues(foreignNamespace)).toEqual({ stale: "other" });
+
       expect(observed).toMatchObject({ completed: false, transactionOpen: false });
       if (phase === "replacement") {
         const updated = observed.entries.filter((entry) => entry.value === "new");
@@ -204,13 +223,17 @@ test.each(["replacement", "cleanup", "clear"] as const)(
 );
 
 test("a rejected replacement preserves its committed prefix and skips cleanup", async () => {
-  const { scope } = createFixture();
+  const { scope, foreignWorkspace, foreignNamespace } = createFixture();
   await writeValues(scope, { first: "old", tail: "old", stale: "old" });
+  await writeValue(foreignWorkspace, "first", "foreign");
+  await writeValue(foreignNamespace, "stale", "other");
 
   await expect(
     writeValues(scope, { first: "new", invalid: 1n, tail: "unreached" }),
   ).rejects.toMatchObject({ code: "PLUGIN_STATE_INVALID_INPUT", operation: "register" });
   expect(await readValues(scope)).toEqual({ first: "new", tail: "old", stale: "old" });
+  expect(await readValues(foreignWorkspace)).toEqual({ first: "foreign" });
+  expect(await readValues(foreignNamespace)).toEqual({ stale: "other" });
 
   await writeValue(scope, "tail", "scalar");
   expect(await readValues(scope)).toEqual({ first: "new", tail: "scalar", stale: "old" });
