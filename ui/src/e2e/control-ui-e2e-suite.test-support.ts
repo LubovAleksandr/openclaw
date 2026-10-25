@@ -15,6 +15,7 @@ import {
 } from "../../../src/process/gateway-work-admission-state.js";
 import { createDeferredCore } from "../../../src/shared/deferred.ts";
 import { runQaGatewayFixture } from "../../../test/helpers/qa-gateway-cleanup.js";
+import { beginUiE2ePhase } from "../../../test/helpers/ui-e2e-phase.js";
 import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import {
   captureControlUiE2eFailureDiagnostics,
@@ -364,38 +365,41 @@ export function createControlUiE2eSuite(options: ControlUiE2eSuiteOptions): Cont
     if (!closing) {
       const held = getHeldModuleContext(context);
       held.closing = true;
+      const finishPhase = beginUiE2ePhase("context-cleanup");
       // Playwright's second close can return while the first is still finalizing.
-      closing = Promise.resolve().then(async () => {
-        const registrations = [...held.pages.values()].flat();
-        await runQaGatewayFixture(
-          async () => {
-            const diagnostic = contextDiagnostics.get(context);
-            const test = diagnostic?.test;
-            const failure = test?.signal.aborted
-              ? test.signal.reason
-              : test?.task.result?.errors?.[0];
-            // Native timeout rejects the wrapper before pending page operations settle.
-            if (failure !== undefined) {
-              await captureContextFailure(context, failure);
-            } else {
-              await diagnostic?.capture;
-            }
-          },
-          async () => {
-            // Release every gate before joining callbacks, then remove interception.
-            await settleControlUiCleanup(registrations.map(({ close }) => close()));
-            await settleControlUiCleanup(registrations.map(({ installed }) => installed));
-          },
-          () =>
-            settleControlUiCleanup([
-              ...[...held.pages.keys()].map((page) => page.unrouteAll({ behavior: "wait" })),
-              context.unrouteAll({ behavior: "wait" }),
-            ]),
-          () => context.close(),
-        );
-        held.pages.clear();
-        openBrowserContexts.delete(context);
-      });
+      closing = Promise.resolve()
+        .then(async () => {
+          const registrations = [...held.pages.values()].flat();
+          await runQaGatewayFixture(
+            async () => {
+              const diagnostic = contextDiagnostics.get(context);
+              const test = diagnostic?.test;
+              const failure = test?.signal.aborted
+                ? test.signal.reason
+                : test?.task.result?.errors?.[0];
+              // Native timeout rejects the wrapper before pending page operations settle.
+              if (failure !== undefined) {
+                await captureContextFailure(context, failure);
+              } else {
+                await diagnostic?.capture;
+              }
+            },
+            async () => {
+              // Release every gate before joining callbacks, then remove interception.
+              await settleControlUiCleanup(registrations.map(({ close }) => close()));
+              await settleControlUiCleanup(registrations.map(({ installed }) => installed));
+            },
+            () =>
+              settleControlUiCleanup([
+                ...[...held.pages.keys()].map((page) => page.unrouteAll({ behavior: "wait" })),
+                context.unrouteAll({ behavior: "wait" }),
+              ]),
+            () => context.close(),
+          );
+          held.pages.clear();
+          openBrowserContexts.delete(context);
+        })
+        .finally(finishPhase);
       contextClosures.set(context, closing);
     }
     return closing;
@@ -438,21 +442,24 @@ export function createControlUiE2eSuite(options: ControlUiE2eSuiteOptions): Cont
         new ControlUiE2eAcquisitionClosedError("Control UI E2E context acquisition is closed"),
       );
     }
-    const acquisition = Promise.resolve().then(async () => {
-      const context = await currentBrowser.newContext(contextOptions);
-      openBrowserContexts.set(context, owner);
-      contextDiagnostics.set(context, { test });
-      await context.addInitScript({ content: createControlUiPaneRuntimeTestAdapterScript() });
-      if (stopping || owner?.signal.aborted) {
-        await closeBrowserContext(context);
-        throw new ControlUiE2eAcquisitionClosedError(
-          "Control UI E2E context arrived after teardown began",
-        );
-      }
-      context.on("page", installControlUiRpcDiagnostics);
-      context.setDefaultTimeout(controlUiE2eWaitTimeoutMs);
-      return context;
-    });
+    const finishPhase = beginUiE2ePhase("context-setup");
+    const acquisition = Promise.resolve()
+      .then(async () => {
+        const context = await currentBrowser.newContext(contextOptions);
+        openBrowserContexts.set(context, owner);
+        contextDiagnostics.set(context, { test });
+        await context.addInitScript({ content: createControlUiPaneRuntimeTestAdapterScript() });
+        if (stopping || owner?.signal.aborted) {
+          await closeBrowserContext(context);
+          throw new ControlUiE2eAcquisitionClosedError(
+            "Control UI E2E context arrived after teardown began",
+          );
+        }
+        context.on("page", installControlUiRpcDiagnostics);
+        context.setDefaultTimeout(controlUiE2eWaitTimeoutMs);
+        return context;
+      })
+      .finally(finishPhase);
     contextAcquisitions.set(acquisition, owner);
     void acquisition.then(
       () => contextAcquisitions.delete(acquisition),
@@ -509,6 +516,7 @@ export function createControlUiE2eSuite(options: ControlUiE2eSuiteOptions): Cont
           return await scenario.run(owner.signal);
         },
         async () => {
+          const finishPhase = beginUiE2ePhase("scenario-cleanup");
           owner.abort();
           try {
             assertControlUiForkActive();
@@ -530,6 +538,8 @@ export function createControlUiE2eSuite(options: ControlUiE2eSuiteOptions): Cont
           } catch (error) {
             unsafeCleanup = { error, retainedState };
             throw error;
+          } finally {
+            finishPhase();
           }
         },
       ),
@@ -604,26 +614,29 @@ export function createControlUiE2eSuite(options: ControlUiE2eSuiteOptions): Cont
                   ],
                   executablePath: chromiumExecutablePath,
                 });
-          setupPromise = Promise.resolve().then(async () => {
-            if (options.startServerBeforeBrowser) {
-              server = await startServer();
-              if (stopping) {
-                return;
+          const finishPhase = beginUiE2ePhase("suite-setup");
+          setupPromise = Promise.resolve()
+            .then(async () => {
+              if (options.startServerBeforeBrowser) {
+                server = await startServer();
+                if (stopping) {
+                  return;
+                }
+                browser = await launchBrowser();
+              } else {
+                browser = await launchBrowser();
+                if (stopping) {
+                  return;
+                }
+                server = await startServer();
               }
-              browser = await launchBrowser();
-            } else {
-              browser = await launchBrowser();
-              if (stopping) {
-                return;
+              if (!stopping) {
+                // Only an owner whose acquisition began may receive cleanup callbacks.
+                resources = options.resources;
+                await resources?.run(resourceLifetime.signal);
               }
-              server = await startServer();
-            }
-            if (!stopping) {
-              // Only an owner whose acquisition began may receive cleanup callbacks.
-              resources = options.resources;
-              await resources?.run(resourceLifetime.signal);
-            }
-          });
+            })
+            .finally(finishPhase);
           return setupPromise;
         }, options.setupTimeoutMs);
         afterAll(() => {
@@ -631,6 +644,7 @@ export function createControlUiE2eSuite(options: ControlUiE2eSuiteOptions): Cont
           stopping = true;
           resourceLifetime.abort();
           activeScenario?.controller.abort();
+          const finishPhase = beginUiE2ePhase("suite-cleanup");
           const closingContexts = closeOpenBrowserContexts();
           const contexts = Promise.allSettled([closingContexts]);
           const teardown = (async () => {
@@ -660,7 +674,7 @@ export function createControlUiE2eSuite(options: ControlUiE2eSuiteOptions): Cont
             throwControlUiCleanupErrors(errors);
             assertControlUiForkActive();
             await resources?.release?.();
-          })();
+          })().finally(finishPhase);
           return joinCleanup(
             teardown,
             "suite teardown",
@@ -695,7 +709,12 @@ export function createControlUiE2eSuite(options: ControlUiE2eSuiteOptions): Cont
             // emulation overrides (such as safe-area insets) on the next navigation.
             await installControlUiE2eRendererStallProbe(page);
             try {
-              return await run(fixture);
+              const finishCallback = beginUiE2ePhase("test-callback");
+              try {
+                return await run(fixture);
+              } finally {
+                finishCallback();
+              }
             } catch (error) {
               await captureContextFailure(context, error, page);
               throw error;
