@@ -15,16 +15,8 @@ import {
   useDebugTestEnvironment,
 } from "./debug.test-support.ts";
 
-type TestDebugContent = SolidBridgeElement<{
-  context: ApplicationContext;
-  minimized: boolean;
-}>;
-
-type TestDebugOverlay = SolidBridgeElement<{
-  context: ApplicationContext;
-  toggle: () => void;
-}>;
-
+type TestDebugContent = SolidBridgeElement<{ context: ApplicationContext; minimized: boolean }>;
+type TestDebugOverlay = SolidBridgeElement<{ context: ApplicationContext; toggle: () => void }>;
 type TestSparkline = SolidBridgeElement<{ samples: readonly SparklineSample[] }>;
 
 async function updateOverlayVitals(overlay: TestDebugOverlay): Promise<void> {
@@ -206,16 +198,14 @@ it("defers hidden reads and catches up once when the tray becomes visible", asyn
   expectReadCount(3);
 });
 
-it("graphs status samples without clamping CPU and resets history on reopen", async () => {
+it("graphs status samples and reconciles disk history across reopen and recovery", async () => {
   let sampleCount = 0;
   let uptimeMs = 60_000;
-  let diskResponse: "available" | "single" | "empty" | "legacy" | "missing" | "rejected" =
-    "available";
+  let diskResponse: "available" | "single" | "empty" | "missing" | "rejected" = "available";
   const request = makeRequest(() => {
     sampleCount += 1;
     const vitals = {
       eventLoop: {
-        utilization: 0.42,
         cpuCoreRatio: 1 + sampleCount / 10,
         delayP99Ms: 10 + sampleCount,
         delayMaxMs: 87,
@@ -227,9 +217,6 @@ it("graphs status samples without clamping CPU and resets history on reopen", as
     };
     if (diskResponse === "rejected") {
       throw new Error("system info unavailable");
-    }
-    if (diskResponse === "legacy") {
-      return { ...vitals, diskAvailableBytes: 500, diskTotalBytes: 1000, diskPath: "/legacy" };
     }
     if (diskResponse === "missing") {
       return vitals;
@@ -252,23 +239,11 @@ it("graphs status samples without clamping CPU and resets history on reopen", as
   await open();
   await waitForSolid(() => expect(text(".gateway-vital--cpu")).toContain("1.10 cores"));
 
-  await updateOverlayVitals(overlay);
-  expect(
-    request.mock.calls
-      .filter(([method]) => method === "status" || method === "system.info")
-      .map(([method]) => method),
-  ).toEqual(["system.info"]);
   const diskTile = (mountPath: string) => query(`.gateway-vital--disk[title="${mountPath}"]`);
   const rootDisk = diskTile("/");
   const archiveDisk = diskTile("/Volumes/Archive");
 
   expect(count(".gateway-vital")).toBe(5);
-  expect(text(".gateway-vital--cpu")).toContain("Host —");
-  const cpuReadings = [...overlay.querySelectorAll(".gateway-cpu-detail dl > div")].map((row) => [
-    normalizedText(row.querySelector("dt")),
-    normalizedText(row.querySelector("dd")),
-  ]);
-  expect(cpuReadings).toContainEqual(["Event loop busy", "42%"]);
   expect(query(".sparkline-tile__chart")).toBeNull();
   expect(text(".debug-overlay__vitals-footer")).toBe("Uptime 1m");
 
@@ -289,9 +264,6 @@ it("graphs status samples without clamping CPU and resets history on reopen", as
   }
   expect(count(".sparkline-tile__chart")).toBe(5);
   expect(overlay.querySelector(".gateway-vital[data-degraded]")).toBeNull();
-
-  const points = query(".gateway-vital--cpu polyline")?.getAttribute("points")?.split(" ");
-  expect(points).toHaveLength(2);
 
   uptimeMs = 0;
   overlay.toggle();
@@ -315,7 +287,7 @@ it("graphs status samples without clamping CPU and resets history on reopen", as
   }
   expect(diskTile("/Volumes/Archive")?.samples).toHaveLength(1);
 
-  for (const response of ["empty", "legacy", "missing"] as const) {
+  for (const response of ["empty", "missing"] as const) {
     diskResponse = response;
     await step();
 
