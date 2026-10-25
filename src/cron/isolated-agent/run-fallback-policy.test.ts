@@ -73,6 +73,15 @@ function makeConfig(
   };
 }
 
+const fallback = "openai/gpt-5.4";
+const subagentFallbacks = ["openai/gpt-5.2"];
+const withFallback = makeConfig([fallback]);
+const payloadModel = "google/gemini-2.0-flash";
+const userSelection = { sessionModelOverrideSource: "user" } as const;
+const selectedSubagent = { agentId: "research", useSubagentFallbacks: true };
+const subagent = (fallbacks: string[], primary?: string) =>
+  subagentConfig({ primary, fallbacks }, { agentPrimary: true });
+
 type FallbackCase = [
   name: string,
   cfg: OpenClawConfig,
@@ -80,51 +89,30 @@ type FallbackCase = [
   expected: string[] | undefined,
 ];
 it.each<FallbackCase>([
-  [
-    "strict payload model",
-    makeConfig(),
-    { job: makeJob({ model: "google/gemini-2.0-flash" }) },
-    [],
-  ],
+  ["strict payload model", makeConfig(), { job: makeJob({ model: payloadModel }) }, []],
   [
     "explicit payload fallbacks",
-    makeConfig(["openai/gpt-5.4"]),
-    { job: makeJob({ model: "google/gemini-2.0-flash", fallbacks: [] }) },
+    withFallback,
+    { job: makeJob({ model: payloadModel, fallbacks: [] }) },
     [],
   ],
   [
     "selected subagent",
-    subagentConfig(
-      { primary: "kimi/kimi-code", fallbacks: ["openai/gpt-5.2"] },
-      { agentPrimary: true },
-    ),
-    { agentId: "research", useSubagentFallbacks: true },
-    ["openai/gpt-5.2"],
+    subagent(subagentFallbacks, "kimi/kimi-code"),
+    selectedSubagent,
+    subagentFallbacks,
   ],
-  [
-    "subagent without primary",
-    subagentConfig({ fallbacks: ["openai/gpt-5.2"] }, { agentPrimary: true }),
-    {
-      agentId: "research",
-      useSubagentFallbacks: true,
-    },
-    [],
-  ],
+  ["subagent without primary", subagent(subagentFallbacks), selectedSubagent, []],
   [
     "empty subagent fallbacks",
-    subagentConfig(
-      { primary: "kimi/kimi-code", fallbacks: [] },
-      { defaultFallbacks: ["openai/gpt-5.4"] },
-    ),
+    subagentConfig({ primary: "kimi/kimi-code", fallbacks: [] }, { defaultFallbacks: [fallback] }),
     { useSubagentFallbacks: true },
     [],
   ],
   [
     "unselected subagent",
-    subagentConfig({ primary: "kimi/kimi-code", fallbacks: ["openai/gpt-5.2"] }),
-    {
-      useSubagentFallbacks: false,
-    },
+    subagentConfig({ primary: "kimi/kimi-code", fallbacks: subagentFallbacks }),
+    { useSubagentFallbacks: false },
     undefined,
   ],
   [
@@ -137,31 +125,18 @@ it.each<FallbackCase>([
     { inheritDefaultFallbacksForAgentStringModel: true },
     ["deepseek/deepseek-v4-flash", "moonshot/kimi-k2.6"],
   ],
-  [
-    "user session selection",
-    makeConfig(["fallback/model-b"]),
-    { sessionModelOverrideSource: "user" },
-    [],
-  ],
-  [
-    "automatic session selection",
-    makeConfig(["fallback/model-b"]),
-    { sessionModelOverrideSource: "auto" },
-    undefined,
-  ],
+  ["user session selection", withFallback, userSelection, []],
+  ["automatic session selection", withFallback, { sessionModelOverrideSource: "auto" }, undefined],
   [
     "user session selection under a payload model",
-    makeConfig(["fallback/model-b"]),
-    { job: makeJob({ model: "jobmodel/model-d" }), sessionModelOverrideSource: "user" },
-    ["fallback/model-b"],
+    withFallback,
+    { job: makeJob({ model: payloadModel }), ...userSelection },
+    [fallback],
   ],
   [
     "user session selection with explicit payload fallbacks",
-    makeConfig(["fallback/model-b"]),
-    {
-      job: makeJob({ fallbacks: ["jobfallback/model-c"] }),
-      sessionModelOverrideSource: "user",
-    },
+    withFallback,
+    { job: makeJob({ fallbacks: ["jobfallback/model-c"] }), ...userSelection },
     ["jobfallback/model-c"],
   ],
 ])("resolves %s fallback policy", (_name, cfg, options, expected) => {
@@ -176,21 +151,21 @@ it.each([
 ] as const)("keeps cron preflight strict when %s", (_name, options) => {
   expect(
     resolveCronPreflightCandidates({
-      cfg: makeConfig(["openai/gpt-5.4"]),
+      cfg: withFallback,
       agentId: "main",
       provider: "ollama",
       model: "qwen3:32b",
       ...options,
     }),
-  ).toStrictEqual([
-    {
-      provider: "ollama",
-      model: "qwen3:32b",
-      routeOrigin: "requested",
-      routeResolution: "resolved",
-    },
-  ]);
+  ).toStrictEqual([requestedCandidate]);
 });
+
+const requestedCandidate = {
+  provider: "ollama",
+  model: "qwen3:32b",
+  routeOrigin: "requested",
+  routeResolution: "resolved",
+};
 
 it("plans the full configured candidate chain for cron preflight", () => {
   expect(
@@ -205,12 +180,7 @@ it("plans the full configured candidate chain for cron preflight", () => {
       job: makeJob(),
     }),
   ).toEqual([
-    {
-      provider: "ollama",
-      model: "qwen3:32b",
-      routeOrigin: "requested",
-      routeResolution: "resolved",
-    },
+    requestedCandidate,
     {
       provider: "openrouter",
       model: "nvidia/nemotron-3-super-120b-a12b:free",

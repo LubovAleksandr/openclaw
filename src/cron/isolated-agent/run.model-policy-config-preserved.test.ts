@@ -25,12 +25,12 @@ function buildCronConfig(cfg: OpenClawConfig): OpenClawConfig {
     agentConfigOverride: resolveAgentConfig(cfg, "worker"),
   }).cfgWithAgentDefaults;
 }
-type ModelOwner = NonNullable<Parameters<typeof resolveCronModelSelection>[0]["owner"]>;
-function modelOwner(
+function selectModel(
   cfg: OpenClawConfig,
   metadataSnapshot = createPluginMetadataSnapshotFixture({ plugins: [] }),
-): ModelOwner {
-  return {
+  isGmailHook = false,
+) {
+  const owner = {
     config: cfg,
     agentId: "worker",
     agentDir: "/tmp/cron-agent",
@@ -38,12 +38,10 @@ function modelOwner(
     metadataSnapshot,
     modelCatalog: { entries: [], routeVariants: [] },
   };
-}
-function selectModel(owner: ModelOwner, isGmailHook = false) {
   return resolveCronModelSelection({
-    cfg: owner.config,
+    cfg,
     owner,
-    agentConfigOverride: resolveAgentConfig(owner.config, owner.agentId),
+    agentConfigOverride: resolveAgentConfig(cfg, owner.agentId),
     agentId: owner.agentId,
     agentDir: owner.agentDir,
     workspaceDir: owner.workspaceDir,
@@ -77,7 +75,7 @@ describe("resolveCronAgentConfig preserves agent-aware config", () => {
       },
     );
     cfg.plugins = { enabled: false };
-    expect(await selectModel(modelOwner(cfg))).toMatchObject({
+    expect(await selectModel(cfg)).toMatchObject({
       ok: true,
       provider: "native",
       model: "primary",
@@ -182,11 +180,10 @@ describe("resolveCronAgentConfig preserves agent-aware config", () => {
       if (source === "hook") {
         cfg.hooks = { gmail: { model: "legacy" } };
       }
-      const owner = modelOwner(cfg, metadataSnapshot);
       for (const ambient of [metadataSnapshot, snapshot("/tmp/other-owner", "other")]) {
         expect(
           await withPluginRuntimeGenerationScope({ metadataSnapshot: ambient }, () =>
-            selectModel(owner, source === "hook"),
+            selectModel(cfg, metadataSnapshot, source === "hook"),
           ),
         ).toMatchObject({
           ok: true,

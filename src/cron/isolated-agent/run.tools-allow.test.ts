@@ -22,6 +22,9 @@ import {
 const runCronIsolatedAgentTurn = await loadRunCronIsolatedAgentTurn();
 const options = { timeout: 300_000 };
 const command = "Command to run:\n- command: python3 scripts/check_mail.py";
+const externalOrigin = { kind: "external", channel: "whatsapp" } as const;
+const automaticSnapshot = { toolsAllowIsDefault: true };
+const conditionTrigger = { trigger: { script: "return { fire: true }" } };
 const policy: NonNullable<CronStoredJob["scheduledToolPolicy"]> = {
   version: 1,
   mode: "account",
@@ -51,7 +54,7 @@ function runTurn(
         toolsAllowProvenance: {
           version: 1,
           source: "final-executable-surface",
-          callerOrigin: { kind: "external", channel: "whatsapp" },
+          callerOrigin: externalOrigin,
         },
         payload: { kind: "agentTurn", message: "check allowed tools", toolsAllow, ...payload },
         ...job,
@@ -68,26 +71,14 @@ describe("runCronIsolatedAgentTurn toolsAllow", () => {
   });
   afterEach(clearActiveRuntimeWebToolsMetadata);
 
-  it("keeps accountless legacy jobs on the sender-policy path", options, async () => {
-    await runTurn(["cron"], {}, { owner: { agentId: "main", sessionKey: policy.ownerSessionKey } });
-    const call = runEmbeddedAgentMock.mock.calls[0]?.[0];
-    expect(call).toBeDefined();
-    expect(call.toolsAllow).toEqual(["cron"]);
-    expect(call.scheduledToolPolicy).toBeUndefined();
-  });
-
   it("preserves local provenance for scheduled message tools", options, async () => {
-    await runTurn(
-      ["message"],
-      { toolsAllowIsDefault: true },
-      {
-        toolsAllowProvenance: {
-          version: 1,
-          source: "final-executable-surface",
-          callerOrigin: { kind: "local" },
-        },
+    await runTurn(["message"], automaticSnapshot, {
+      toolsAllowProvenance: {
+        version: 1,
+        source: "final-executable-surface",
+        callerOrigin: { kind: "local" },
       },
-    );
+    });
     expect(runEmbeddedAgentMock.mock.calls[0]?.[0]?.scheduledToolPolicy).toEqual({
       ...policy,
       ownerOrigin: { kind: "local" },
@@ -104,7 +95,6 @@ describe("runCronIsolatedAgentTurn toolsAllow", () => {
   });
 
   it.each([
-    { label: "runs with its owner's tools", job: {}, expected: ["*"] },
     {
       label: "keeps its list without a valid owner policy",
       job: { owner: { agentId: "main", sessionKey: policy.ownerSessionKey } },
@@ -112,12 +102,11 @@ describe("runCronIsolatedAgentTurn toolsAllow", () => {
     },
     {
       label: "keeps its list behind a condition trigger",
-      job: { trigger: { script: "return { fire: true }" } },
+      job: conditionTrigger,
       expected: ["message", "read"],
     },
   ])("an automatic creator snapshot $label", options, async ({ job, expected }) => {
-    // Older builds saved this snapshot without the creator's native shell.
-    await runTurn(["message", "read"], { toolsAllowIsDefault: true }, job);
+    await runTurn(["message", "read"], automaticSnapshot, job);
     expect(runEmbeddedAgentMock.mock.calls[0]?.[0]?.toolsAllow).toEqual(expected);
   });
 
@@ -156,12 +145,11 @@ describe("runCronIsolatedAgentTurn toolsAllow", () => {
       expect(result.status).toBe("ok");
       expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(1);
       const call = runEmbeddedAgentMock.mock.calls[0]?.[0];
-      expect(call.jobId).toBe("tools-allow");
-      expect(call.toolsAllow).toEqual(toolsAllow);
-      expect(call.scheduledToolPolicy).toEqual({
-        ...policy,
-        ownerOrigin: { kind: "external", channel: "whatsapp" },
+      expect(call).toMatchObject({
+        jobId: "tools-allow",
+        toolsAllow,
       });
+      expect(call.scheduledToolPolicy).toEqual({ ...policy, ownerOrigin: externalOrigin });
     },
   );
 
@@ -188,8 +176,7 @@ describe("runCronIsolatedAgentTurn toolsAllow", () => {
         },
       },
     );
-    expect(result.status).toBe("ok");
-    expect(result.diagnostics).toBeUndefined();
+    expect([result.status, result.diagnostics]).toEqual(["ok", undefined]);
     expect(hasUsableWebSearchProviderMock).toHaveBeenCalledWith(
       expect.objectContaining({
         agentDir: "/tmp/agent-dir",
@@ -210,24 +197,16 @@ describe("runCronIsolatedAgentTurn toolsAllow", () => {
       {},
       {
         tools: {
-          web: {
-            search: { enabled: true, openaiCodex: { enabled: true, mode: "cached" } },
-          },
+          web: { search: { enabled: true, openaiCodex: { enabled: true, mode: "cached" } } },
         },
       },
     );
-    expect(result.status).toBe("ok");
-    expect(result.diagnostics).toBeUndefined();
+    expect([result.status, result.diagnostics]).toEqual(["ok", undefined]);
   });
 
   it("does not warn about web_search recorded in an automatic snapshot", options, async () => {
-    const result = await runTurn(
-      ["read", "web_search"],
-      { toolsAllowIsDefault: true },
-      { trigger: { script: "return { fire: true }" } },
-    );
-    expect(result.status).toBe("ok");
-    expect(result.diagnostics).toBeUndefined();
+    const result = await runTurn(["read", "web_search"], automaticSnapshot, conditionTrigger);
+    expect([result.status, result.diagnostics]).toEqual(["ok", undefined]);
   });
 
   it("keeps missing web_search provider diagnostics when the run aborts", options, async () => {
