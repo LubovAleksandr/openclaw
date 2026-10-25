@@ -1,10 +1,5 @@
-import {
-  createServer,
-  request as httpRequest,
-  IncomingMessage,
-  ServerResponse,
-  type ClientRequest,
-} from "node:http";
+import { once } from "node:events";
+import * as http from "node:http";
 import { Agent, request as httpsRequest } from "node:https";
 import type { AddressInfo } from "node:net";
 import { Socket } from "node:net";
@@ -17,80 +12,63 @@ import { createSecretEgressBodyBudget, forwardSecretEgressRequest } from "./prox
 
 vi.mock("node:https", { spy: true });
 
-type ForwardOptions = Parameters<typeof forwardSecretEgressRequest>[0];
-const cleanups: Array<() => void> = [];
-afterEach(() => {
+const cleanups: Array<() => void | Promise<void>> = [];
+afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) {
-    cleanup();
+    await cleanup();
   }
 });
 
 function forwarding(
-  request = new IncomingMessage(new Socket()),
-  response = new ServerResponse(request),
+  request = new http.IncomingMessage(new Socket()),
+  response = new http.ServerResponse(request),
 ) {
   request.on("error", () => {});
   const agent = new Agent();
   const resources: Array<Readable | Writable> = [];
-  cleanups.push(() => {
-    for (const resource of resources) {
-      resource.destroy();
-    }
-    request.destroy();
-    response.destroy();
-    agent.destroy();
-  });
+  cleanups.push(() =>
+    [...resources, request, response, agent].forEach((resource) => resource.destroy()),
+  );
   return {
     request,
     response,
     resources,
-    run(overrides: Partial<ForwardOptions> = {}) {
-      forwardSecretEgressRequest({
-        request,
-        response,
-        host: "localhost",
-        upstreamTlsAgent: agent,
-        prepareRequest: () => ({
-          target: new URL("https://localhost:1/"),
-          headers: {},
-          substituted: false,
-        }),
-        acquireBody: createSecretEgressBodyBudget(),
-        isActive: () => true,
-        ownResource: (resource) => {
-          resources.push(resource);
-          return resource;
-        },
-        releaseResponse() {},
-        resolveSentinel() {
-          return undefined;
-        },
-        audit() {},
-        ...overrides,
-      });
+    host: "localhost",
+    upstreamTlsAgent: agent,
+    prepareRequest: () => ({
+      target: new URL("https://localhost:1/"),
+      headers: {},
+      substituted: false,
+    }),
+    acquireBody: createSecretEgressBodyBudget(),
+    isActive: () => true,
+    ownResource<T extends Readable | Writable>(resource: T) {
+      resources.push(resource);
+      return resource;
     },
+    releaseResponse() {},
+    resolveSentinel: () => undefined,
+    audit() {},
   };
 }
 
 it.each([undefined, 0])(
   "releases body streams when upstream construction fails (length: %s)",
   async (length) => {
-    const { request, response, resources, run } = forwarding();
+    const forward = forwarding();
+    const { request, response, resources } = forward;
     request.headers = length === undefined ? {} : { "content-length": String(length) };
     request.method = "POST";
-    run({
-      // A protected value can contain newlines. Node refuses this header
-      // synchronously, before DNS, TLS or any upstream socket is opened.
+    forwardSecretEgressRequest({
+      ...forward,
+      // Node rejects protected values containing newlines before opening a socket.
       prepareRequest: () => ({
         target: new URL("https://localhost:1/"),
         headers: { "x-synthetic": "invalid\nheader" },
         substituted: true,
       }),
-      ownResource: (resource) => {
-        resources.push(resource);
-        resource.on("error", () => resource.destroy());
-        return resource;
-      },
+      ownResource: (resource) =>
+        forward.ownResource(resource).on("error", () => resource.destroy()),
     });
     request.push(null);
     await setImmediate();
@@ -108,18 +86,16 @@ it.each([
   ["client disconnect", "next turn"],
 ] as const)("stops buffered submission after %s while waiting for %s", async (cause, wait) => {
   const secret = "synthetic-buffered-secret";
-  const body = Buffer.concat([
-    Buffer.alloc(128 * 1024, 120),
-    Buffer.from(sealSecretSentinel(secret, { label: "buffered-cancellation" }) + "tail"),
-  ]);
-  const { request, response, run } = forwarding();
+  const marker = sealSecretSentinel(secret, { label: "buffered-cancellation" });
+  const body = Buffer.from("x".repeat(128 * 1024) + marker + "tail");
+  const forward = forwarding();
+  const { request, response } = forward;
   request.headers = { "content-length": String(body.length) };
   request.method = "POST";
   const submitted: Buffer[] = [];
   let completeWrite: (error?: Error | null) => void = () => {};
   const started = createDeferredCore();
-  // Real Writable backpressure controls transport admission without relying on
-  // platform socket buffers or adding a test-only production hook.
+  // Real Writable backpressure avoids platform socket-buffer timing.
   const upstream = new Writable({
     highWaterMark: wait === "drain" ? 1 : body.length + 1,
     write(chunk: Buffer, _encoding, callback) {
@@ -128,11 +104,12 @@ it.each([
       started.resolve();
     },
   });
-  vi.mocked(httpsRequest).mockReturnValueOnce(upstream as unknown as ClientRequest);
+  vi.mocked(httpsRequest).mockReturnValueOnce(upstream as unknown as http.ClientRequest);
   const releaseBody = vi.fn();
   const audit = vi.fn();
   let active = true;
-  run({
+  forwardSecretEgressRequest({
+    ...forward,
     acquireBody: () => releaseBody,
     isActive: () => active,
     resolveSentinel: resolveSecretSentinel,
@@ -154,52 +131,41 @@ it.each([
   expect(sent.length).toBeLessThan(body.length);
   expect(sent.includes(secret)).toBe(false);
   expect(sent.includes("tail")).toBe(false);
-  expect(upstream.destroyed).toBe(true);
-  expect(upstream.writableEnded).toBe(false);
+  expect(upstream).toMatchObject({ destroyed: true, writableEnded: false });
   expect(releaseBody).toHaveBeenCalledOnce();
   expect(audit).not.toHaveBeenCalled();
 });
 
-// Serves one real loopback request through the proxy forwarder. The upstream
-// response is emitted on a later tick, like the real client, so a throw from
-// writeHead would escape instead of landing in the forwarder's own try block.
+// A later-tick upstream head must not throw outside the forwarder's try block.
 it("closes a rejected bodyless head instead of framing a 502 body", async () => {
   vi.mocked(httpsRequest).mockImplementationOnce(((...args: unknown[]) => {
     const callback = args.find((entry) => typeof entry === "function") as (
-      message: IncomingMessage,
+      message: http.IncomingMessage,
     ) => void;
-    const upstreamResponse = new IncomingMessage(new Socket());
+    const upstreamResponse = new http.IncomingMessage(new Socket());
     upstreamResponse.statusCode = 304;
     upstreamResponse.headers = { trailer: "Expires" };
     upstreamResponse.on("error", () => {});
     process.nextTick(() => {
       callback(upstreamResponse);
-      if (!upstreamResponse.destroyed) {
-        upstreamResponse.push("file");
-        upstreamResponse.push(null);
-      }
+      upstreamResponse.push(null);
     });
-    return new PassThrough() as unknown as ClientRequest;
+    return new PassThrough() as unknown as http.ClientRequest;
   }) as never);
-  const server = createServer((request, response) => forwarding(request, response).run());
-  try {
-    await new Promise<void>((resolve) => {
-      server.listen(0, "127.0.0.1", resolve);
-    });
-    const { port } = server.address() as AddressInfo;
-    // Rejection proves no head reached the client; Vitest catches uncaught callback errors.
-    await expect(
-      new Promise<IncomingMessage>((resolve, reject) => {
-        httpRequest({ host: "127.0.0.1", port, path: "/", agent: false }, resolve)
-          .on("error", reject)
-          .end();
-      }),
-    ).rejects.toMatchObject({ code: "ECONNRESET" });
-    await setImmediate();
-  } finally {
+  const server = http.createServer((request, response) =>
+    forwardSecretEgressRequest(forwarding(request, response)),
+  );
+  cleanups.push(async () => {
     server.closeAllConnections();
     await new Promise<void>((resolve) => {
       server.close(() => resolve());
     });
-  }
+  });
+  await once(server.listen(0, "127.0.0.1"), "listening");
+  const { port } = server.address() as AddressInfo;
+  // Rejection proves no head reached the client; Vitest catches uncaught callback errors.
+  await expect(
+    once(http.get({ host: "127.0.0.1", port, agent: false }), "response"),
+  ).rejects.toMatchObject({ code: "ECONNRESET" });
+  await setImmediate();
 });
