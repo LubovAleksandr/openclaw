@@ -431,10 +431,10 @@ const layoutCells = values["layout-matrix"]
         ({ route }) => !values["layout-route"].length || values["layout-route"].includes(route),
       )
       .filter(
-        ({ viewport, colorScheme, route, cold }) =>
+        (cell) =>
           !values["layout-cell"].length ||
           values["layout-cell"].includes(
-            `${viewport}:${colorScheme}:${route}:${cold ? "cold" : "warm"}`,
+            `${cell.viewport}:${cell.colorScheme}:${cell.route}:${cell.cold ? "cold" : "warm"}`,
           ),
       )
       .slice(layoutStart)
