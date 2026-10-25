@@ -132,8 +132,7 @@ export class MarkdownCodeHighlights {
         target instanceof Element && target.closest<HTMLElement>(".code-block-wrapper");
       const block = wrapper && this.blocks.get(wrapper);
       if (block) {
-        // The delegated disclosure handler may run later in this same event.
-        queueMicrotask(() => this.schedule(block));
+        this.schedule(block);
       }
     });
     for (const block of this.blocks.values()) {
@@ -241,13 +240,11 @@ export class MarkdownCodeHighlights {
 
   private schedule(block: Block): void {
     const reply = block.reply;
-    const chunk = reply?.chunks?.[block.next];
     if (
       !this.current(block) ||
       block.frame !== undefined ||
       !reply ||
-      !chunk ||
-      (!block.wrapper.classList.contains("is-expanded") && chunk.to > reply.previewEnd)
+      !reply.chunks?.[block.next]
     ) {
       return;
     }
@@ -270,26 +267,35 @@ export class MarkdownCodeHighlights {
           }
         }
       }
-      const fragment = (sanitizer ??= DOMPurify(window)).sanitize(
-        chunk.html.replaceAll("\r", "&#13;"),
-        {
-          ALLOWED_TAGS: ["span"],
-          ALLOWED_ATTR: ["class"],
-          RETURN_DOM_FRAGMENT: true,
-        },
-      );
-      block.tail.before(fragment);
-      block.tail.deleteData(0, chunk.to - block.applied);
-      chunk.html = "";
-      block.applied = chunk.to;
-      block.next += 1;
-      if (block.next === reply.chunks!.length) {
-        block.reply = undefined;
-        block.tail.remove();
-        this.finish(block);
-      } else {
-        this.schedule(block);
-      }
+      // Group writes so the full block is not laid out after every small fragment.
+      const deadline = performance.now() + 8;
+      do {
+        const chunk = reply.chunks![block.next]!;
+        // Solid's delegated disclosure handler runs after the root click listener.
+        if (!block.wrapper.classList.contains("is-expanded") && chunk.to > reply.previewEnd) {
+          return;
+        }
+        const fragment = (sanitizer ??= DOMPurify(window)).sanitize(
+          chunk.html.replaceAll("\r", "&#13;"),
+          {
+            ALLOWED_TAGS: ["span"],
+            ALLOWED_ATTR: ["class"],
+            RETURN_DOM_FRAGMENT: true,
+          },
+        );
+        block.tail.before(fragment);
+        block.tail.deleteData(0, chunk.to - block.applied);
+        chunk.html = "";
+        block.applied = chunk.to;
+        block.next += 1;
+        if (block.next === reply.chunks!.length) {
+          block.reply = undefined;
+          block.tail.remove();
+          this.finish(block);
+          return;
+        }
+      } while (performance.now() < deadline);
+      this.schedule(block);
     });
   }
 }
