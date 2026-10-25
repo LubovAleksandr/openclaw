@@ -127,6 +127,8 @@ interactive `openclaw doctor --fix` asks which retained partition to use before
 migrating heartbeat settings. The inventory includes each partition's jobs,
 scratch, receipts, and run history. Cron remains paused until a partition is chosen;
 other Gateway functionality remains available with a valid config.
+Updates also continue with a valid config while partition selection is deferred.
+Unsafe heartbeat sources still require repair before migration.
 
 Noninteractive updates and `openclaw doctor --fix --yes` do not guess. They keep
 the original retired heartbeat fields and report: run `openclaw doctor --fix`

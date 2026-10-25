@@ -23,6 +23,7 @@ import {
   loadCronRuntimeAuthorities,
   replaceCronRuntimeAuthorityRows,
 } from "../cron/store/runtime-authority-store.js";
+import { CronStoreSelectionRequiredError } from "../cron/store/selection-error.js";
 import type { HealthFinding } from "../flows/health-checks.js";
 import { formatErrorMessage as errorMessage } from "../infra/errors.js";
 import {
@@ -78,10 +79,11 @@ export async function collectHeartbeatTaskMigrationFindings(
     try {
       monitor = readLegacyHeartbeatScratch(storePath, agent.agentId, { env });
     } catch (error) {
+      const deferred = error instanceof CronStoreSelectionRequiredError;
       findings.push({
         ...finding,
-        requirement: "heartbeat-task-migration-blocked",
-        severity: "error",
+        requirement: deferred ? "heartbeat-migration-deferred" : "heartbeat-task-migration-blocked",
+        severity: deferred ? "warning" : "error",
         message: `Agent "${agent.agentId}" heartbeat scratch cannot be inspected: ${errorMessage(error)}`,
       });
       continue;

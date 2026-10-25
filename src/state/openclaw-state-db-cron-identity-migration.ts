@@ -135,6 +135,17 @@ export function readCronStorePartitionInventoryInDatabase(
       }
     }
   }
+  if (sourceTables?.has("cron_run_logs") ?? tableExists(db, "cron_run_logs")) {
+    // Binding precedes the legacy history import, which retains these partition keys.
+    const query = getNodeSqliteKysely<{ cron_run_logs: { store_key: string } }>(db)
+      .selectFrom("cron_run_logs")
+      .select("store_key")
+      .select((eb) => eb.fn.countAll().as("count"))
+      .groupBy("store_key");
+    for (const row of executeSqliteQuerySync(db, query).rows) {
+      add(row.store_key, "history", Number(row.count));
+    }
+  }
   if (sourceTables?.has("task_runs") ?? tableExists(db, "task_runs")) {
     const query = getNodeSqliteKysely<Pick<DB, "task_runs">>(db)
       .selectFrom("task_runs")

@@ -168,6 +168,7 @@ owners share that cutover and exact predecessor reconstruction for generated DDL
 State schema 34 records the default cron partition's existing opaque key in
 `config_machine_state`. SQLite and PostgreSQL publish the binding in the existing
 schema migration transaction without rewriting jobs, scratch, receipts, or history.
+Partition discovery includes retained legacy run logs before their history import.
 The binding survives state-directory moves and restored backups. If an older store
 has already moved and its original default cannot be established, the Gateway
 starts with cron paused and reports the available partitions. Run

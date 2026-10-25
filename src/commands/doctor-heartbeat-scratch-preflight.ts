@@ -35,6 +35,10 @@ export async function assertHeartbeatScratchMigrationUnambiguous(
   if (blocked) {
     throw new Error(blocked.message);
   }
+  // Selection defers cron inspection; genuine source errors above still refuse unsafe migration.
+  if (findings.some((finding) => finding.requirement === "heartbeat-migration-deferred")) {
+    return;
+  }
   const storePath = resolveCronJobsStorePathFromConfig(cfg, env);
   withExistingOpenClawStateDatabaseArtifactPreservingReadOnly(
     ({ db }) => {

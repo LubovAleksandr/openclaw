@@ -22,6 +22,7 @@ import {
   loadedCronStoreFromRows,
   projectCronJobThroughStorageCodec,
 } from "../cron/store/row-codec.js";
+import { CronStoreSelectionRequiredError } from "../cron/store/selection-error.js";
 import type { CronStoredJob as CronJob } from "../cron/types.js";
 import type { HealthFinding } from "../flows/health-checks.js";
 import { formatErrorMessage as errorMessage, hasErrnoCode } from "../infra/errors.js";
@@ -459,12 +460,13 @@ export async function collectHeartbeatScratchMigrationFindings(
         message: `Agent "${agentId}" still stores heartbeat instructions in HEARTBEAT.md.`,
       });
     } catch (error) {
+      const deferred = error instanceof CronStoreSelectionRequiredError;
       findings.push({
         ...MIGRATION_FINDING_DEFAULTS,
         target: agentId,
         path: heartbeatPath,
-        requirement: "heartbeat-file-migration-blocked",
-        severity: "error",
+        requirement: deferred ? "heartbeat-migration-deferred" : "heartbeat-file-migration-blocked",
+        severity: deferred ? "warning" : "error",
         message: `Agent "${agentId}" HEARTBEAT.md cannot be migrated: ${errorMessage(error)}`,
       });
     }
