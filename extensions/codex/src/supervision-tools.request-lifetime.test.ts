@@ -3,7 +3,7 @@ import * as providerAuth from "openclaw/plugin-sdk/provider-auth";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createCodexAuthProfileSelection } from "./app-server/auth-profile-selection.js";
 import { resolveCodexSupervisionAppServerRuntimeOptions } from "./app-server/config-runtime.js";
-import { createClientHarness } from "./app-server/test-support.js";
+import { createRequestClientHarness } from "./app-server/test-support.js";
 import { createCodexSupervisionTools } from "./supervision-tools.js";
 
 const auth = createCodexAuthProfileSelection(providerAuth);
@@ -47,17 +47,14 @@ function createTool(
   }).find((candidate) => candidate.name === name)!;
 }
 
-const clients: Array<ReturnType<typeof createClientHarness>["client"]> = [];
+const clients: Array<ReturnType<typeof createRequestClientHarness>["client"]> = [];
 const threadResponse = (type = "idle", fields = {}) => ({
   thread: { id: "thread-1", status: { type }, ...fields },
 });
 function respondingClient(result: (method: string) => unknown) {
-  const harness = createClientHarness({
-    onWrite(line, send) {
-      const { id, method } = JSON.parse(line) as { id: number; method: string };
-      send({ id, result: result(method) });
-    },
-  });
+  const harness = createRequestClientHarness((method, id, _params, send) =>
+    send({ id, result: result(method) }),
+  );
   clients.push(harness.client);
   return harness;
 }
@@ -79,10 +76,7 @@ describe("Codex supervision request lifetime", () => {
     const tool = createTool("codex_session_read", readConfig, {
       resolveAuthProfileId: async () => "synthetic:account",
       withAuthProfileIdAtEffect: async (_params, consume) =>
-        consume({
-          read: async () => selected,
-          assertCurrent() {},
-        }),
+        consume({ read: async () => selected, assertCurrent() {} }),
     });
     await expect(tool.execute("read", sessionParams)).rejects.toThrow(
       "endpoint local was removed or changed",

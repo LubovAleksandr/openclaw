@@ -13,11 +13,14 @@ import {
 
 afterEach(() => vi.restoreAllMocks());
 
+const native = (fields: Partial<CodexThread> = {}) => idleThread({ source: "cli", ...fields });
+const rpc = commandRpcMocks.codexControlRequest;
+const configs = () => rpc.mock.calls.map((call) => call[3]?.config);
+
 it("discovers visible entries after hidden native pages without rereading the resident head", async () => {
   const rows = Array.from({ length: 35 }, (_, i) =>
-    idleThread({
+    native({
       id: `thread-${i}`,
-      source: "cli",
       originator: i < 32 ? "openclaw" : "codex",
       path: `/synthetic/sessions/thread-${i}.jsonl`,
       recencyAt: 10_000 - i,
@@ -33,10 +36,7 @@ it("discovers visible entries after hidden native pages without rereading the re
       ...(next < rows.length ? { nextCursor: String(next) } : {}),
     };
   });
-  const factory = catalogFactory({
-    getRuntimeConfig: () => config,
-    now: () => 1_000,
-  });
+  const factory = catalogFactory({ getRuntimeConfig: () => config, now: () => 1_000 });
   const primary = (await factory.homesForAgent("main"))[0]!;
   const home = { ...primary, localSessionsRoot: "/synthetic/sessions" };
   const provider = catalogProvider({ ...factory, homesForAgent: async () => [home] });
@@ -88,7 +88,7 @@ it.each(["resolve", "reject"] as const)(
       expect(commandRpcMocks.codexControlRequest).toHaveBeenCalledOnce();
       const failure = new Error("native hydration failed");
       if (outcome === "resolve") {
-        held.resolve({ data: [idleThread({ source: "cli" })] });
+        held.resolve({ data: [native()] });
       } else {
         held.reject(failure);
       }
@@ -109,7 +109,7 @@ it.each(["resolve", "reject"] as const)(
       expect(commandRpcMocks.codexControlRequest).toHaveBeenCalledOnce();
       if (outcome === "reject") {
         commandRpcMocks.codexControlRequest.mockResolvedValue({
-          data: [idleThread({ id: "thread-recovered", source: "cli" })],
+          data: [native({ id: "thread-recovered" })],
         });
         await control.initialize();
         await expect(control.listPage({ limit: 25 })).resolves.toMatchObject({
@@ -124,14 +124,13 @@ it.each(["resolve", "reject"] as const)(
   },
 );
 
-it("fails a repeated native hydration cursor instead of publishing an incomplete catalog", async () => {
-  commandRpcMocks.codexControlRequest.mockResolvedValue({
-    data: [idleThread({ source: "cli" })],
-    nextCursor: "cycle",
-  });
-  const control = makeControl();
-  await expect(control.initialize()).rejects.toThrow(/repeated.*cursor/);
-  expect(commandRpcMocks.codexControlRequest).toHaveBeenCalledTimes(2);
+it.each([
+  ["repeated", "cycle", /repeated.*cursor/, 2],
+  ["oversized", "x".repeat(4097), "Codex catalog response contains an invalid cursor", 1],
+] as const)("rejects a %s native cursor", async (_label, nextCursor, error, calls) => {
+  rpc.mockResolvedValue({ data: nextCursor === "cycle" ? [native()] : [], nextCursor });
+  await expect(makeControl().initialize()).rejects.toThrow(error);
+  expect(rpc).toHaveBeenCalledTimes(calls);
 });
 
 it("captures the current config for requests across agents and homes", async () => {
@@ -147,8 +146,6 @@ it("captures the current config for requests across agents and homes", async () 
     await control.readThread("thread-1");
     await control.readThread("thread-1");
   }
-  const configs = () =>
-    commandRpcMocks.codexControlRequest.mock.calls.map((call) => call[3]?.config);
   const firstRequests = Array.from({ length: 8 }, () => initial);
   expect(configs()).toEqual(firstRequests);
   runtimeConfig = { agents: { defaults: { workspace: "/workspace/b" } } };
@@ -165,16 +162,14 @@ it("keeps a title-search cursor chain on its initial App Server configuration", 
     .mockImplementationOnce(async () => {
       pluginConfig = plugin("codex-reconfigured");
       return {
-        data: [idleThread({ id: "other", name: "Unrelated", source: "cli" })],
+        data: [native({ id: "other", name: "Unrelated" })],
         nextCursor: "page-2",
       };
     })
     .mockResolvedValueOnce({
-      data: [idleThread({ id: "match", name: "Match", source: "cli" })],
+      data: [native({ id: "match", name: "Match" })],
     });
-  const control = makeControl({
-    getPluginConfig: () => pluginConfig,
-  });
+  const control = makeControl({ getPluginConfig: () => pluginConfig });
 
   await control.initialize();
   await expect(control.listPage({ limit: 1, searchTerm: "match" })).resolves.toMatchObject({
@@ -210,17 +205,5 @@ it("keeps every Codex interactive source while omitting other custom sources", a
 
   expect(page.sessions.map(({ threadId, source }) => [threadId, source])).toEqual(
     ["cli", "vscode", "atlas", "chatgpt"].map((source) => [source, source]),
-  );
-});
-
-it("rejects an oversized native nextCursor", async () => {
-  commandRpcMocks.codexControlRequest.mockResolvedValue({
-    data: [],
-    nextCursor: "x".repeat(4097),
-  });
-  const control = makeControl();
-
-  await expect(control.initialize()).rejects.toThrow(
-    "Codex catalog response contains an invalid cursor",
   );
 });
