@@ -45,15 +45,16 @@ async function startConnection() {
   return {
     send,
     read: (prompt: string, extra = {}) =>
-      send({ ...streaming, tools: readTool, input: userInput(prompt), ...extra }),
+      send({
+        ...streaming,
+        tools: [{ type: "function", name: "read" }],
+        input: userInputs(prompt),
+        ...extra,
+      }),
     complete: async (request: Request) => readCompletedResponse(await send(request)),
     debug: (path: string) => debugJson(server.baseUrl, path),
   };
 }
-
-const userInput = (text: string) => [{ role: "user", content: [{ type: "input_text", text }] }];
-
-const readTool = [{ type: "function", name: "read" }];
 
 const streaming = { model: "gpt-5.6-sol", stream: true };
 
@@ -149,9 +150,8 @@ it("reconstructs Codex previous-response deltas on the same reusable connection"
   const prompt = "Read README.md for the source and docs discovery report.";
   const firstEvents = await read(prompt);
   const firstResponse = readCompletedResponse(firstEvents);
-  const output = firstResponse.output as JsonObject[];
-  const toolCall = output.find((item) => item.type === "function_call");
-  expect(toolCall?.call_id).toEqual(expect.any(String));
+  const toolCall = outputToolCall(firstResponse, "read");
+  expect(toolCall.call_id).toEqual(expect.any(String));
   const secondEvents = await send({
     ...streaming,
     previous_response_id: firstResponse.id,
@@ -169,59 +169,49 @@ it("reconstructs Codex previous-response deltas on the same reusable connection"
   });
 });
 
-it("preserves empty tool-result identity without replaying a native patch", async () => {
-  const { complete, debug } = await startConnection();
-  const prompt =
-    "tool search qa check target=apply_patch. Call apply_patch exactly once and then summarize.";
-  const initial = await complete({
-    tools: [{ type: "custom", name: "apply_patch" }],
-    input: userInput(prompt),
-  });
-  const call = (initial.output as JsonObject[])[0];
-  expect(call).toMatchObject({ type: "custom_tool_call", name: "apply_patch" });
-  const completed = await complete({
-    previous_response_id: initial.id,
-    input: [{ type: "custom_tool_call_output", call_id: call?.call_id, output: "" }],
-  });
-  expect(completed.output).toEqual([expect.objectContaining({ type: "message" })]);
-  const recorded = await debug("last-request");
-  expect(recorded).toMatchObject({ toolOutput: "", toolOutputCallId: call?.call_id });
-  expect(recorded).not.toHaveProperty("plannedToolName");
-});
+const customTool = { type: "custom", name: "apply_patch" };
+const namespacedTool = {
+  type: "namespace",
+  name: "openclaw_direct",
+  tools: [
+    { ...customTool, format: { type: "grammar", syntax: "lark", definition: "start: /.+/" } },
+  ],
+};
 
-it("preserves namespaced native custom-tool identity over Responses WebSocket", async () => {
-  const { send } = await startConnection();
-  const events = await send({
-    tools: [
-      {
-        type: "namespace",
-        name: "openclaw_direct",
-        tools: [
-          {
-            type: "custom",
-            name: "apply_patch",
-            format: { type: "grammar", syntax: "lark", definition: "start: /.+/" },
-          },
-        ],
-      },
-    ],
-    input: userInput(
-      "tool search qa check target=apply_patch. Call apply_patch exactly once and then summarize.",
-    ),
-  });
-  for (const item of [
-    ...["response.output_item.added", "response.output_item.done"].map((type) =>
-      requireRecord(events.find((event) => event.type === type)?.item, type),
-    ),
-    outputItem(readCompletedResponse(events)),
-  ]) {
-    expect(item).toMatchObject({
-      type: "custom_tool_call",
-      name: "apply_patch",
-      namespace: "openclaw_direct",
+it.each([false, true])(
+  "preserves native tool identity and empty results (namespaced=%s)",
+  async (namespaced) => {
+    const { send, complete, debug } = await startConnection();
+    const events = await send({
+      tools: [namespaced ? namespacedTool : customTool],
+      input: userInputs(
+        "tool search qa check target=apply_patch. Call apply_patch exactly once and then summarize.",
+      ),
     });
-  }
-});
+    const initial = readCompletedResponse(events);
+    const call = outputItem(initial);
+    for (const item of [
+      ...["response.output_item.added", "response.output_item.done"].map((type) =>
+        requireRecord(events.find((event) => event.type === type)?.item, type),
+      ),
+      call,
+    ]) {
+      expect(item).toMatchObject({
+        type: "custom_tool_call",
+        name: "apply_patch",
+        ...(namespaced ? { namespace: "openclaw_direct" } : {}),
+      });
+    }
+    const completed = await complete({
+      previous_response_id: initial.id,
+      input: [{ type: "custom_tool_call_output", call_id: call.call_id, output: "" }],
+    });
+    expect(completed.output).toEqual([expect.objectContaining({ type: "message" })]);
+    const recorded = await debug("last-request");
+    expect(recorded).toMatchObject({ toolOutput: "", toolOutputCallId: call.call_id });
+    expect(recorded).not.toHaveProperty("plannedToolName");
+  },
+);
 
 it("preserves the full warmup prompt when the first real response sends an empty delta", async () => {
   const { send, read, debug } = await startConnection();
@@ -246,10 +236,8 @@ it("preserves the full warmup prompt when the first real response sends an empty
 it("preserves the injected post-tool 503 failure on the WebSocket transport", async () => {
   const { send, read, debug } = await startConnection();
   const prompt = "Provider HTTP 503 after tool QA check: read QA_KICKOFF_TASK.md, then reply.";
-  const firstEvents = await read(prompt);
-  const firstResponse = readCompletedResponse(firstEvents);
-  const output = firstResponse.output as JsonObject[];
-  const toolCall = output.find((item) => item.type === "function_call");
+  const firstResponse = readCompletedResponse(await read(prompt));
+  const toolCall = outputToolCall(firstResponse, "read");
   const failure = await send({
     ...streaming,
     previous_response_id: firstResponse.id,
@@ -272,7 +260,7 @@ it("preserves the coded compaction overflow on the WebSocket transport", async (
   const failure = await send({
     ...streaming,
     client_metadata: { session_id: "compaction-websocket" },
-    input: userInput(`${QA_COMPACTION_RETRY_PROMPT}\n${"x".repeat(300_000)}`),
+    input: userInputs(`${QA_COMPACTION_RETRY_PROMPT}\n${"x".repeat(300_000)}`),
   });
   expectError(failure, 400, {
     type: "invalid_request_error",
