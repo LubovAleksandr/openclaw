@@ -2030,7 +2030,6 @@ export const PR_PROTECTED_RUNTIME_TEST_FILES: readonly string[] = [
   "src/commands/doctor-update-schema-guard.test.ts",
   "src/commands/doctor-update.test.ts",
   "src/commands/doctor-usage-cost-cache.test.ts",
-  "src/commands/doctor/auth-alias-import-recovery.test.ts",
   "src/commands/doctor/auth-alias-migration.test.ts",
   "src/commands/doctor/auth-alias-preservation.test.ts",
   "src/commands/doctor/cron/legacy-repair.test.ts",
