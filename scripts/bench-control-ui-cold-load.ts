@@ -670,6 +670,7 @@ const server =
       ? await startBuiltControlUiE2eServer(bundleDir, undefined, port)
       : await startProductionControlUiE2eServer(bundleDir, buildId);
 const baseUrl = gatewayUrl?.origin ?? gatewayHttpServer?.baseUrl ?? server!.baseUrl;
+const coldResetUrl = new URL("/__control-ui-bench-cold-reset__", baseUrl).href;
 const usesGatewayHttp = Boolean(gatewayUrl || gatewayHttpServer);
 const comparisonBundleDirs = values["compare-bundle-dir"].map((directory) =>
   path.resolve(directory),
@@ -681,22 +682,25 @@ async function selectComparisonBundle(index: number, page?: Page) {
   if (!comparisonBundleDirs.length || activeBundle === index) {
     return;
   }
+  const nextBuildId = explicitBuildId ?? (await readBundleBuildId(bundleSlots[index]!));
+  if (page) {
+    await page.evaluate((id) => {
+      const gateway = (window as MockGatewayWindow).openclawControlUiE2eGateway;
+      if (!gateway) {
+        throw new Error("Mock Gateway is not installed");
+      }
+      gateway.setServerBuildId(id);
+    }, nextBuildId);
+    // Retire lazy imports from the old page before its assets leave the served root.
+    await page.goto(coldResetUrl);
+  }
   if (gatewayHttpServer) {
     await gatewayHttpServer.selectBuild(bundleSlots[index]!);
   } else {
     await server!.replaceBuild(bundleSlots[index]!, bundleSlots[activeBundle]!);
   }
   activeBundle = index;
-  buildId =
-    explicitBuildId ??
-    (await readBundleBuildId(gatewayHttpServer ? bundleSlots[index]! : bundleDir));
-  await page?.evaluate((id) => {
-    const gateway = (window as MockGatewayWindow).openclawControlUiE2eGateway;
-    if (!gateway) {
-      throw new Error("Mock Gateway is not installed");
-    }
-    gateway.setServerBuildId(id);
-  }, buildId);
+  buildId = nextBuildId;
 }
 const dashboardFont = values["dashboard-widget"]
   ? await readFile("ui/public/fonts/space-grotesk-latin.woff2")
@@ -1239,8 +1243,7 @@ try {
       await route.fallback();
     });
   }
-  const coldResetUrl = new URL("/__control-ui-bench-cold-reset__", baseUrl).href;
-  if (firstLoad || values["layout-matrix"]) {
+  if (firstLoad || values["layout-matrix"] || comparisonBundleDirs.length) {
     await page.route(coldResetUrl, (route) =>
       route.fulfill({ body: "", contentType: "text/html" }),
     );
@@ -1536,8 +1539,9 @@ try {
     snapshotSaves.push(snapshotSave);
     for (let index = 1; index < bundleSlots.length; index++) {
       await restoreColdLoadWarmState(page, warmStorage);
+      const reloadUrl = page.url();
       await selectComparisonBundle(index, page);
-      await page.reload({ waitUntil: "domcontentloaded" });
+      await page.goto(reloadUrl, { waitUntil: "domcontentloaded" });
       await settle("chat");
       if (viewportName === "mobile") {
         await navigationDrawerToggle(page).click();
@@ -1578,7 +1582,9 @@ try {
     const runRoute = layoutCell?.route ?? bootRoute;
     const runUrl =
       runRoute === "chat"
-        ? chatUrl
+        ? values["chat-dashboard-route"]
+          ? controlUiSessionUrl(baseUrl, fixture.selectedSessionKey, "chat")
+          : chatUrl
         : new URL(runRoute === "settings" ? "/settings/appearance" : `/${runRoute}`, baseUrl).href;
     let reloadStorage = warmStates[bundleIndex];
     if (layoutCell) {
@@ -1784,7 +1790,13 @@ try {
         releaseBootAssets?.();
         await page.waitForLoadState("domcontentloaded");
       }
-    } else if (layoutCell || firstLoad || values["critical-path"] || bootRoute !== "chat") {
+    } else if (
+      layoutCell ||
+      firstLoad ||
+      values["critical-path"] ||
+      bootRoute !== "chat" ||
+      comparisonBundleDirs.length
+    ) {
       await page.goto(runUrl, { waitUntil: "domcontentloaded" });
     } else {
       await page.reload({ waitUntil: "domcontentloaded" });
