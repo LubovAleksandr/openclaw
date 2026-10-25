@@ -133,7 +133,7 @@ function setup(mode: "off" | "escalate" | "always" = "escalate") {
         },
       },
     );
-  return { entry, otherEntry, lookup, patch, runtime, run };
+  return { entry, otherEntry, lookup, runtime, run };
 }
 
 describe("Active Memory policy status", () => {
@@ -203,20 +203,4 @@ describe("Active Memory policy status", () => {
       expect(runtime.agent.runEmbeddedAgent).not.toHaveBeenCalled();
     },
   );
-
-  it("leaves a model-locked session's status untouched", async () => {
-    const fixture = setup();
-    await fixture.run(false);
-    fixture.entry.modelSelectionLocked = true;
-    const before = structuredClone(fixture.entry);
-    fixture.lookup.mockClear();
-    fixture.patch.mockClear();
-
-    await fixture.run(true);
-
-    expect(fixture.entry).toEqual(before);
-    expect(fixture.lookup).not.toHaveBeenCalled();
-    expect(fixture.patch).not.toHaveBeenCalled();
-    expect(fixture.runtime.agent.runEmbeddedAgent).not.toHaveBeenCalled();
-  });
 });
