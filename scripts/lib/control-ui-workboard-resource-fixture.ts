@@ -256,6 +256,7 @@ async function exerciseNativeToggleCancellation(page: Page, settle: (page: Page)
     };
   });
   try {
+    await first.hover();
     await first.locator(".workboard-card__menu-trigger").click();
     await page.waitForFunction(
       ({ state }) =>
@@ -556,6 +557,7 @@ export async function exerciseWorkboardResourceFixture(
       };
     });
   try {
+    await first.hover();
     await first.locator(".workboard-card__menu-trigger").click();
     await first.locator(".workboard-card__action-menu-panel:popover-open").waitFor();
     await page.waitForFunction(
