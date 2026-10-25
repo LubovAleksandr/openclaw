@@ -177,6 +177,15 @@ it.each([
     autoNodeExtraCaCerts: discovered,
     platform,
   });
+  if (platform === "win32") {
+    expect(respawnPlan.argv).toEqual([
+      "--import",
+      CLI_PARENT_BOUND_PRELOAD,
+      "--stack-size=8192",
+      "openclaw",
+      "status",
+    ]);
+  }
 
   expect([respawnPlan.env.NODE_EXTRA_CA_CERTS, respawnPlan.env[caReady]]).toEqual([
     expected,
@@ -222,7 +231,7 @@ it("records status after the respawn child closes", async () => {
   };
   const completion = runCliRespawnPlan(plan, writeError);
 
-  expect(spawn).toHaveBeenCalledWith(plan.command, plan.argv, {
+  expect(spawn).toHaveBeenCalledExactlyOnceWith(plan.command, plan.argv, {
     stdio: ["inherit", "inherit", "inherit", "ipc"],
     env: plan.env,
     detached: process.platform !== "win32" && !(process.stdin.isTTY || process.stdout.isTTY),
