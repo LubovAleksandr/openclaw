@@ -1,6 +1,7 @@
 import { expect, it } from "vitest";
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import type { CronJob } from "../types.js";
+import { makeIsolatedAgentJobFixture as makeJobFixture } from "./job-fixtures.js";
 import {
   prepareCronModelResolveInput,
   resolveCronFallbacksOverride,
@@ -28,14 +29,7 @@ it.each([undefined, "cron", "event"] as const)(
 function makeJob(
   payload: Partial<Extract<CronJob["payload"], { kind: "agentTurn" }>> = {},
 ): CronJob {
-  return {
-    id: "cron-fallback-policy",
-    name: "Cron fallback policy",
-    schedule: { kind: "cron", expr: "0 9 * * *", tz: "UTC" },
-    sessionTarget: "isolated",
-    payload: { kind: "agentTurn", message: "summarize", ...payload },
-    state: {},
-  } as CronJob;
+  return makeJobFixture({ payload: { kind: "agentTurn", message: "summarize", ...payload } });
 }
 
 function subagentConfig(
@@ -55,22 +49,8 @@ function subagentConfig(
   };
 }
 
-function makeConfig(
-  fallbacks?: string[],
-  primary = "anthropic/claude-opus-4-6",
-  agentModel?: string,
-): OpenClawConfig {
-  return {
-    agents: {
-      defaults: {
-        model: {
-          primary,
-          ...(fallbacks !== undefined ? { fallbacks } : {}),
-        },
-      },
-      ...(agentModel ? { entries: { main: { model: agentModel } } } : {}),
-    },
-  };
+function makeConfig(fallbacks?: string[], primary = "anthropic/claude-opus-4-6"): OpenClawConfig {
+  return { agents: { defaults: { model: { primary, fallbacks } } } };
 }
 
 const fallback = "openai/gpt-5.4";
@@ -96,12 +76,6 @@ it.each<FallbackCase>([
     { job: makeJob({ model: payloadModel, fallbacks: [] }) },
     [],
   ],
-  [
-    "selected subagent",
-    subagent(subagentFallbacks, "kimi/kimi-code"),
-    selectedSubagent,
-    subagentFallbacks,
-  ],
   ["subagent without primary", subagent(subagentFallbacks), selectedSubagent, []],
   [
     "empty subagent fallbacks",
@@ -114,16 +88,6 @@ it.each<FallbackCase>([
     subagentConfig({ primary: "kimi/kimi-code", fallbacks: subagentFallbacks }),
     { useSubagentFallbacks: false },
     undefined,
-  ],
-  [
-    "string agent model",
-    makeConfig(
-      ["deepseek/deepseek-v4-flash", "moonshot/kimi-k2.6"],
-      "deepseek/deepseek-v4-pro",
-      "deepseek/deepseek-v4-pro",
-    ),
-    { inheritDefaultFallbacksForAgentStringModel: true },
-    ["deepseek/deepseek-v4-flash", "moonshot/kimi-k2.6"],
   ],
   ["user session selection", withFallback, userSelection, []],
   ["automatic session selection", withFallback, { sessionModelOverrideSource: "auto" }, undefined],

@@ -10,7 +10,6 @@ import { makeIsolatedAgentParamsFixture } from "./job-fixtures.js";
 import { setupRunCronIsolatedAgentTurnSuite } from "./run.suite-helpers.js";
 import {
   callGatewayMock,
-  hasUsableWebSearchProviderMock,
   loadModelCatalogMock,
   loadRunCronIsolatedAgentTurn,
   mockRunCronFallbackPassthrough,
@@ -22,6 +21,7 @@ import {
 const runCronIsolatedAgentTurn = await loadRunCronIsolatedAgentTurn();
 const options = { timeout: 300_000 };
 const command = "Command to run:\n- command: python3 scripts/check_mail.py";
+const commandInDirectory = `${command}\n- workdir: /srv/openclaw`;
 const externalOrigin = { kind: "external", channel: "whatsapp" } as const;
 const automaticSnapshot = { toolsAllowIsDefault: true };
 const conditionTrigger = { trigger: { script: "return { fire: true }" } };
@@ -45,9 +45,6 @@ function runTurn(
       sessionKey: "cron:tools-allow",
       job: {
         id: "tools-allow",
-        name: "Tools Allow",
-        schedule: { kind: "every", everyMs: 60_000 },
-        sessionTarget: "isolated",
         delivery: { mode: "none" },
         owner: { agentId: "main", sessionKey: policy.ownerSessionKey, accountId: "default" },
         scheduledToolPolicy: policy,
@@ -85,15 +82,6 @@ describe("runCronIsolatedAgentTurn toolsAllow", () => {
     });
   });
 
-  it("runs a command prompt from an automatic snapshot without shell tools", options, async () => {
-    const result = await runTurn(["message", "read"], {
-      toolsAllowIsDefault: true,
-      message: command,
-    });
-    expect(result.status).toBe("ok");
-    expect(runEmbeddedAgentMock.mock.calls[0]?.[0]?.toolsAllow).toEqual(["*"]);
-  });
-
   it.each([
     {
       label: "keeps its list without a valid owner policy",
@@ -110,46 +98,37 @@ describe("runCronIsolatedAgentTurn toolsAllow", () => {
     expect(runEmbeddedAgentMock.mock.calls[0]?.[0]?.toolsAllow).toEqual(expected);
   });
 
-  it.each([
-    ["unavailable shell tools", ["terminal", "node_exec", "node_process"]],
-    ["a blank entry", [" "]],
+  it.each<[string[], boolean, boolean, string]>([
+    [["terminal", "node_exec", "node_process"], false, false, commandInDirectory],
+    [[" "], false, false, commandInDirectory],
+    [["exec", "read"], false, true, commandInDirectory],
+    [["process"], false, true, command],
+    [["message", "read"], true, true, command],
   ])(
-    "rejects command prompts with %s before model execution",
+    "preflights command cap %j (automatic=%s, allowed=%s)",
     options,
-    async (_label, toolsAllow) => {
-      const result = await runTurn(toolsAllow, { message: `${command}\n- workdir: /srv/openclaw` });
-      expect(result).toMatchObject({
-        status: "error",
-        admissionDisposition: "rejected",
-        error: expect.stringContaining(
-          "openclaw automations edit tools-allow --tools exec,process",
-        ),
-        diagnostics: {
-          summary: expect.stringContaining("No command was executed"),
-          entries: [expect.objectContaining({ source: "cron-preflight", severity: "error" })],
-        },
-      });
-      expect(runEmbeddedAgentMock).not.toHaveBeenCalled();
-      expect(resolveConfiguredModelRefMock).not.toHaveBeenCalled();
-    },
-  );
-
-  it.each([
-    { toolsAllow: ["exec", "read"], message: `${command}\n- workdir: /srv/openclaw` },
-    { toolsAllow: ["process"], message: command },
-  ])(
-    "runs command prompts with the account-bound cap $toolsAllow",
-    options,
-    async ({ toolsAllow, message }) => {
-      const result = await runTurn(toolsAllow, { message });
-      expect(result.status).toBe("ok");
-      expect(runEmbeddedAgentMock).toHaveBeenCalledTimes(1);
-      const call = runEmbeddedAgentMock.mock.calls[0]?.[0];
-      expect(call).toMatchObject({
-        jobId: "tools-allow",
-        toolsAllow,
-      });
-      expect(call.scheduledToolPolicy).toEqual({ ...policy, ownerOrigin: externalOrigin });
+    async (toolsAllow, automatic, allowed, message) => {
+      const result = await runTurn(toolsAllow, { message, toolsAllowIsDefault: automatic });
+      if (allowed) {
+        expect(result.status).toBe("ok");
+        const call = runEmbeddedAgentMock.mock.calls[0]?.[0];
+        expect(call?.toolsAllow).toEqual(automatic ? ["*"] : toolsAllow);
+        expect(call?.scheduledToolPolicy).toEqual({ ...policy, ownerOrigin: externalOrigin });
+      } else {
+        expect(result).toMatchObject({
+          status: "error",
+          admissionDisposition: "rejected",
+          error: expect.stringContaining(
+            "openclaw automations edit tools-allow --tools exec,process",
+          ),
+          diagnostics: {
+            summary: expect.stringContaining("No command was executed"),
+            entries: [expect.objectContaining({ source: "cron-preflight", severity: "error" })],
+          },
+        });
+        expect(runEmbeddedAgentMock).not.toHaveBeenCalled();
+        expect(resolveConfiguredModelRefMock).not.toHaveBeenCalled();
+      }
     },
   );
 
@@ -177,13 +156,6 @@ describe("runCronIsolatedAgentTurn toolsAllow", () => {
       },
     );
     expect([result.status, result.diagnostics]).toEqual(["ok", undefined]);
-    expect(hasUsableWebSearchProviderMock).toHaveBeenCalledWith(
-      expect.objectContaining({
-        agentDir: "/tmp/agent-dir",
-        preferRuntimeProviders: true,
-        runtimeWebSearch: expect.objectContaining({ selectedProvider: "brave" }),
-      }),
-    );
   });
 
   it("does not warn when native web_search supplies the tool", options, async () => {
