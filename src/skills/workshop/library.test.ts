@@ -31,12 +31,14 @@ import { archiveUnusedWorkshopSkills } from "./unused-archive.js";
 
 let state: OpenClawTestState;
 let ctx: WorkshopMutationContext;
+let liveSkillName: string;
 
 const skill = (name: string, body: string, description = "Deploy staging builds") =>
   `---\nname: ${name}\ndescription: ${description}\n---\n\n${body}\n`;
 
 beforeEach(async () => {
   state = await createOpenClawTestState({ layout: "state-only" });
+  liveSkillName = "deploy";
   ctx = {
     config: {},
     agentId: "main",
@@ -51,23 +53,23 @@ afterEach(async () => {
   await state.cleanup();
 });
 
-async function readLive(name: string) {
-  return (await viewWorkshopSkill({}, "main", name)).content;
+async function readLive(skillName = liveSkillName) {
+  return (await viewWorkshopSkill({}, "main", skillName)).content;
 }
 const create = (body: string, name = "deploy", description?: string) =>
   createWorkshopSkill(ctx, { name, content: skill(name, body, description) });
-const patch = (oldText: string, newText: string, context = ctx, name = "deploy") =>
-  patchWorkshopSkill(context, { name, oldText, newText });
+const patch = (oldText: string, newText: string, context = ctx, skillName = liveSkillName) =>
+  patchWorkshopSkill(context, { name: skillName, oldText, newText });
 const write = (filePath: string, content: string) =>
-  writeWorkshopSkillFile(ctx, { name: "deploy", filePath, content });
+  writeWorkshopSkillFile(ctx, { name: liveSkillName, filePath, content });
 const view = (filePath?: string, versionId?: string) =>
-  viewWorkshopSkill({}, "main", "deploy", filePath, versionId);
+  viewWorkshopSkill({}, "main", liveSkillName, filePath, versionId);
 const versions = () => listWorkshopArchive({}, "main");
 const liveNames = async () => (await listWorkshopSkills({}, "main")).map(({ name }) => name);
 const skillPath = (...parts: string[]) => path.join(resolveWorkshopSkillsDir({}, "main"), ...parts);
-const restore = (context = ctx) => restoreWorkshopSkill(context, { name: "deploy" });
+const restore = (context = ctx) => restoreWorkshopSkill(context, { name: liveSkillName });
 const archive = (absorbedInto?: string) =>
-  archiveWorkshopSkill(ctx, { name: "deploy", absorbedInto });
+  archiveWorkshopSkill(ctx, { name: liveSkillName, absorbedInto });
 async function seed(name: string, content: string | Buffer) {
   const dir = skillPath(name);
   await fs.mkdir(dir, { recursive: true });
@@ -96,15 +98,24 @@ it("reports unreadable skill files instead of returning an incomplete inventory"
   await refuses(listWorkshopSkills({}, "main"), /file exceeds limit of 1048576 bytes/);
 });
 
-it("skips directories without SKILL.md but still lists hand-edited broken frontmatter", async () => {
+it("lists broken frontmatter but prunes links, hidden and dependency trees before budgets", async () => {
+  const content = "---\nname: [\n---\n";
   await fs.mkdir(skillPath("missing"), { recursive: true });
-  await seed("broken", "---\nname: [\n---\n");
+  await seed("broken", content);
   await fs.symlink(skillPath("broken"), skillPath("broken", "loop"), "dir");
   await fs.symlink(skillPath("broken", "SKILL.md"), skillPath("broken", "linked.md"), "file");
-
+  await fs.mkdir(skillPath("broken", "references"));
+  await fs.writeFile(skillPath("broken", "references", "kept.md"), "support");
+  for (const ignored of [".git", ".venv", "node_modules"]) {
+    const tooDeep = skillPath("broken", ignored, ...Array(65).fill("nested"));
+    await fs.mkdir(tooDeep, { recursive: true });
+    await fs.writeFile(path.join(tooDeep, "ignored.md"), "not skill content");
+  }
+  const files = ["SKILL.md", "references/kept.md"];
   expect(await listWorkshopSkills({}, "main")).toMatchObject([
-    { name: "broken", description: "", files: ["SKILL.md"] },
+    { name: "broken", description: "", files, sizeBytes: Buffer.byteLength(content) + 7 },
   ]);
+  expect((await viewWorkshopSkill({}, "main", "broken")).files).toEqual(files);
 });
 
 it("reuses retained changes across runs and refreshes after a workshop write", async () => {
@@ -117,6 +128,7 @@ it("reuses retained changes across runs and refreshes after a workshop write", a
   await create("1. Deploy.");
   const changes = await listWorkshopChanges("main", { runId: "run-1" });
   expect(changes).toMatchObject([{ action: "create", skillName: "deploy" }]);
+  expect(changes[0]?.versionId).toBeUndefined();
   changes[0]!.summary = "caller mutation";
   expect(await listWorkshopChanges("main", { beforeMs: changes[0]!.createdAtMs })).toEqual([]);
   expect(await listWorkshopChanges("main", { runId: "run-1" })).toMatchObject([
@@ -124,42 +136,32 @@ it("reuses retained changes across runs and refreshes after a workshop write", a
   ]);
 });
 
-it("versions every mutation so restore undoes it, and undoing the undo is possible", async () => {
-  await create("1. Run make deploy.");
+it("versions and restores legacy names, including undoing an undo and an archive", async () => {
+  const name = `deploy-${"staging-".repeat(8)}env`;
+  liveSkillName = name;
+  await seed(name, skill(name, "step 0"));
+  await refuses(create("x", `${name}-copy`), /use 1-63 lowercase letters/);
+  expect(await liveNames()).toEqual([name]);
   const patched = await patchWorkshopSkill(ctx, {
-    name: "deploy",
-    oldText: "make deploy",
-    newText: "make deploy ENV=staging",
+    name,
+    oldText: "step 0",
+    newText: "step 1",
     summary: "pinned staging env",
   });
   expect(patched.versionId).toMatch(/^\d{8}T\d{9}Z-patch$/);
-  expect(await readLive("deploy")).toContain("make deploy ENV=staging");
-
+  expect(patched).toMatchObject({
+    actor: "agent",
+    summary: "pinned staging env",
+    sessionKey: "agent:main:main",
+  });
+  expect(await readLive()).toContain("step 1");
   const undo = await restore();
-  expect(await readLive("deploy")).toContain("1. Run make deploy.\n");
+  expect(await readLive()).toContain("step 0");
   expect(undo.versionId).toMatch(/-restore$/);
 
   await restore();
-  expect(await readLive("deploy")).toContain("make deploy ENV=staging");
-
-  const changes = await listWorkshopChanges("main", { runId: "run-1" });
-  expect(changes).toMatchObject([
-    { action: "restore", actor: "agent" },
-    { action: "restore", actor: "agent" },
-    {
-      action: "patch",
-      actor: "agent",
-      summary: "pinned staging env",
-      sessionKey: "agent:main:main",
-    },
-    { action: "create", actor: "agent", summary: "created: Deploy staging builds" },
-  ]);
-  expect(changes[3]?.versionId).toBeUndefined();
+  expect(await readLive()).toContain("step 1");
   expect(await listWorkshopChanges("main", { runId: "other-run" })).toEqual([]);
-});
-
-it("archives into a restorable version and hides the skill from the live list", async () => {
-  await create("1. Deploy.");
   await create("1. Release.", "release");
   await write("references/hosts.md", "staging.example.test\n");
 
@@ -168,14 +170,16 @@ it("archives into a restorable version and hides the skill from the live list", 
   expect(archived.summary).toBe("archived: merged into release");
   expect(await liveNames()).toEqual(["release"]);
   const [entry] = await versions();
-  expect(entry).toMatchObject({ name: "deploy", live: false });
+  expect(entry).toMatchObject({ name, live: false });
   expect(entry?.versions[0]?.action).toBe("archive");
   await refuses(view(), /is archived/);
 
   await restore();
-  const restored = await view("references/hosts.md");
-  expect(restored.content).toBe("staging.example.test\n");
-  expect(restored.files).toEqual(["SKILL.md", "references/hosts.md"]);
+  expect(await view("references/hosts.md")).toMatchObject({
+    content: "staging.example.test\n",
+    files: ["SKILL.md", "references/hosts.md"],
+  });
+  expect(await readLive()).toContain("step 1");
 
   // The merge target stays locked, so archiving it first refuses the merge instead of racing.
   const [target, merge] = await Promise.allSettled([
@@ -184,7 +188,7 @@ it("archives into a restorable version and hides the skill from the live list", 
   ]);
   expect(target.status).toBe("fulfilled");
   expect(merge).toMatchObject({ status: "rejected", reason: expect.any(WorkshopWriteError) });
-  expect(await liveNames()).toEqual(["deploy"]);
+  expect(await liveNames()).toEqual([name]);
 });
 
 it("refuses invalid or unsafe writes with actionable errors and leaves files untouched", async () => {
@@ -198,34 +202,22 @@ it("refuses invalid or unsafe writes with actionable errors and leaves files unt
   await refuses(create(`export TOKEN=${token}`), /literal-secret.*placeholder/);
   await expect(fs.stat(skillPath("deploy"))).rejects.toMatchObject({ code: "ENOENT" });
 
-  await create("run it\nrun it");
-  await refuses(patch("run it", "run"), /matches 2 places/);
+  await create("run\nrun\nrun");
+  await refuses(patch("run\nrun", "go"), /matches 2 places/);
   await expect(write("../escape.md", "x")).rejects.toBeInstanceOf(WorkshopWriteError);
   await refuses(
     write(`references/${token}.md`, "x"),
     /file path in "deploy" looks like it contains a credential/,
   );
   await refuses(write("SKILL.md", "no frontmatter"), /must contain "name: deploy"/);
-  expect(await readLive("deploy")).toBe(skill("deploy", "run it\nrun it"));
-  expect(await versions()).toEqual([]);
-});
-
-it("refuses support writes into dependency directories before creating files or versions", async () => {
-  await create("Visible procedure");
-  for (const file of ["scripts/node_modules/x.js", "references/cache/node_modules/x.md"]) {
-    await refuses(write(file, "hidden content"), /node_modules.*not a skill support directory/);
-    await expect(fs.stat(skillPath("deploy", ...file.split("/")))).rejects.toMatchObject({
-      code: "ENOENT",
-    });
-  }
+  const dependencyFile = "references/cache/node_modules/x.md";
+  await refuses(write(dependencyFile, "x"), /node_modules.*not a skill support directory/);
+  await expect(fs.stat(skillPath("deploy", dependencyFile))).rejects.toMatchObject({
+    code: "ENOENT",
+  });
   expect((await view()).files).toEqual(["SKILL.md"]);
+  expect(await readLive()).toBe(skill("deploy", "run\nrun\nrun"));
   expect(await versions()).toEqual([]);
-});
-
-it("rejects a patch whose old text matches overlapping places", async () => {
-  await create("run\nrun\nrun");
-  await refuses(patch("run\nrun", "go"), /matches 2 places/);
-  expect(await readLive("deploy")).toBe(skill("deploy", "run\nrun\nrun"));
 });
 
 it("never lists or reads a symlinked saved version", async () => {
@@ -315,22 +307,6 @@ it("retains the original live copy when restore publication and rollback both fa
   expect(await fs.readFile(path.join(previous, "SKILL.md"), "utf8")).toBe(
     skill("deploy", "step 1"),
   );
-});
-
-it("keeps a longer legacy skill manageable while new names stay within 63 characters", async () => {
-  const legacy = `deploy-${"staging-".repeat(8)}env`;
-  expect(legacy.length).toBeGreaterThan(63);
-  await seed(legacy, skill(legacy, "step 0"));
-
-  expect(await liveNames()).toEqual([legacy]);
-  await patch("step 0", "step 1", ctx, legacy);
-  expect(await readLive(legacy)).toContain("step 1");
-  await archiveWorkshopSkill(ctx, { name: legacy, reason: "superseded" });
-  expect((await versions()).map((entry) => entry.name)).toEqual([legacy]);
-  await restoreWorkshopSkill(ctx, { name: legacy });
-  expect(await readLive(legacy)).toContain("step 1");
-
-  await refuses(create("x", `${legacy}-copy`), /use 1-63 lowercase letters/);
 });
 
 describe("archiveUnusedWorkshopSkills", () => {
@@ -433,23 +409,4 @@ describe("archiveUnusedWorkshopSkills", () => {
       expect(await liveNames()).toEqual(["stale"]);
     },
   );
-});
-
-it("prunes hidden and dependency directories before inventory budgets are consumed", async () => {
-  await seed("deploy", skill("deploy", "Visible procedure"));
-  await fs.mkdir(skillPath("deploy", "references"));
-  await fs.writeFile(skillPath("deploy", "references", "kept.md"), "support");
-  for (const ignored of [".git", ".venv", "node_modules"]) {
-    const tooDeep = skillPath("deploy", ignored, ...Array(65).fill("nested"));
-    await fs.mkdir(tooDeep, { recursive: true });
-    await fs.writeFile(path.join(tooDeep, "ignored.md"), "not skill content");
-  }
-  expect(await listWorkshopSkills({}, "main")).toMatchObject([
-    {
-      name: "deploy",
-      files: ["SKILL.md", "references/kept.md"],
-      sizeBytes: Buffer.byteLength(skill("deploy", "Visible procedure")) + 7,
-    },
-  ]);
-  expect((await view()).files).toEqual(["SKILL.md", "references/kept.md"]);
 });

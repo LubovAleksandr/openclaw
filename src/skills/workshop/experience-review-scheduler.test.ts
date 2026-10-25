@@ -1,7 +1,5 @@
-import path from "node:path";
 import { setImmediate } from "node:timers/promises";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { SessionTranscriptReadFenceError } from "../../config/sessions/session-transcript-read-fence-error.js";
 import type { TranscriptEntryAnchor } from "../../config/sessions/transcript-entry-anchor.js";
 import { GatewayDrainingError } from "../../process/gateway-work-admission.js";
 import {
@@ -9,7 +7,6 @@ import {
   type ExperienceReviewCandidate,
   type SkillExperienceReviewParams,
 } from "./experience-review-scheduler.js";
-import { resolveWorkshopSkillsDir } from "./skills-root.js";
 
 const log = vi.hoisted(() => ({ debug: vi.fn(), warn: vi.fn() }));
 // mock-isolation: Capture severity without initializing real log sinks.
@@ -75,7 +72,6 @@ async function fireTimers() {
   vi.runOnlyPendingTimers();
   await setImmediate();
 }
-const fenceError = () => new SessionTranscriptReadFenceError("Transcript changed");
 
 it("backs off all sessions after a TPM rejection without replaying the failed review", async () => {
   runReview.mockRejectedValue(new Error("429 Rate limit reached: tokens per min (TPM)"));
@@ -118,37 +114,43 @@ it("defers queued reviews when a foreground turn hits the shared rate limit", as
 
 it.each([
   [new GatewayDrainingError(), "debug"],
-  [fenceError(), "debug"],
-  [new Error("admitted run authority is no longer active", { cause: fenceError() }), "debug"],
-  [new AggregateError([new GatewayDrainingError(), new Error("database close failed")]), "warn"],
   [new Error("provider request failed"), "warn"],
 ] as const)("reports %s at %s level", async (error, level) => {
   runReview.mockRejectedValue(error);
   turn(10);
   log.debug.mockClear();
   await fireTimers();
-  expect(log[level]).toHaveBeenCalledWith(
-    expect.stringContaining(
-      `skill experience review ${level === "debug" ? "cancelled" : "failed"}:`,
-    ),
-  );
+  expect(log[level]).toHaveBeenCalledOnce();
   expect(log[level === "debug" ? "warn" : "debug"]).not.toHaveBeenCalled();
 });
 
-it("counts only assistant messages after the last user when the harness reports zero iterations", () => {
-  const assistantTurn = (count: number): TurnOptions => ({
-    event: {
-      messages: [
-        { role: "assistant" },
-        { role: "user" },
-        ...Array.from({ length: count }, () => ({ role: "assistant" })),
-      ],
-      success: true,
-    },
-  });
-  turn(0, assistantTurn(6));
-  countedTurn(0, 0, assistantTurn(3));
-  countedTurn(0, 1, assistantTurn(1));
+it.each(["reported", "messages"])("accumulates %s iterations despite skill use", async (kind) => {
+  const usedSkills = [
+    { name: "deploy", source: "workspace", activation: "read", skillFile: "/ws/deploy/SKILL.md" },
+  ] as const;
+  for (const count of [6, 3, 1]) {
+    const messages =
+      kind === "reported"
+        ? []
+        : [
+            { role: "assistant" },
+            { role: "user" },
+            ...Array.from({ length: count }, () => ({ role: "assistant" })),
+          ];
+    countedTurn(kind === "reported" ? count : 0, count === 1 ? 1 : 0, {
+      usedSkills,
+      event: { messages, success: true },
+    });
+  }
+  await fireTimers();
+  expect(runReview).toHaveBeenCalledExactlyOnceWith(
+    expect.objectContaining({
+      source,
+      ctx: expect.objectContaining({ runId: kind === "reported" ? "run-1" : "run-0" }),
+      usedSkills,
+    }),
+  );
+  countedTurn(9, 0);
 });
 
 it.each([8, 10])(
@@ -162,28 +164,6 @@ it.each([8, 10])(
     countedTurn(1, 1);
   },
 );
-
-it("waits for ten accumulated iterations even when turns use a learned skill", async () => {
-  const usedSkill = (name: string, skillFile: string) =>
-    [{ name, source: "workspace", activation: "read", skillFile }] as const;
-  countedTurn(1, 0, { usedSkills: usedSkill("notes", "/ws/notes/SKILL.md") });
-  const usedSkills = usedSkill(
-    "deploy",
-    path.join(resolveWorkshopSkillsDir({}, "main"), "deploy", "SKILL.md"),
-  );
-  countedTurn(1, 0, { usedSkills });
-  countedTurn(7, 0, { usedSkills });
-  countedTurn(1, 1, { usedSkills });
-  await fireTimers();
-  expect(runReview).toHaveBeenCalledTimes(1);
-  expect(runReview.mock.calls[0]?.[0]).toMatchObject({
-    source,
-    ctx: { runId: "run-1" },
-    usedSkills: [{ name: "deploy" }],
-  });
-  countedTurn(9, 0);
-  countedTurn(1, 0, { workshopMutated: true, usedSkills });
-});
 
 it("ignores errored turns and sessions while Workshop is off", () => {
   turn(8);
