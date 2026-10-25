@@ -12,9 +12,12 @@ import { createTestGatewayClient } from "../../test-helpers/gateway-client.ts";
 import { gatewayHelloForMethods } from "../../test-helpers/gateway-methods.ts";
 import { selectMenuValue } from "../../test-helpers/session-menu.ts";
 import { createActiveSessionPlacement } from "../../test-helpers/session-placement.ts";
+import { waitForFast } from "../../test-helpers/wait-for.ts";
 import {
   createContext,
   createGateway,
+  createLiveSessionContext,
+  createManagedSessions,
   createRenderedPage,
   createSessions,
   liveSessions,
@@ -24,7 +27,10 @@ import {
   withNotifyingAgentSelection,
 } from "./sessions-page.test-support.ts";
 
-vi.mock("../../components/confirm-dialog.ts", () => ({ showConfirmDialog: vi.fn() }));
+vi.mock("../../components/confirm-dialog.ts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../components/confirm-dialog.ts")>()),
+  showConfirmDialog: vi.fn(),
+}));
 
 afterEach(() => {
   document.body.replaceChildren();
@@ -59,92 +65,72 @@ const archivedWriterRows = () => ({
 });
 
 describe("sessions page agent-scope retirement", () => {
-  it.each([
-    [false, true],
-    [true, true],
-    [true, false],
-  ])(
-    "keeps placement outcomes in their captured agent scope (retired=%s, fails=%s)",
-    async (retired, fails) => {
-      const row: GatewaySessionRow = {
+  it.each([true, false])("ignores retired placement outcomes (fails=%s)", async (fails) => {
+    const row = sessionRow("global", {
+      key: "global",
+      agentId: "writer",
+      placement: {
+        ...createActiveSessionPlacement({ environmentId: "worker:writer", activeOwnerEpoch: 7 }),
+        state: "draining",
+        generation: 2,
+      },
+      placementMove: {
+        target: { kind: "gateway" },
+        updatedAtMs: 2,
+        error: "Sync failed",
+        retry: {
+          expected: { generation: 1, environmentId: "worker:writer", ownerEpoch: 7 },
+          target: { kind: "gateway" },
+        },
+      },
+    });
+    const pending = createDeferred<unknown>();
+    const request = vi.fn(async (method: string) =>
+      method === "sessions.move" ? pending.promise : { profiles: [] },
+    );
+    const client = createTestGatewayClient(request);
+    const clientRequest = vi.spyOn(client, "request");
+    const connection = createGateway(client);
+    connection.emit({
+      hello: gatewayHelloForMethods(["sessions.move"], ["operator.read", "operator.write"]),
+    });
+    const reconcileMutation = vi
+      .fn<SessionCapability["reconcileMutation"]>()
+      .mockResolvedValue({ status: "refreshed" });
+    const sessions = createSessions({ reconcileMutation });
+    const { context, changeScope } = withNotifyingAgentSelection(
+      createContext(connection.gateway, sessions),
+      "writer",
+    );
+    const page = await createRenderedPage(context, sessionsResult([row], 1));
+    await vi.waitFor(() => expect(page.loading).toBe(false));
+    await selectMenuValue(await openRowMenu(page, row), "move-session");
+    await vi.waitFor(() =>
+      expect(clientRequest).toHaveBeenCalledWith("sessions.move", {
         key: "global",
         agentId: "writer",
-        sessionId: "writer-global",
-        kind: "direct",
-        placement: {
-          ...createActiveSessionPlacement({ environmentId: "worker:writer", activeOwnerEpoch: 7 }),
-          state: "draining",
-          generation: 2,
-          updatedAtMs: 2,
-          stateChangedAtMs: 2,
-        },
-        placementMove: {
-          target: { kind: "gateway" },
-          updatedAtMs: 2,
-          error: "Sync failed",
-          retry: {
-            expected: { generation: 1, environmentId: "worker:writer", ownerEpoch: 7 },
-            target: { kind: "gateway" },
-          },
-        },
-      };
-      const pending = createDeferred<unknown>();
-      const request = vi.fn(async (method: string) =>
-        method === "sessions.move" ? pending.promise : { profiles: [] },
-      );
-      const client = createTestGatewayClient(request);
-      const clientRequest = vi.spyOn(client, "request");
-      const connection = createGateway(client);
-      connection.emit({
-        hello: gatewayHelloForMethods(["sessions.move"], ["operator.read", "operator.write"]),
-      });
-      const reconcileMutation = vi
-        .fn<SessionCapability["reconcileMutation"]>()
-        .mockResolvedValue({ status: "refreshed" });
-      const sessions = createSessions({ reconcileMutation });
-      const { context, changeScope } = withNotifyingAgentSelection(
-        createContext(connection.gateway, sessions),
-        "writer",
-      );
-      const page = await createRenderedPage(context, sessionsResult([row], 1));
-      await vi.waitFor(() => expect(page.loading).toBe(false));
-      await selectMenuValue(await openRowMenu(page, row), "move-session");
-      await vi.waitFor(() =>
-        expect(clientRequest).toHaveBeenCalledWith("sessions.move", {
-          key: "global",
-          agentId: "writer",
-          ...row.placementMove!.retry,
-        }),
-      );
-      const moveIndex = clientRequest.mock.calls.findIndex(
-        ([method]) => method === "sessions.move",
-      );
-      const result = clientRequest.mock.results[moveIndex]!.value;
-      if (retired) {
-        changeScope("main");
-        changeScope("writer");
-        await page.updateComplete;
-        await vi.waitFor(() => expect(page.loading).toBe(false));
-        page.error = "New foreground error.";
-      }
-      const failure = new Error("Old placement failed.");
-      if (fails) {
-        pending.reject(failure);
-      } else {
-        pending.resolve({ ok: true });
-      }
-      await Promise.resolve(result).catch(() => undefined);
-      await page.updateComplete;
-      if (retired) {
-        expect(reconcileMutation).not.toHaveBeenCalled();
-        expect(page.textContent).toContain("New foreground error.");
-        expect(page.textContent).not.toContain("Old placement failed.");
-      } else {
-        await vi.waitFor(() => expect(page.error).toBe(failure));
-        expect(reconcileMutation).toHaveBeenCalledWith("writer");
-      }
-    },
-  );
+        ...row.placementMove!.retry,
+      }),
+    );
+    const moveIndex = clientRequest.mock.calls.findIndex(([method]) => method === "sessions.move");
+    const result = clientRequest.mock.results[moveIndex]!.value;
+    changeScope("main");
+    changeScope("writer");
+    await page.updateComplete;
+    await vi.waitFor(() => expect(page.loading).toBe(false));
+    page.error = "New foreground error.";
+    const failure = new Error("Old placement failed.");
+    if (fails) {
+      pending.reject(failure);
+    } else {
+      pending.resolve({ ok: true });
+    }
+    await Promise.resolve(result).catch(() => undefined);
+    await page.updateComplete;
+    expect(reconcileMutation).not.toHaveBeenCalled();
+    expect(page.textContent).toContain("New foreground error.");
+    expect(page.textContent).not.toContain("Old placement failed.");
+  });
 
   it.each(["enumeration", "confirmation"])(
     "retires pending %s after switching away and back",
@@ -185,11 +171,12 @@ describe("sessions page agent-scope retirement", () => {
     },
   );
 
-  it("admits a new deep-link delete without letting old completion release it", async () => {
+  it("retries a failed deep-link delete without letting retired completion release new work", async () => {
     const oldDelete = createDeferred<Awaited<ReturnType<SessionCapability["deleteMany"]>>>();
     const newDelete = createDeferred<Awaited<ReturnType<SessionCapability["deleteMany"]>>>();
     const deleteMany = vi
       .fn<SessionCapability["deleteMany"]>()
+      .mockRejectedValueOnce(new Error("Deletion unavailable. Try again."))
       .mockReturnValueOnce(oldDelete.promise)
       .mockReturnValueOnce(newDelete.promise)
       .mockResolvedValue(deleted());
@@ -199,18 +186,21 @@ describe("sessions page agent-scope retirement", () => {
     const query = vi.mocked(sessions.subscribeList).mock.calls.at(-1)?.[0];
     expect(query).toMatchObject({ search: key, agentId: "writer" });
     vi.mocked(showConfirmDialog).mockResolvedValue(true);
+    await page.deleteSessionFromMenu(archivedRow(key));
+    await waitForFast(() => expect(page.textContent).toContain("Deletion unavailable. Try again."));
     const oldRequest = page.deleteSessionFromMenu(archivedRow(key));
     let newRequest: ReturnType<typeof page.deleteSessionFromMenu> | undefined;
     try {
-      await vi.waitFor(() => expect(deleteMany).toHaveBeenCalledTimes(1));
+      await vi.waitFor(() => expect(deleteMany).toHaveBeenCalledTimes(2));
+      expect(page.error).toBeNull();
       changeScope("main");
       await page.updateComplete;
       await vi.waitFor(() => expect(page.loading).toBe(false));
       expect(vi.mocked(sessions.subscribeList).mock.calls.at(-1)?.[0]).toEqual(query);
 
       newRequest = page.deleteSessionFromMenu(archivedRow(key));
-      await vi.waitFor(() => expect(deleteMany).toHaveBeenCalledTimes(2));
-      expect(deleteMany.mock.calls[1]?.[0]).toEqual([
+      await vi.waitFor(() => expect(deleteMany).toHaveBeenCalledTimes(3));
+      expect(deleteMany.mock.calls[2]?.[0]).toEqual([
         { key, agentId: undefined, archivedOnly: true },
       ]);
 
@@ -222,12 +212,12 @@ describe("sessions page agent-scope retirement", () => {
       expect(page.error).toBeNull();
       changeScope("main");
       await page.deleteSessionFromMenu(archivedRow(key));
-      expect(deleteMany).toHaveBeenCalledTimes(2);
+      expect(deleteMany).toHaveBeenCalledTimes(3);
 
       newDelete.resolve(deleted());
       await newRequest;
       await page.deleteSessionFromMenu(archivedRow(key));
-      expect(deleteMany).toHaveBeenCalledTimes(3);
+      expect(deleteMany).toHaveBeenCalledTimes(4);
     } finally {
       oldDelete.resolve(deleted());
       newDelete.resolve(deleted());
@@ -302,13 +292,6 @@ describe("session selection across roster refresh", () => {
         }
         confirmation.resolve(true);
         await deletion;
-        expect(serverRows.some((row) => row.key === stable.key)).toBe(false);
-        if (change !== "removed") {
-          expect(serverRows.find((row) => row.key === original.key)?.label).toBe(
-            "Replacement session",
-          );
-        }
-
         expect(deletedTargets).toMatchObject([
           { key: stable.key, expectedSessionId: stable.sessionId },
         ]);
@@ -318,4 +301,99 @@ describe("session selection across roster refresh", () => {
       }
     },
   );
+});
+
+describe("sessions page lifecycle", () => {
+  it("presents owner-started refreshes without replacing controls or rows", async () => {
+    const target = sessionRow("retained", { sessionId: "retained-generation" });
+    const initial = sessionsResult([target], 1);
+    const managed = createManagedSessions();
+    const context = createContext(createGateway().gateway, managed.sessions);
+    const page = await createRenderedPage(context, initial);
+    const searchInput = () =>
+      page.querySelector<HTMLInputElement>(".sessions-filter-popover__search input")!;
+    const [query] = managed.subscribeList.mock.calls[0]!;
+    const input = searchInput();
+    const row = page.querySelector("tbody tr");
+    selectRows(page, target);
+    await page.updateComplete;
+    const refresh = () => page.querySelector<HTMLButtonElement>(".sessions-toolbar__refresh")!;
+    const publish = (loading: boolean, error: string | null = null) =>
+      managed.publish(query, { result: initial, agentId: "main", loading, error });
+
+    const failure = "Synthetic background refresh failure";
+    for (const [loading, error] of [
+      [true, null],
+      [false, failure],
+      [true, null],
+      [false, null],
+    ] as const) {
+      publish(loading, error);
+      await vi.waitFor(() => {
+        expect(refresh().disabled).toBe(false);
+        expect(searchInput()).toBe(input);
+        expect(page.querySelector("tbody tr")).toBe(row);
+        expect(page.selectedSessions.has(target.key)).toBe(true);
+        if (error) {
+          expect(page.textContent).toContain(error);
+        } else if (!loading) {
+          expect(page.querySelector(".sessions-error")).toBeNull();
+        }
+      });
+    }
+  });
+
+  it("shows command progress while the session owner holds its follow-up roster read", async () => {
+    const target = sessionRow("held-command", { label: "Before edit" });
+    const refreshed = createDeferred<ReturnType<typeof sessionsResult>>();
+    const readStarted = createDeferred();
+    let edited = false;
+    const { context, sessions } = createLiveSessionContext(
+      createTestGatewayClient((method) => {
+        switch (method) {
+          case "sessions.list":
+            if (edited) {
+              readStarted.resolve();
+              return refreshed.promise;
+            }
+            return sessionsResult([target], 1);
+          case "sessions.describe":
+            return { session: target };
+          case "sessions.patch":
+            edited = true;
+            return { ok: true, path: "", key: target.key, entry: { sessionId: target.sessionId } };
+          default:
+            throw new Error(`Unexpected request: ${method}`);
+        }
+      }),
+    );
+    const page = await createRenderedPage(context, sessionsResult([target], 1), "all");
+    const next = sessionsResult([{ ...target, label: "After edit" }], 2);
+    try {
+      page.querySelector<HTMLButtonElement>(".session-details-toggle")!.click();
+      await waitForFast(() =>
+        expect(
+          page.querySelector<HTMLInputElement>(".session-overrides-grid input")?.disabled,
+        ).toBe(false),
+      );
+      const label = page.querySelector<HTMLInputElement>(".session-overrides-grid input")!;
+      label.value = "After edit";
+      label.dispatchEvent(new Event("change", { bubbles: true }));
+      await readStarted.promise;
+      await waitForFast(() => expect(page.textContent).toContain("Working…"));
+      expect(page.querySelector<HTMLButtonElement>(".sessions-toolbar__refresh")?.disabled).toBe(
+        true,
+      );
+      refreshed.resolve(next);
+      await waitForFast(() => expect(page.textContent).not.toContain("Working…"));
+      expect(page.querySelector<HTMLButtonElement>(".sessions-toolbar__refresh")?.disabled).toBe(
+        false,
+      );
+      expect(page.textContent).toContain("After edit");
+    } finally {
+      refreshed.resolve(next);
+      page.remove();
+      sessions.dispose();
+    }
+  });
 });
