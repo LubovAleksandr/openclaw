@@ -290,8 +290,7 @@ export function attachWorkerWsMessageHandler(params: WorkerWsMessageHandlerParam
         }
       },
       Math.max(0, admission.identity.credentialExpiresAtMs - Date.now()),
-    );
-    expiryTimer.unref?.();
+    ).unref();
   };
 
   const handleMessage = async (

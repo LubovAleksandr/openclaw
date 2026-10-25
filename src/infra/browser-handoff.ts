@@ -130,9 +130,8 @@ export async function openUrlPrivately(targetUrl: string): Promise<boolean> {
     return false;
   }
 
-  const cleanup = setTimeout(() => {
+  setTimeout(() => {
     void removeHandoffDirectory(directory);
-  }, HANDOFF_CLEANUP_DELAY_MS);
-  cleanup.unref?.();
+  }, HANDOFF_CLEANUP_DELAY_MS).unref();
   return true;
 }
