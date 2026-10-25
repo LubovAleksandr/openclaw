@@ -56,6 +56,10 @@ function parseEnvelope(envelope: unknown) {
   return parseExecutionIdentityAdmissionWork({ kind: "capture", envelope });
 }
 
+function rejectEnvelope(envelope: unknown, reason = "violates its bounded contract") {
+  expect(() => parseEnvelope(envelope)).toThrow(`execution identity admission envelope ${reason}`);
+}
+
 function presentInvoker(rawPrincipalRef = "raw-principal") {
   return { state: "present" as const, kind: "local-account" as const, rawPrincipalRef };
 }
@@ -173,20 +177,15 @@ describe("execution identity admission envelope", () => {
     ];
 
     for (const invoker of invalidInvokers) {
-      expect(() => parseEnvelope({ ...present, invoker })).toThrow(
-        "execution identity admission envelope violates its bounded contract",
-      );
+      rejectEnvelope({ ...present, invoker });
     }
-    expect(() =>
-      parseEnvelope({
+    rejectEnvelope(
+      {
         ...present,
-        invoker: {
-          kind: "local-account",
-          state: "present",
-          rawPrincipalRef: "raw-principal",
-        },
-      }),
-    ).toThrow("execution identity admission envelope is not canonical");
+        invoker: { kind: "local-account", state: "present", rawPrincipalRef: "raw-principal" },
+      },
+      "is not canonical",
+    );
   });
 
   it("rejects non-plain or lossy clone data without invoking accessors", () => {
@@ -233,9 +232,7 @@ describe("execution identity admission envelope", () => {
         }
         expect(Object.hasOwn(parsed.envelope, "invoker")).toBe(false);
         install("ingress", envelope.ingress);
-        expect(() => parseEnvelope(omitOwn(envelope, "ingress"))).toThrow(
-          "execution identity admission envelope violates its bounded contract",
-        );
+        rejectEnvelope(omitOwn(envelope, "ingress"));
         install("kind", "capture");
         expect(() => parseExecutionIdentityAdmissionWork({ envelope } as never)).toThrow(
           "execution identity admission work violates its bounded contract",

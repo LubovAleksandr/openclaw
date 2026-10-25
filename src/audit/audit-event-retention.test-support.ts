@@ -35,7 +35,7 @@ function auditStore(database: OpenClawStateDatabase) {
         "event_id, CAST(sequence AS TEXT) AS sequence",
         `WHERE run_id = ? ORDER BY ${order}`,
         runId,
-      ),
+      ).map(({ event_id, sequence }) => [event_id, sequence]),
     number: (expression: string, suffix = "") =>
       Number(rows(`${expression} AS value`, suffix)[0]?.value),
     sequence: (event: AuditEventInput, id?: string) =>
@@ -181,8 +181,8 @@ export function assertAuditRunWarmWrite(database: OpenClawStateDatabase): void {
       : [insert],
   );
   expect(runs("warm-pair", "sequence")).toEqual([
-    { event_id: "warm-start", sequence: "2" },
-    { event_id: "warm-finish", sequence: "3" },
+    ["warm-start", "2"],
+    ["warm-finish", "3"],
   ]);
 }
 
@@ -212,8 +212,8 @@ export function assertAuditRunReplay(database: OpenClawStateDatabase): void {
       eventIds,
     );
     expect(runs(name)).toEqual([
-      { event_id: `${name}-finish`, sequence: String(sequences[1]) },
-      { event_id: `${name}-start`, sequence: String(sequences[0]) },
+      [`${name}-finish`, String(sequences[1])],
+      [`${name}-start`, String(sequences[0])],
     ]);
     const afterReplay = observeAuditStatements(() => {
       expect(sequence({ ...start, sourceId: `${name}-after`, runId: `${name}-after` })).toBe(
@@ -252,14 +252,12 @@ export function assertAuditRunAtomicity(database: OpenClawStateDatabase): void {
     }),
   ).toThrow("rollback enclosing run pair");
 
-  const next = sequence(
-    { ...retained.start, sourceId: "after-rollback", runId: "after-rollback" },
+  const after = { ...retained.start, sourceId: "after-rollback", runId: "after-rollback" };
+  const next = sequence(after, "after-rollback");
+  expect(rows("event_id", "ORDER BY sequence").map(({ event_id }) => event_id)).toEqual([
+    "kept-start",
+    "kept-finish",
     "after-rollback",
-  );
-  expect(rows("event_id", "ORDER BY sequence")).toEqual([
-    { event_id: "kept-start" },
-    { event_id: "kept-finish" },
-    { event_id: "after-rollback" },
   ]);
   // PG keeps sequence gaps after rollback; both engines must return the durable sequence.
   expect(number("sequence", "WHERE event_id = 'after-rollback'")).toBe(next);

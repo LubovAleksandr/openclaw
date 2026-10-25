@@ -58,6 +58,14 @@ function identity(id: string, now: number, runtimeInstanceId = "runtime-1") {
   return { contextId: `context-${id}`, executionId: `execution-${id}`, now, runtimeInstanceId };
 }
 
+function rows(db: EngineConnection, sql: string) {
+  return db.prepare(sql).all();
+}
+
+function count(db: EngineConnection, table: string) {
+  return db.prepare(`SELECT COUNT(*) AS count FROM ${table}`).get();
+}
+
 function openIndependentStateDatabase(path: string): OpenClawStateDatabase {
   return {
     db: openNodeSqliteDatabase(path),
@@ -101,6 +109,11 @@ describe("execution identity context storage", () => {
     ["present", "attribution-only"],
   ] as const)("replays canonical %s attribution across restart", async (state, coverageState) => {
     const attributed = state === "present";
+    const ingress = {
+      kind: state === "unknown" ? ("system" as const) : ("local-cli" as const),
+      boundary: state === "unknown" ? "gateway.boot" : "agent-command.local",
+      state: "present" as const,
+    };
     const envelope = captureEnvelope(
       facts(
         `run-${state}`,
@@ -125,7 +138,7 @@ describe("execution identity context storage", () => {
               ],
             }
           : state === "unknown"
-            ? { invoker: { state } }
+            ? { invoker: { state }, ingress }
             : {},
       ),
       identity(state, 100, "private-runtime"),
@@ -135,7 +148,7 @@ describe("execution identity context storage", () => {
     const second = persistEnvelope(structuredClone(envelope), { ...store.options, now: 999 });
     expect(second).toEqual(first);
     const missingEvidence = attributed ? [] : ["invoker.principal"];
-    expect(first).toMatchObject({ invoker: { state }, coverageState, missingEvidence });
+    expect(first).toMatchObject({ invoker: { state }, ingress, coverageState, missingEvidence });
     if (!attributed) {
       expect(first.invoker).toEqual({ state });
     } else {
@@ -143,8 +156,7 @@ describe("execution identity context storage", () => {
       expect(grants).toEqual(grants.toSorted());
       expect(first.invoker.principal?.principalRef).toMatch(/^hmac-sha256:v1:/u);
     }
-    expect(Object.isFrozen(first)).toBe(true);
-    expect(Object.isFrozen(first.runtimeInstance)).toBe(true);
+    expect([first, first.runtimeInstance].map(Object.isFrozen)).toEqual([true, true]);
     for (const secret of [
       "private-local-account",
       "private-process-evidence",
@@ -156,7 +168,7 @@ describe("execution identity context storage", () => {
       expect(JSON.stringify(first)).not.toContain(secret);
     }
     await restartDatabase();
-    const result = await store.inspect({ executionId: `execution-${state}` }, 999);
+    const result = await store.inspect({ runId: `run-${state}` }, 999);
     expect(result.identity).toEqual({ state: "present", context: first });
     if (state === "unknown") {
       expect(result.coverage).toEqual({ state: "unknown", missingEvidence });
@@ -201,29 +213,28 @@ describe("execution identity context storage", () => {
         ...(nextExecutionCursor ? { nextExecutionCursor } : {}),
       });
     }
-    const firstInspection = await store.inspect({ executionId: "execution-first" }, 300);
-    const secondInspection = await store.inspect({ executionId: "execution-second" }, 300);
-    expect(firstInspection).toMatchObject({
-      identity: { state: "present", context: { contextId: "context-first" } },
-      coverage: { state: "enforced" },
-      decisions: [{ decision: { outcome: "not-applicable" } }, { decision: { outcome: "denied" } }],
-    });
-    expect(secondInspection).toMatchObject({
-      identity: { state: "present", context: { contextId: "context-second" } },
-      coverage: {
-        state: "unknown",
-        missingEvidence: expect.arrayContaining(["decision.execution_link"]),
-      },
-      decisions: [
-        { decision: { outcome: "not-applicable" } },
+    for (const [id, coverage, terminal] of [
+      ["first", { state: "enforced" }, { outcome: "denied" }],
+      [
+        "second",
         {
-          decision: {
-            outcome: "unknown",
-            reasonCode: "operator_approval_execution_link_mismatch",
-          },
+          state: "unknown",
+          missingEvidence: expect.arrayContaining(["decision.execution_link"]),
         },
+        { outcome: "unknown", reasonCode: "operator_approval_execution_link_mismatch" },
       ],
-    });
+    ] as const) {
+      const inspection = await store.inspect({ executionId: `execution-${id}` }, 300);
+      expect(inspection.identity).toMatchObject({
+        state: "present",
+        context: { contextId: `context-${id}` },
+      });
+      expect(inspection.coverage).toMatchObject(coverage);
+      expect(inspection.decisions.map(({ decision }) => decision)).toMatchObject([
+        { outcome: "not-applicable" },
+        terminal,
+      ]);
+    }
     store.prepare("session-run", identity("third", 102));
     const nextPage = await store.inspect(
       { runId: "session-run", executionOffset: 2, executionLimit: 1 },
@@ -234,18 +245,6 @@ describe("execution identity context storage", () => {
       candidates: [{ executionId: "execution-third", contextId: "context-third", createdAt: 102 }],
     });
     expect(nextPage).not.toHaveProperty("nextExecutionCursor");
-  });
-
-  it.each([
-    ["local-cli", "agent-command.local"],
-    ["system", "gateway.boot"],
-  ] as const)("projects authoritative %s ingress", async (kind, boundary) => {
-    const ingress = { kind, boundary, state: "present" as const };
-    store.prepare("run", {}, kind === "system" ? { ingress } : {});
-    expect((await store.inspect({ runId: "run" })).identity).toMatchObject({
-      state: "present",
-      context: { ingress },
-    });
   });
 
   it("confirms durable retries without manufacturing lost evidence", async () => {
@@ -270,27 +269,18 @@ describe("execution identity context storage", () => {
     });
   });
 
-  it("keeps maintenance read-only until the first identity capture", () => {
-    const table = () =>
-      store
-        .open()
-        .db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table' AND name = ?")
-        .get("execution_identity_contexts");
-    expect(table()).toBeUndefined();
+  it("keeps maintenance lazy before capture and active after collection is disabled", () => {
+    const hasContexts = () => tableExists(store.open().db, "execution_identity_contexts");
+    expect(hasContexts()).toBe(false);
     expect(store.prune()).toBe(0);
-    expect(table()).toBeUndefined();
-  });
-
-  it("keeps bounded retention maintenance available while collection is disabled", () => {
+    expect(hasContexts()).toBe(false);
     store.prepare("run-before-disable", { now: 0, runtimeInstanceId: "runtime-1" });
     expect(
       enqueueExecutionIdentityContextAtAdmission(facts("run-disabled"), { enabled: false }),
     ).toBeUndefined();
 
     expect(store.prune(RETENTION_MS + 1)).toBe(1);
-    expect(
-      store.open().db.prepare("SELECT COUNT(*) AS count FROM execution_identity_contexts").get(),
-    ).toEqual({ count: 0 });
+    expect(count(store.open().db, "execution_identity_contexts")).toEqual({ count: 0 });
   });
 
   it("rolls back the worker write when insert-time retention cleanup fails", () => {
@@ -328,9 +318,10 @@ describe("execution identity context storage", () => {
         });
       }
 
-      const retained = first.db
-        .prepare("SELECT run_id FROM execution_identity_contexts ORDER BY created_at")
-        .all() as Array<{ run_id: string }>;
+      const retained = rows(
+        first.db,
+        "SELECT run_id FROM execution_identity_contexts ORDER BY created_at",
+      );
       expect(retained.map((row) => row.run_id)).toEqual(["shared-cap-3", "shared-cap-4"]);
     } finally {
       first.db.close();
@@ -352,12 +343,10 @@ describe("execution identity context storage", () => {
       add(id, RETENTION_MS - 100);
     }
     const retained = () =>
-      store
-        .open()
-        .db.prepare(
-          "SELECT context_id FROM execution_identity_contexts ORDER BY created_at, context_id",
-        )
-        .all();
+      rows(
+        store.open().db,
+        "SELECT context_id FROM execution_identity_contexts ORDER BY created_at, context_id",
+      );
     const limits = { maxRows: 2, pruneBatchRows: 3 };
     add("new", RETENTION_MS + 1, limits);
     expect(retained()).toEqual(["c", "d", "e", "new"].map((context_id) => ({ context_id })));
@@ -403,11 +392,7 @@ describe("execution identity context storage", () => {
         .run("{", runId);
     } else if (runId === "legacy") {
       recordAuditEventInDatabase(
-        {
-          ...runInput(),
-          sourceId: "legacy-run:1",
-          runId,
-        },
+        { ...runInput(), sourceId: "legacy-run:1", runId },
         { ...store.options, database: store.open() },
       );
     }
@@ -572,26 +557,21 @@ describe("owner-native execution lifecycle receipts", () => {
       user_version: OPENCLAW_STATE_SCHEMA_VERSION,
     });
     expect(
-      reopened
-        .prepare(
-          "SELECT owner_kind, owner_id, context_id, execution_id FROM execution_owner_lifecycle_bindings",
-        )
-        .all(),
-    ).toEqual([
-      {
-        owner_kind: "cron",
-        owner_id: "cron-1",
-        context_id: "context-1",
-        execution_id: "execution-1",
-      },
-    ]);
+      rows(
+        reopened,
+        "SELECT owner_kind, owner_id, context_id, execution_id FROM execution_owner_lifecycle_bindings",
+      ).map(({ owner_kind, owner_id, context_id, execution_id }) => [
+        owner_kind,
+        owner_id,
+        context_id,
+        execution_id,
+      ]),
+    ).toEqual([["cron", "cron-1", "context-1", "execution-1"]]);
     expect(page(reopened).entries[0]?.receipt.decision).toEqual({
       outcome: "not-applicable",
       reasonCode: "cron_run_ok",
     });
-    expect(
-      reopened.prepare("SELECT COUNT(*) AS count FROM execution_decision_facts").get(),
-    ).toEqual({ count: 0 });
+    expect(count(reopened, "execution_decision_facts")).toEqual({ count: 0 });
   });
 
   it("uses stable cron cursors and rejects a mismatched exact execution", async () => {
