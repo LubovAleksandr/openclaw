@@ -758,9 +758,9 @@ export class ChatSessionVirtualizerHost implements ChatTranscriptSession {
       return;
     }
     if (
+      (this.initialRange.pending || this.offsetState.scrollCommand?.target === "end") &&
       this.canAutoFollow() &&
-      !this.offsetState.pendingInteractionAnchor &&
-      !this.offsetState.touchActive
+      !(this.offsetState.pendingInteractionAnchor || this.offsetState.touchActive)
     ) {
       const behavior = this.offsetState.scrollCommand?.behavior ?? "instant";
       this.scrollToEnd({ source: "auto", behavior });

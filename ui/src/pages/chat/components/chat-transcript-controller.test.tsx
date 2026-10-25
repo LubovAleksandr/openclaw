@@ -591,6 +591,8 @@ it.each([0, 252])(
   "retires an end index without losing newer native movement (%s px)",
   async (nativeGrowth) => {
     const flushFrames = stubAnimationFrames();
+    // Match estimates from the start so row measurement adds no unrelated compensation.
+    transcriptDomState.measuredRowHeight = 120;
     const transcript = createChatTranscript(() => `retired-end-index-${nativeGrowth}`, {
       canFollowEnd: () => false,
     });
@@ -630,7 +632,6 @@ it.each([0, 252])(
     vi.advanceTimersByTime(150);
     expect(container.scrollTop, "stale idle must not restore its old offset").toBe(before);
     transcript.cancelScroll();
-    transcriptDomState.measuredRowHeight = 120;
     const next: TestContentRow[] = [...content, contentRow("peer", <div>Peer</div>), typing];
     renderRows(next);
     await Promise.resolve();
