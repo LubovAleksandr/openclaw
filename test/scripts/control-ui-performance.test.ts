@@ -316,7 +316,7 @@ describe("Control UI performance budgets", () => {
     expect(formatReport(metrics, budgets)).toContain("startup JS gzip: 40 B exceeds 30 B");
   });
 
-  it("bounds total CSS at the committed ceilings", () => {
+  it("bounds stylesheet growth at the fixed CSS ceilings", () => {
     const { distDir, writeAsset } = createStartupFixture();
     const base = collectMetrics(distDir);
     const raw = CONTROL_UI_PERFORMANCE_BUDGETS.totalCssRawBytes - base.total.css.rawBytes;
@@ -388,12 +388,13 @@ describe("Control UI performance budgets", () => {
 
   it("retains the ordinary chunk cap beside locale pairs", () => {
     const { distDir, writeAsset } = createStartupFixture();
-    writeAsset("lazy-b.js", 200, 215 * 1024 + 1, 55);
+    const cap = CONTROL_UI_PERFORMANCE_BUDGETS.largestJsGzipBytes;
+    writeAsset("lazy-b.js", 200, cap + 1, 55);
     writeAsset("ru-a.js", 200, 100_000, 100);
     writeAsset("locale-config-hints-ru-a.js", 200, 100_000, 100);
     const metrics = collectMetrics(distDir);
     expect(evaluateBudgets(metrics).map((entry) => entry.metric)).toEqual(["largest JS gzip"]);
-    expect(metrics.total.js.gzipBytes).toBe(420_201);
+    expect(metrics.total.js.gzipBytes).toBe(cap + 200_041);
     expect(metrics.largest.js.file).toBe("assets/lazy-b.js");
     expect(formatReport(metrics)).toContain("locale catalog JS:");
   });
