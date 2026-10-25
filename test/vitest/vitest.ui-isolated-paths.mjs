@@ -52,6 +52,8 @@ export const uiIsolatedTestFiles = [
   "ui/src/pages/chat/chat-pane-identity.test.ts",
   "ui/src/pages/chat/chat-pane-keyboard-focus.test.ts",
   "ui/src/pages/chat/chat-pane-lifecycle.test.ts",
+  // Holds mobile chrome before first paint to verify its reserved layout slots.
+  "ui/src/pages/chat/chat-pane-mobile-chrome-loading.test.tsx",
   "ui/src/pages/chat/chat-pane-pull-requests.test.ts",
   "ui/src/pages/chat/chat-pane-retained-presentation.test.ts",
   "ui/src/pages/chat/chat-pane-retention.test.ts",
