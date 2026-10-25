@@ -210,6 +210,12 @@ async function snapshot(page: Page) {
         ? {
             windowListeners: resources.listeners.window,
             documentListeners: resources.listeners.document,
+            windowResizeListeners: resources.listenerTypes.window.resize,
+            windowCaptureScrollListeners: resources.listenerTypes.window.captureScroll,
+            documentCaptureScrollListeners: resources.listenerTypes.document.captureScroll,
+            documentCapturePointerdownListeners:
+              resources.listenerTypes.document.capturePointerdown,
+            documentCaptureKeydownListeners: resources.listenerTypes.document.captureKeydown,
             windowCallbacks: resources.listenerCallbacks.window,
             documentCallbacks: resources.listenerCallbacks.document,
             activeResizeObservers: resources.observers.ResizeObserver.active,
@@ -271,12 +277,23 @@ async function exerciseNativeToggleCancellation(page: Page, settle: (page: Page)
     );
     await settle(page);
     const cancelled = await snapshot(page);
+    const cancelledPanelOpen = await panelLocator.evaluate((panel) =>
+      panel.matches(":popover-open"),
+    );
     if (
-      (await panelLocator.evaluate((panel) => panel.matches(":popover-open"))) ||
-      cancelled.windowListeners !== closed.windowListeners
+      cancelledPanelOpen ||
+      cancelled.windowResizeListeners !== closed.windowResizeListeners ||
+      cancelled.windowCaptureScrollListeners !== closed.windowCaptureScrollListeners
     ) {
       throw new Error(
-        "Canceled native menu opening left an open popover or positioning subscription",
+        `Canceled native menu opening left an open popover or positioning subscription: ${JSON.stringify(
+          {
+            panelOpen: cancelledPanelOpen,
+            before: closed,
+            after: cancelled,
+            events: await recorder.evaluate(({ state }) => state.events),
+          },
+        )}`,
       );
     }
     await recorder.evaluate(({ state }) => {
@@ -299,13 +316,28 @@ async function exerciseNativeToggleCancellation(page: Page, settle: (page: Page)
     await settle(page);
     const coalesced = await snapshot(page);
     const events = await recorder.evaluate(({ state }) => state.events);
+    const coalescedPanelOpen = await panelLocator.evaluate((panel) =>
+      panel.matches(":popover-open"),
+    );
+    const recordedOpenToggle = events.some(
+      (event) => event.type === "toggle" && event.state === "open",
+    );
     if (
-      (await panelLocator.evaluate((panel) => panel.matches(":popover-open"))) ||
-      coalesced.windowListeners !== closed.windowListeners ||
-      events.some((event) => event.type === "toggle" && event.state === "open")
+      coalescedPanelOpen ||
+      coalesced.windowResizeListeners !== closed.windowResizeListeners ||
+      coalesced.windowCaptureScrollListeners !== closed.windowCaptureScrollListeners ||
+      recordedOpenToggle
     ) {
       throw new Error(
-        "Same-task native show/hide did not coalesce to closed without positioning subscriptions",
+        `Same-task native show/hide did not coalesce to closed without positioning subscriptions: ${JSON.stringify(
+          {
+            panelOpen: coalescedPanelOpen,
+            recordedOpenToggle,
+            before: closed,
+            after: coalesced,
+            events,
+          },
+        )}`,
       );
     }
     return {
@@ -429,6 +461,11 @@ function workboardEvidence(
   for (const [name, value] of [
     ["WindowListeners", state.windowListeners],
     ["DocumentListeners", state.documentListeners],
+    ["WindowResizeListeners", state.windowResizeListeners],
+    ["WindowCaptureScrollListeners", state.windowCaptureScrollListeners],
+    ["DocumentCaptureScrollListeners", state.documentCaptureScrollListeners],
+    ["DocumentCapturePointerdownListeners", state.documentCapturePointerdownListeners],
+    ["DocumentCaptureKeydownListeners", state.documentCaptureKeydownListeners],
     ["WindowCallbacks", state.windowCallbacks],
     ["DocumentCallbacks", state.documentCallbacks],
     ["ActiveResizeObservers", state.activeResizeObservers],
@@ -613,8 +650,8 @@ export async function exerciseWorkboardResourceFixture(
       .waitFor({ state: "hidden" });
     // Park pointer/focus and wait for the existing 150ms leave deadline through native counts.
     await page.locator(".workboard-page-title").click();
-    await page.waitForFunction(
-      (expected) => {
+    try {
+      await page.waitForFunction((expected) => {
         const read = Reflect.get(window, "openclawResourceCounts");
         if (typeof read !== "function") {
           throw new Error("Native resource probe disappeared");
@@ -623,12 +660,27 @@ export async function exerciseWorkboardResourceFixture(
         const resources = read() as ControlUiResourceCounts;
         return (
           document.querySelectorAll(":popover-open").length === 0 &&
-          resources.listeners.window === expected.windowListeners &&
-          resources.listeners.document === expected.documentListeners
+          resources.listenerTypes.window.resize === expected.windowResizeListeners &&
+          resources.listenerTypes.window.captureScroll === expected.windowCaptureScrollListeners &&
+          resources.listenerTypes.document.captureScroll ===
+            expected.documentCaptureScrollListeners &&
+          resources.listenerTypes.document.capturePointerdown ===
+            expected.documentCapturePointerdownListeners &&
+          resources.listenerTypes.document.captureKeydown ===
+            expected.documentCaptureKeydownListeners
         );
-      },
-      { windowListeners: mounted.windowListeners, documentListeners: mounted.documentListeners },
-    );
+      }, mounted);
+    } catch (error) {
+      throw new Error(
+        `Closed Workboard popovers did not retire positioning and status listeners: ${JSON.stringify(
+          {
+            before: mounted,
+            after: await snapshot(page),
+          },
+        )}`,
+        { cause: error },
+      );
+    }
     await settle(page);
     const closed = await snapshot(page);
     const evidence: InteractionEvidence = {

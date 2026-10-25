@@ -31,6 +31,10 @@ export type ControlUiResourceCounts = {
     cancellationsComplete: boolean;
   };
   listeners: { window: number; document: number; mediaQuery: number; fontFaceSet: number };
+  listenerTypes: {
+    window: { resize: number; captureScroll: number };
+    document: { captureScroll: number; capturePointerdown: number; captureKeydown: number };
+  };
   listenerCallbacks: { window: number; document: number; mediaQuery: number; fontFaceSet: number };
   mediaQueries: number;
 };
@@ -54,7 +58,7 @@ export function installControlUiResourceCounts() {
     cancelled: 0,
     callbacks: 0,
   });
-  const counts: ControlUiResourceCounts = {
+  const counts: Omit<ControlUiResourceCounts, "listenerTypes"> = {
     observers: {
       ResizeObserver: counter(),
       IntersectionObserver: counter(),
@@ -82,10 +86,6 @@ export function installControlUiResourceCounts() {
     listenerCallbacks: { window: 0, document: 0, mediaQuery: 0, fontFaceSet: 0 },
     mediaQueries: 0,
   };
-  Object.defineProperty(window, "openclawResourceCounts", {
-    value: () => structuredClone(counts),
-    configurable: true,
-  });
   for (const name of ["ResizeObserver", "IntersectionObserver", "MutationObserver"] as const) {
     const Original = window[name];
     if (!Original) {
@@ -382,9 +382,10 @@ export function installControlUiResourceCounts() {
       entry?.remove();
       remove(type, entry?.wrapped ?? listener, options);
     };
+    return entries;
   };
-  trackListeners(window, "window");
-  trackListeners(document, "document");
+  const windowListeners = trackListeners(window, "window");
+  const documentListeners = trackListeners(document, "document");
   trackListeners(document.fonts, "fontFaceSet");
   const matchMedia = window.matchMedia.bind(window);
   window.matchMedia = (query) => {
@@ -393,6 +394,31 @@ export function installControlUiResourceCounts() {
     counts.mediaQueries++;
     return media;
   };
+  Object.defineProperty(window, "openclawResourceCounts", {
+    value: (): ControlUiResourceCounts => ({
+      ...structuredClone(counts),
+      // Derive scoped counts from the same live registrations that own the totals.
+      listenerTypes: {
+        window: {
+          resize: windowListeners.filter((entry) => entry.type === "resize").length,
+          captureScroll: windowListeners.filter((entry) => entry.type === "scroll" && entry.capture)
+            .length,
+        },
+        document: {
+          captureScroll: documentListeners.filter(
+            (entry) => entry.type === "scroll" && entry.capture,
+          ).length,
+          capturePointerdown: documentListeners.filter(
+            (entry) => entry.type === "pointerdown" && entry.capture,
+          ).length,
+          captureKeydown: documentListeners.filter(
+            (entry) => entry.type === "keydown" && entry.capture,
+          ).length,
+        },
+      },
+    }),
+    configurable: true,
+  });
 }
 
 export async function readControlUiResourceCounts(page: import("playwright").Page) {
