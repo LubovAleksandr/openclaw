@@ -4,6 +4,7 @@ import { vi } from "vitest";
 import { encodeSlackApprovalAction, type SlackApprovalAction } from "../../approval-actions.js";
 import { installSlackTestRuntime } from "../../test-runtime.test-support.js";
 import type { SlackMonitorContext } from "../context.js";
+import type { ParsedSlackBlockAction } from "./interactions.block-actions.context.js";
 
 function buttonBlocks(blockId: string, control: { action_id: string; value?: string }) {
   return [{ type: "actions", block_id: blockId, elements: [{ type: "button", ...control }] }];
@@ -24,11 +25,7 @@ export function approvalButtonBlocks(
   });
 }
 
-const execApprovals = (approver: string) => ({
-  enabled: true,
-  approvers: [approver],
-  target: "both",
-});
+const execApprovals = (id: string) => ({ enabled: true, approvers: [id], target: "both" });
 
 export function approvalContextOptions(pluginApprover: string, execApprover: string) {
   const account = { allowFrom: [pluginApprover], execApprovals: execApprovals(execApprover) };
@@ -50,34 +47,23 @@ export function approvedPluginBindingResult(): Extract<
       ...conversation,
       boundAt: 0,
     },
-    request: {
-      id: "approval-123",
-      ...plugin,
-      pluginName: "Codex",
-      summary: "for this thread",
-      conversation,
-    },
+    request: { id: "approval-123", ...plugin, conversation },
   };
 }
 
 type ListenerArgs<Body> = {
   ack: () => Promise<void>;
-  client?: TestSlackClient;
-  context?: TestBoltContext;
+  client?: { chat: { update: (...args: unknown[]) => unknown } };
+  context?: { teamId?: string; isEnterpriseInstall?: boolean; enterpriseId?: string };
   body: Body;
 };
 
 type Handler<Args> = (args: Args) => Promise<void>;
+type ActionBody = Omit<ParsedSlackBlockAction["typedBody"], "user"> & {
+  user: { id: string; team_id?: string };
+};
 type RegisteredHandler = Handler<
-  ListenerArgs<{
-    user: { id: string; team_id?: string };
-    team?: { id?: string };
-    trigger_id?: string;
-    response_url?: string;
-    channel?: { id?: string };
-    container?: { channel_id?: string; message_ts?: string; thread_ts?: string };
-    message?: { ts?: string; thread_ts?: string; text?: string; blocks?: unknown[] };
-  }> & {
+  ListenerArgs<ActionBody> & {
     action: Record<string, unknown>;
     respond?: (payload: { text: string; response_type: string }) => Promise<void>;
   }
@@ -105,16 +91,6 @@ type RegisteredViewHandler = Handler<
 
 type RegisteredShortcutHandler = Handler<ListenerArgs<SlackShortcutMiddlewareArgs["body"]>>;
 
-type TestBoltContext = {
-  teamId?: string;
-  isEnterpriseInstall?: boolean;
-  enterpriseId?: string;
-};
-
-type TestSlackClient = {
-  chat: { update: (...args: unknown[]) => unknown };
-};
-
 type ContextOverrides = {
   dmEnabled?: boolean;
   dmPolicy?: "open" | "allowlist" | "pairing" | "disabled";
@@ -127,16 +103,9 @@ type ContextOverrides = {
     | { kind: "workspace"; teamId: string }
     | { kind: "enterprise"; enterpriseId: string };
   shouldDropMismatchedSlackEvent?: (body: unknown) => boolean;
-  isChannelAllowed?: (params: {
-    channelId?: string;
-    channelName?: string;
-    channelType?: "im" | "mpim" | "channel" | "group";
-  }) => boolean;
-  resolveUserName?: (userId: string) => Promise<{ name?: string }>;
-  resolveChannelName?: (channelId: string) => Promise<{
-    name?: string;
-    type?: "im" | "mpim" | "channel" | "group";
-  }>;
+  isChannelAllowed?: OmitThisParameter<SlackMonitorContext["isChannelAllowed"]>;
+  resolveUserName?: SlackMonitorContext["resolveUserName"];
+  resolveChannelName?: SlackMonitorContext["resolveChannelName"];
 };
 
 function requireHandler<T>(handler: T | undefined, kind: string): T {
@@ -147,18 +116,11 @@ function requireHandler<T>(handler: T | undefined, kind: string): T {
 }
 
 export function createContext({
-  dmEnabled = true,
-  dmPolicy = "open",
-  allowFrom = ["*"],
-  allowNameMatching = false,
-  useAccessGroups = true,
   channelsConfig = {},
   cfg = { channels: { slack: { execApprovals: execApprovals("U123") } } },
   installationIdentity = { kind: "workspace", teamId: "T_TEST" },
   shouldDropMismatchedSlackEvent = () => false,
-  isChannelAllowed: channelAllowed = () => true,
-  resolveUserName: userName = async () => ({}),
-  resolveChannelName: channelName = async () => ({}),
+  ...policy
 }: ContextOverrides = {}) {
   installSlackTestRuntime();
   const handlers: {
@@ -168,12 +130,10 @@ export function createContext({
     shortcut?: RegisteredShortcutHandler;
   } = {};
   const listenerClient = {
-    chat: { update: vi.fn<TestSlackClient["chat"]["update"]>().mockResolvedValue(undefined) },
+    chat: { update: vi.fn<(...args: unknown[]) => unknown>().mockResolvedValue(undefined) },
   };
   const scoped =
-    <Args extends { body: unknown; context?: TestBoltContext; client?: TestSlackClient }>(
-      next: Handler<Args>,
-    ): Handler<Args> =>
+    <Args extends ListenerArgs<unknown>>(next: Handler<Args>): Handler<Args> =>
     async (args) => {
       const body = args.body as {
         team?: { id?: string };
@@ -185,32 +145,28 @@ export function createContext({
       };
       return next({
         ...args,
-        context:
-          installationIdentity.kind === "enterprise"
-            ? {
-                ...context,
-                isEnterpriseInstall: true,
-                enterpriseId: installationIdentity.enterpriseId,
-              }
-            : context,
+        context: {
+          ...context,
+          ...(installationIdentity.kind === "enterprise"
+            ? { isEnterpriseInstall: true, enterpriseId: installationIdentity.enterpriseId }
+            : {}),
+        },
         client: args.client ?? listenerClient,
       });
     };
   const app = {
-    action: vi.fn((_matcher: RegExp, next: RegisteredHandler) => {
+    action: (_matcher: RegExp, next: RegisteredHandler) => {
       handlers.action = scoped(next);
-    }),
-    view: vi.fn(
-      (
-        matcher: { callback_id: RegExp; type: "view_submission" | "view_closed" },
-        next: RegisteredViewHandler,
-      ) => {
-        handlers[matcher.type] = scoped(next);
-      },
-    ),
-    shortcut: vi.fn((_matcher: RegExp, next: RegisteredShortcutHandler) => {
+    },
+    view: (
+      matcher: { callback_id: RegExp; type: "view_submission" | "view_closed" },
+      next: RegisteredViewHandler,
+    ) => {
+      handlers[matcher.type] = scoped(next);
+    },
+    shortcut: (_matcher: RegExp, next: RegisteredShortcutHandler) => {
       handlers.shortcut = scoped(next);
-    }),
+    },
     client: listenerClient,
   };
   const runtimeLog = vi.fn<SlackMonitorContext["runtime"]["log"]>();
@@ -220,27 +176,24 @@ export function createContext({
       agentId: "ops",
       sessionKey: "agent:ops:slack:channel:C1",
     });
-  const lookups = {
-    isChannelAllowed: vi.fn(channelAllowed),
-    resolveUserName: vi.fn(userName),
-    resolveChannelName: vi.fn(channelName),
-  };
   const ctx = {
     app,
     accountId: "default",
     installationIdentity,
     cfg,
     runtime: { log: runtimeLog },
-    dmEnabled,
-    dmPolicy,
-    allowFrom,
-    allowNameMatching,
-    useAccessGroups,
+    dmEnabled: policy.dmEnabled ?? true,
+    dmPolicy: policy.dmPolicy ?? "open",
+    allowFrom: policy.allowFrom ?? ["*"],
+    allowNameMatching: policy.allowNameMatching ?? false,
+    useAccessGroups: policy.useAccessGroups ?? true,
     channelsConfig,
     channelsConfigKeys: Object.keys(channelsConfig),
     defaultRequireMention: true,
     shouldDropMismatchedSlackEvent,
-    ...lookups,
+    isChannelAllowed: policy.isChannelAllowed ?? (() => true),
+    resolveUserName: policy.resolveUserName ?? (async () => ({})),
+    resolveChannelName: policy.resolveChannelName ?? (async () => ({})),
     resolveSlackSystemEventRoute: resolveSessionKey,
   };
   Object.assign(ctx, { readRuntimeContext: async () => ctx, isRuntimePolicyCurrent: () => true });
@@ -249,7 +202,6 @@ export function createContext({
     app,
     runtimeLog,
     resolveSessionKey,
-    ...lookups,
     getHandler: () => requireHandler(handlers.action, "action"),
     getViewHandler: () => requireHandler(handlers.view_submission, "view"),
     getViewClosedHandler: () => requireHandler(handlers.view_closed, "view-closed"),
@@ -263,7 +215,6 @@ export function plainText(text: string) {
 export function button(actionId: string, blockId: string, value: string, label: string) {
   return { type: "button", action_id: actionId, block_id: blockId, value, text: plainText(label) };
 }
-type ActionBody = Parameters<ReturnType<ReturnType<typeof createContext>["getHandler"]>>[0]["body"];
 export function actionBody(
   message: Omit<NonNullable<ActionBody["message"]>, "ts">,
   {
