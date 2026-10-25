@@ -810,7 +810,7 @@
    --primary-hover, which several themes leave at the base value and would render
    as no feedback at all. */
 .agent-chat__input .chat-send-btn:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--primary) 86%, var(--text-strong));
+  background: var(--chat-send-hover-bg, color-mix(in srgb, var(--primary) 86%, var(--text-strong)));
   box-shadow: none;
 }
 

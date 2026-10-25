@@ -1013,7 +1013,7 @@ openclaw-settings-save-indicator:empty {
   padding: 0;
   border: 0;
   border-radius: var(--radius-md);
-  background: var(--accent);
+  background: var(--sidebar-rail-action-bg);
   color: var(--accent-foreground);
   text-decoration: none;
 }
@@ -1024,7 +1024,7 @@ openclaw-settings-save-indicator:empty {
 }
 
 .header-new-session:hover:not(:disabled, [aria-disabled="true"]) {
-  background: var(--accent-hover);
+  background: var(--sidebar-rail-action-hover-bg);
   color: var(--accent-foreground);
 }
 

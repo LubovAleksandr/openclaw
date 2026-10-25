@@ -174,17 +174,17 @@ suite.define(() => {
         }));
         const rail = page.locator(".sidebar-rail__create .sidebar-new-session");
         const railSamples = await inspectStates(page, rail, "var(--accent-foreground)", [
-          "var(--accent)",
-          "var(--accent-hover)",
-          "color-mix(in srgb, var(--accent) 90%, var(--text))",
+          "var(--sidebar-rail-action-bg)",
+          "var(--sidebar-rail-action-hover-bg)",
+          "var(--sidebar-rail-action-active-bg)",
         ]);
         const textarea = page.locator(".agent-chat__composer-combobox textarea");
         await textarea.fill("Review this draft.");
         const send = page.getByRole("button", { name: "Send message", exact: true });
-        const desktop = await inspectStates(page, send, "var(--primary-foreground)");
+        const desktop = await inspectStates(page, send, "var(--chat-send-foreground)");
         await screenshot(page, `${id}-desktop-send`, [page.locator(".agent-chat__input"), rail]);
         await page.setViewportSize({ width: 390, height: 844 });
-        const mobile = await inspectStates(page, send, "var(--primary-foreground)");
+        const mobile = await inspectStates(page, send, "var(--chat-send-foreground)");
         await screenshot(page, `${id}-mobile-send`, [page.locator(".agent-chat__input")]);
         if (theme === "crt" && mode === "dark") {
           // An explicit theme token must reach the SVG, not only its button.
@@ -212,7 +212,7 @@ suite.define(() => {
         await page.setViewportSize({ width: 390, height: 844 });
         await textarea.fill("A new conversation draft.");
         const start = page.locator(".new-session-page__start-submit");
-        const newSession = await inspectStates(page, start, "var(--primary-foreground)");
+        const newSession = await inspectStates(page, start, "var(--chat-send-foreground)");
         await screenshot(page, `${id}-mobile-new`, [page.locator(".agent-chat__input")]);
         if (theme === "crt" && mode === "dark") {
           await page.evaluate(() =>
