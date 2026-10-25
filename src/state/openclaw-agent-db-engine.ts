@@ -18,6 +18,11 @@ import { captureSqliteSchemaFacts } from "../infra/sqlite-schema-admission.js";
 import { admitSqliteSchema, getAdmittedSqliteSchemaFacts } from "../infra/sqlite-schema-facts.js";
 import { VERSION } from "../version.js";
 import {
+  agentColdArchiveChunksPostgresMigration,
+  withoutAgentPostgresColdArchiveChunks,
+} from "./openclaw-agent-cold-archive-chunks-schema.js";
+import {
+  AGENT_COLD_ARCHIVE_CHUNKS_SCHEMA_VERSION,
   AGENT_INDEX_RETIREMENT_SCHEMA_VERSION,
   AGENT_MEMORY_REVISION_SCHEMA_VERSION,
   AGENT_VECTOR_DECODER_SCHEMA_VERSION,
@@ -90,7 +95,11 @@ export function admitAgentEngineSearchExtensions(
 }
 
 const agentPostgresSql = `${agentPostgresRuntime.sql}\n${agentSearchPostgresRuntime.sql}`;
-const agentPostgresV34Sql = withLegacyPostgresIndexOrdering(agentPostgresSql, "schema-nullability");
+const agentPostgresV35Sql = withoutAgentPostgresColdArchiveChunks(agentPostgresSql);
+const agentPostgresV34Sql = withLegacyPostgresIndexOrdering(
+  agentPostgresV35Sql,
+  "schema-nullability",
+);
 const agentPostgresV33Sql = withLegacyPostgresIndexOrdering(agentPostgresV34Sql);
 const agentPostgresV30Sql = withLegacyAgentPostgresMemoryRevisionTriggers(agentPostgresV33Sql);
 const agentPostgresV29Sql = withLegacyAgentPostgresTrajectoryStorage(agentPostgresV30Sql);
@@ -204,13 +213,32 @@ export const agentEngineSchema: StoreSchema = {
         postgresVectorSearchVersion: 2,
       },
       schema: {
+        postgres: agentPostgresV35Sql,
+        postgresVectorDecoderVersion: 2,
+        postgresVectorSearchVersion: 2,
+      },
+      sql: `${postgresIndexOrderingMigration(agentPostgresV35Sql, "schema-nullability")}
+        UPDATE schema_meta
+        SET schema_version = 35,
+          app_version = '${VERSION.replaceAll("'", "''")}',
+          updated_at = CAST(EXTRACT(EPOCH FROM CURRENT_TIMESTAMP) * 1000 AS bigint)
+        WHERE meta_key = 'primary';`,
+    },
+    {
+      version: AGENT_COLD_ARCHIVE_CHUNKS_SCHEMA_VERSION,
+      fromSchema: {
+        postgres: agentPostgresV35Sql,
+        postgresVectorDecoderVersion: 2,
+        postgresVectorSearchVersion: 2,
+      },
+      schema: {
         postgres: agentPostgresSql,
         postgresVectorDecoderVersion: 2,
         postgresVectorSearchVersion: 2,
       },
-      sql: `${postgresIndexOrderingMigration(agentPostgresSql, "schema-nullability")}
+      sql: `${agentColdArchiveChunksPostgresMigration(agentPostgresSql)}
         UPDATE schema_meta
-        SET schema_version = 35,
+        SET schema_version = ${AGENT_COLD_ARCHIVE_CHUNKS_SCHEMA_VERSION},
           app_version = '${VERSION.replaceAll("'", "''")}',
           updated_at = CAST(EXTRACT(EPOCH FROM CURRENT_TIMESTAMP) * 1000 AS bigint)
         WHERE meta_key = 'primary';`,

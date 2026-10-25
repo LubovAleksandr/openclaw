@@ -34,6 +34,7 @@ export const SCHEMA_MIGRATION_BACKUP_TABLES: Record<
     34: [],
     // PostgreSQL-only partial-index ordering; SQLite advances metadata only.
     35: [],
+    36: ["session_transcript_cold_archive_chunks"],
   },
   state: {
     [CLIENT_CREDENTIAL_CUTOVER_SCHEMA_VERSION]: [
