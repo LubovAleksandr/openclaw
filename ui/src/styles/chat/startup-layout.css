@@ -389,6 +389,13 @@
   flex-wrap: nowrap;
 }
 
+/* Keep the trailing region stable while presence and session actions arrive. */
+.chat-pane__header:not(.chat-pane__header--mobile) .chat-pane__header-trailing {
+  flex-grow: 1;
+  align-self: stretch;
+  justify-self: stretch;
+}
+
 .chat-pane__header:not(.chat-pane__header--mobile) .chat-pane__identity-actions {
   display: flex;
   flex: 0 0 auto;
