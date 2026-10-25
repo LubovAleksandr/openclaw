@@ -82,7 +82,6 @@ export const databaseWorkerExtensionTestFiles = [
   "extensions/clawrouter/media-compatibility.test.ts",
   "extensions/microsoft/speech-provider.test.ts",
   "extensions/minimax/speech-provider.test.ts",
-  "extensions/minimax/tts.test.ts",
   "extensions/discord/src/monitor/ingress.test.ts",
   "extensions/discord/src/monitor/listeners.thread-delete.session-store.integration.test.ts",
   "extensions/discord/src/monitor/message-handler.ingress-recovery.test.ts",
