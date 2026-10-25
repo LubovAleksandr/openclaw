@@ -9,6 +9,7 @@ import type {
   TestSpecification,
   Vitest,
 } from "vitest/node";
+import { readProcessCgroupV2Snapshot, readProcessMemoryCapacity } from "./process-memory.mts";
 import { detectVitestHostInfo } from "./vitest-local-scheduling.mts";
 
 function writeReceipt(kind: string, value: unknown) {
@@ -25,6 +26,7 @@ function moduleKey(spec: TestSpecification) {
 // process and native events without changing test selection or pool policy.
 export default class VitestResourceReporter implements Reporter {
   private started = 0;
+  private resourceStarted = 0;
   private cpu = process.cpuUsage();
   private queued = new Map<string, number>();
   private diagnosticPath: string | undefined;
@@ -65,6 +67,7 @@ export default class VitestResourceReporter implements Reporter {
   }
 
   onInit(ctx: Vitest) {
+    this.resourceStarted = performance.now();
     writeReceipt("resources", {
       pid: process.pid,
       node: process.version,
@@ -74,6 +77,8 @@ export default class VitestResourceReporter implements Reporter {
       ...detectVitestHostInfo(),
       osLogicalCpuCount: os.cpus().length,
       rootMaxWorkers: ctx.config.maxWorkers ?? null,
+      memoryCapacity: readProcessMemoryCapacity({}),
+      cgroup: readProcessCgroupV2Snapshot(),
     });
   }
 
@@ -196,6 +201,10 @@ export default class VitestResourceReporter implements Reporter {
       elapsedMs: performance.now() - this.started,
       // This process includes Node worker threads, not Chromium child CPU.
       processCpuMicros: process.cpuUsage(this.cpu),
+      // Cgroup rows include descendants; peaks are absolute and may predate this run.
+      // This window starts at reporter initialization and ends before global teardown.
+      cgroupElapsedMs: performance.now() - this.resourceStarted,
+      cgroup: readProcessCgroupV2Snapshot(),
     });
   }
 }

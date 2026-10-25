@@ -290,9 +290,9 @@ export function defineGitHubPublicationAccountTests({
           .click();
         await showPublicationBranch(gateway, undefined, sessionKey);
       }
-      await openChatPublication(page);
-      await selectPublicationAccount(page, "personal");
-      const publish = page.getByRole("button", { name: "Create PR" });
+      const publication = await openChatPublication(page);
+      await selectPublicationAccount(publication, "personal");
+      const publish = publication.getByRole("button", { name: "Create PR" });
       await publish.waitFor();
       await expect.poll(() => publish.isEnabled(), { message: `${name} workspace` }).toBe(ready);
       if (conflict) {

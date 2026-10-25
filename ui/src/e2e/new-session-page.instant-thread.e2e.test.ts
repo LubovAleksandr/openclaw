@@ -702,7 +702,10 @@ suite.define(() => {
           runId: retryRunId,
           text: `Finished ${phase} retry.`,
         });
-        await page.getByText(`Finished ${phase} retry.`, { exact: true }).waitFor();
+        await page
+          .locator(".chat-group.assistant .chat-bubble")
+          .getByText(`Finished ${phase} retry.`, { exact: true })
+          .waitFor();
       }
     });
   });

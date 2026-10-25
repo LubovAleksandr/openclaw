@@ -770,7 +770,7 @@ suite.define(() => {
             await page.getByText("do not duplicate this task", { exact: true }).isVisible(),
           ).toBe(false);
           await messageInput(page).fill("new owner's task");
-          expect(await startButton(page).isEnabled()).toBe(true);
+          await expect.poll(() => startButton(page).isEnabled()).toBe(true);
         }
         expect(await page.locator(".new-session-page__starting").isVisible()).toBe(false);
         expect(await gateway.getRequests("sessions.create")).toHaveLength(1);

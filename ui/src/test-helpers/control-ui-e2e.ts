@@ -545,21 +545,19 @@ function controlUiE2ePreviewConfigPlugin(
 }
 
 function createBundledControlUiE2eConfig(
-  controlUiViteConfig: (options: { outDir?: string }) => InlineConfig,
+  controlUiViteConfig: (options: {
+    outDir?: string;
+    buildInfo?: ControlUiBuildInfo;
+  }) => InlineConfig,
   outDir: string,
 ): InlineConfig {
-  const config = controlUiViteConfig({ outDir });
+  // Keep identity in the document so copied deployment fixtures can refresh it.
+  const config = controlUiViteConfig({ outDir, buildInfo: DEFAULT_CONTROL_UI_E2E_BUILD_INFO });
   const uiRoot = path.join(resolveRepoRoot(), "ui");
   return {
     ...config,
     base: "/",
     configFile: false,
-    define: {
-      ...config.define,
-      "globalThis.OPENCLAW_CONTROL_UI_BUILD_INFO": JSON.stringify(
-        DEFAULT_CONTROL_UI_E2E_BUILD_INFO,
-      ),
-    },
     logLevel: "error" as const,
     root: uiRoot,
   };

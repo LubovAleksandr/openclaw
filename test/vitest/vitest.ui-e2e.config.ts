@@ -257,7 +257,13 @@ export function createUiE2eVitestConfig(
         },
       ],
       // Refit needs native file totals; verbose still reports cases to the output watchdog.
-      reporters: [...baseTest.reporters, "default"],
+      reporters: [
+        ...baseTest.reporters,
+        "default",
+        ...(env.OPENCLAW_UI_E2E_DIAGNOSTIC_DIR
+          ? ["./scripts/lib/vitest-resource-reporter.mts"]
+          : []),
+      ],
       sequence: { ...baseSequence, sequencer: UiE2eSequencer },
     },
   });
