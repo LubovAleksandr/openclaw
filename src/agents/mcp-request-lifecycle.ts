@@ -32,10 +32,12 @@ export function createMcpRequestLifecycle(humanInputTimeoutMs: number) {
       let humanInputStartedAt = 0;
       let humanInputWaits = 0;
       let finished = false;
-      let timeout = setTimeout(onTimeout, Math.max(0, deadline - Date.now())).unref();
+      let timeout = setTimeout(onTimeout, Math.max(0, deadline - Date.now()));
+      timeout.unref?.();
       const armTimeout = (expiresAt: number) => {
         clearTimeout(timeout);
-        timeout = setTimeout(onTimeout, Math.max(0, expiresAt - Date.now())).unref();
+        timeout = setTimeout(onTimeout, Math.max(0, expiresAt - Date.now()));
+        timeout.unref?.();
       };
       const holdForHumanInput = () => {
         if (humanInputWaits++ === 0) {
