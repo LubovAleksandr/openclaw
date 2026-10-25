@@ -3620,7 +3620,6 @@
       "ui/src/e2e/new-session-page.cloud-startup-failure.e2e.test.ts": 25,
       "ui/src/e2e/new-session-page.cloud-startup.e2e.test.ts": 9,
       "ui/src/e2e/new-session-page.cloud-startup.recovery.e2e.test.ts": 20,
-      "ui/src/e2e/new-session-page.cloud-startup.runtime-load.e2e.test.ts": 26,
       "ui/src/e2e/new-session-page.config-startup.e2e.test.ts": 13,
       "ui/src/e2e/new-session-page.configured-defaults.e2e.test.ts": 13,
       "ui/src/e2e/new-session-page.connect-machine.e2e.test.ts": 11,

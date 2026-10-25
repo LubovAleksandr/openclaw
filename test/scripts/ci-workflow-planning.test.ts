@@ -10443,9 +10443,9 @@ describe("ci workflow guards", () => {
     ).toBe(selected.mocked.length + selected.browser.length > 0);
     expect(manifest.outputs.run_ui_real_gateway).toBe(String(!isPr && selected.real.length > 0));
     expect(JSON.parse(expectDefined(manifest.outputs.ui_test_matrix, "UI matrix")).include).toEqual(
-      expectedUi.slice(0, 2).map((_, index) => ({ shard: index + 1 })),
+      expectedUi.slice(0, 3).map((_, index) => ({ shard: index + 1 })),
     );
-    expect(manifest.outputs.ui_test_shard_count).toBe(String(Math.min(2, expectedUi.length)));
+    expect(manifest.outputs.ui_test_shard_count).toBe(String(Math.min(3, expectedUi.length)));
     expect(
       resolveSelectedUiIncludes(
         expectDefined(manifest.outputs.ui_test_groups_gzip_base64, "UI selection"),
@@ -10703,7 +10703,7 @@ describe("ci workflow guards", () => {
       expect(manifest.outputs.run_ui_tests).toBe(String(selected));
       expect(
         JSON.parse(expectDefined(manifest.outputs.ui_test_matrix, "UI matrix")).include,
-      ).toEqual(expectedUi.slice(0, 2).map((_, index) => ({ shard: index + 1 })));
+      ).toEqual(expectedUi.slice(0, 3).map((_, index) => ({ shard: index + 1 })));
       expect(
         resolveSelectedUiIncludes(
           expectDefined(manifest.outputs.ui_test_groups_gzip_base64, "UI selection"),

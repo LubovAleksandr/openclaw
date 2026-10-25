@@ -5306,14 +5306,14 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       frozenTarget: false,
       compatibilityTarget: false,
       policy: "bun-all",
-      shards: [1, 2],
+      shards: [1, 2, 3],
     },
     {
       label: "frozen current",
       frozenTarget: true,
       compatibilityTarget: false,
       policy: "dual-all",
-      shards: [1, 2],
+      shards: [1, 2, 3],
     },
   ])("executes the $label standalone UI envelope", (scenario) => {
     const workflow = readCiWorkflow();
@@ -5373,7 +5373,7 @@ printf '%s\n' "\${CURL_SUCCESS_IP:-203.0.113.7}"
       (row: { shard: number }) => row.shard,
     );
     expect(shards).toEqual(scenario.shards);
-    expect(ui.strategy).toMatchObject({ "fail-fast": false, "max-parallel": 2 });
+    expect(ui.strategy).toMatchObject({ "fail-fast": false, "max-parallel": 3 });
     expect(ui.needs).toEqual(["preflight"]);
     expect(ui.if).toBe("needs.preflight.outputs.run_ui_tests == 'true'");
     expect(ui.permissions).toEqual({ contents: "read" });

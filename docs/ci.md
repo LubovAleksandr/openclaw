@@ -111,9 +111,10 @@ Add `ci:full` before a PR run to select every `checks-ui` unit shard, all
 same UI inventories and shard budgets as scheduled `main` CI. Unlabeled PRs keep
 change-selected UI coverage; the label does not expand unrelated platform lanes.
 
-Current UI unit/browser CI uses two native shards with three workers each,
-removing one repeated checkout and setup while preserving complete discovery,
-runtime ownership, and first-shard WebKit selection.
+Current UI unit/browser CI retains three native shards with three workers each,
+complete discovery, runtime ownership, and first-shard WebKit selection.
+Two-shard trials did not reduce measured runner minutes and exceeded the
+critical-path budget.
 
 The mocked Control UI sharder keeps five measured source fixtures that need
 compiled subprocesses together in one existing shard. Their combined timing
@@ -339,9 +340,9 @@ coverage plus qualified Bun coverage; see
 Both runtimes group uncached, non-isolated UI files by environment in batches
 to reduce worker restarts while retaining native shard ownership and worker budgets.
 Bun UI workers also use an [allocation-based collection trigger](/ci/scope-and-routing/job-budgets)
-to preserve memory headroom across the two native shards.
+to preserve memory headroom across the three native shards.
 Main runs UI on Node, so a PR changing the runtime owner
-(`scripts/lib/ci-test-runtime.mts`) selects the two existing UI unit shards on
+(`scripts/lib/ci-test-runtime.mts`) selects the three existing UI unit shards on
 Bun; see [scope selection](/ci/scope-and-routing/selection).
 
 Frozen-target CI loads its Node shard planner, planning helpers, and measured

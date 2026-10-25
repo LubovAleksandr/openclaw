@@ -165,13 +165,13 @@ export async function readArtwork(shell: Locator, artworkDetail?: "fingerprint" 
       );
     }
 
-    const luminance = (red: number, green: number, blue: number) => {
-      const linear = (channel: number) => {
-        const value = channel / 255;
-        return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
-      };
-      return 0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue);
+    const linear = (channel: number) => {
+      const value = channel / 255;
+      return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
     };
+    const linearBytes = Float64Array.from({ length: 256 }, (_, channel) => linear(channel));
+    const luminance = (red: number, green: number, blue: number) =>
+      0.2126 * linear(red) + 0.7152 * linear(green) + 0.0722 * linear(blue);
     const minContrast = (rect: DOMRect, foreground: number[], artwork = true) => {
       const x = Math.max(0, Math.ceil(rect.x - bounds.x));
       const y = Math.max(0, Math.ceil(rect.y - bounds.y));
@@ -192,7 +192,8 @@ export async function readArtwork(shell: Locator, artworkDetail?: "fingerprint" 
         if (artwork && (red !== baseColor[0] || green !== baseColor[1] || blue !== baseColor[2])) {
           visiblePaintedPixels += 1;
         }
-        const bg = luminance(red, green, blue);
+        const bg =
+          0.2126 * linearBytes[red]! + 0.7152 * linearBytes[green]! + 0.0722 * linearBytes[blue]!;
         const fg =
           opaqueLuminance ??
           luminance(
